@@ -1,0 +1,79 @@
+// prisma/schema.prisma
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+/// User accounts for login and audit trails.
+model User {
+  id            String        @id @default(uuid())
+  email         String        @unique
+  passwordHash  String
+  role          UserRole      @default(DATA_ENTRY)
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  // Audit relationships
+  updatedFactors  Factor[]         @relation("FactorUpdatedBy")
+  createdFuel     FuelRecord[]     @relation("FuelRecordCreatedBy")
+}
+
+enum UserRole {
+  ADMIN        // full access (edit factors, manage users)
+  REPORTING    // can view reports/analysis but not edit factors
+  DATA_ENTRY   // can add fuel records
+}
+
+/// A physical site, office, plant, warehouse, etc.
+model Facility {
+  id         String       @id @default(uuid())
+  name       String
+  region     String?      // optional, e.g. "Alberta", "BC", "EU"
+  createdAt  DateTime     @default(now())
+  updatedAt  DateTime     @updatedAt
+
+  fuelRecords FuelRecord[]
+}
+
+/// Emission factors table
+/// These are the "kg CO2e per unit" multipliers the Factors page edits.
+model Factor {
+  id          String     @id @default(uuid())
+  name        String
+  scope       String     // "Scope 1", "Scope 2", "Scope 3"
+  unit        String     // e.g. "kg CO₂e / L"
+  value       Float      // numeric factor value
+  source      String     // human-readable source label
+  method      String?    // e.g. "static", "supplier", "measured"
+
+  updatedAt   DateTime   @default(now())
+  updatedById String?
+  updatedBy   User?      @relation("FactorUpdatedBy", fields: [updatedById], references: [id])
+
+  // optional: if you want versioning later, you can add isActive, validFrom, etc.
+}
+
+/// Raw fuel usage entries (Scope 1 activity data).
+/// This drives Scope 1 emissions and ends up in Analysis / Dashboard.
+model FuelRecord {
+  id              String     @id @default(uuid())
+  facilityId      String
+  facility        Facility   @relation(fields: [facilityId], references: [id])
+
+  fuelType        String     // diesel, natural gas, gasoline...
+  amount          Float
+  unit            String     // L, m³, gal, etc.
+  date            DateTime
+  note            String?
+
+  createdAt       DateTime   @default(now())
+  createdById     String?
+  createdBy       User?      @relation("FuelRecordCreatedBy", fields: [createdById], references: [id])
+
+  // Later:
+  // status        String     @default("active") // or "deleted"
+}

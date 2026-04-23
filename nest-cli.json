@@ -1,0 +1,11 @@
+{
+  "collection": "@nestjs/schematics",
+  "sourceRoot": "src",
+  "compilerOptions": {
+    "tsConfigPath": "tsconfig.build.json",
+    "deleteOutDir": true,
+    "assetPaths": [],
+    "watchAssets": false,
+    "externalDependencies": ["@prisma/client", "bcryptjs"]
+  }
+}

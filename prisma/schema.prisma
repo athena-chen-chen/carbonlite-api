@@ -1,0 +1,404 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum MembershipRole {
+  OWNER
+  ADMIN
+  EDITOR
+  VIEWER
+}
+
+enum FacilityType {
+  OFFICE
+  PLANT
+  WAREHOUSE
+  DATA_CENTER
+  OTHER
+}
+
+enum AssetType {
+  VEHICLE
+  GENERATOR
+  BOILER
+  HVAC
+  PRODUCTION_LINE
+  SERVER_RACK
+  OTHER
+}
+
+enum ActivityType {
+  ELECTRICITY
+  NATURAL_GAS
+  DIESEL
+  GASOLINE
+  STEAM
+  WATER
+  WASTE
+  BUSINESS_TRAVEL
+  FREIGHT
+  CUSTOM
+}
+
+enum RecordSourceType {
+  MANUAL
+  IMPORT
+  API
+  DOCUMENT_AI
+}
+
+enum FactorType {
+  EMISSION
+  ENERGY
+  COST
+  CUSTOM
+}
+
+enum MetricType {
+  CARBON_EMISSION
+  ENERGY_CONSUMPTION
+  ENERGY_INTENSITY
+  COST_ESTIMATE
+  CUSTOM
+}
+
+enum ReportStatus {
+  DRAFT
+  GENERATED
+  REVIEWED
+  FINALIZED
+}
+
+enum DocumentType {
+  UTILITY_BILL
+  FUEL_INVOICE
+  SPREADSHEET
+  PDF
+  IMAGE
+  OTHER
+}
+
+enum DocumentStatus {
+  UPLOADED
+  PROCESSING
+  PROCESSED
+  FAILED
+}
+
+enum AIJobType {
+  EXTRACT_ACTIVITY_DATA
+  GENERATE_REPORT_SUMMARY
+  ASK_DATA_QUESTION
+}
+
+enum AIJobStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+}
+
+model User {
+  id              String        @id @default(cuid())
+  email           String        @unique
+  passwordHash    String?
+  firstName       String?
+  lastName        String?
+  isActive        Boolean       @default(true)
+  lastLoginAt     DateTime?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  memberships     Membership[]
+  createdReports  Report[]      @relation("ReportCreatedBy")
+  createdDocs     Document[]    @relation("DocumentUploadedBy")
+  createdAIJobs   AIJob[]       @relation("AIJobCreatedBy")
+  auditLogs       AuditLog[]    @relation("AuditLogActor")
+}
+
+model Organization {
+  id              String             @id @default(cuid())
+  name            String
+  slug            String             @unique
+  industry        String?
+  country         String?
+  provinceState   String?
+  timezone        String?
+  isActive        Boolean            @default(true)
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+
+  memberships     Membership[]
+  facilities      Facility[]
+  factors         ConversionFactor[]
+  reports         Report[]
+  documents       Document[]
+  aiJobs          AIJob[]
+  auditLogs       AuditLog[]
+
+  // 缺的就是这两个
+  activityData    ActivityData[]
+  metricResults   MetricResult[]
+}
+
+model Membership {
+  id              String          @id @default(cuid())
+  userId          String
+  organizationId  String
+  role            MembershipRole
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  user            User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization    Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, organizationId])
+  @@index([organizationId])
+}
+
+model Facility {
+  id              String          @id @default(cuid())
+  organizationId  String
+  name            String
+  code            String?
+  type            FacilityType    @default(OTHER)
+  addressLine1    String?
+  addressLine2    String?
+  city            String?
+  provinceState   String?
+  country         String?
+  postalCode      String?
+  latitude        Float?
+  longitude       Float?
+  isActive        Boolean         @default(true)
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  organization    Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  assets          Asset[]
+  activityData    ActivityData[]
+  metricResults   MetricResult[]
+  reports         Report[]
+  documents       Document[]
+
+  @@index([organizationId])
+}
+
+model Asset {
+  id              String          @id @default(cuid())
+  facilityId      String
+  name            String
+  type            AssetType       @default(OTHER)
+  serialNumber    String?
+  manufacturer    String?
+  model           String?
+  notes           String?
+  isActive        Boolean         @default(true)
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  facility        Facility        @relation(fields: [facilityId], references: [id], onDelete: Cascade)
+  activityData    ActivityData[]
+
+  @@index([facilityId])
+}
+
+model ActivityData {
+  id                String            @id @default(cuid())
+  organizationId    String
+  facilityId        String?
+  assetId           String?
+  documentId        String?
+  activityType      ActivityType
+  customTypeLabel   String?
+  recordDate        DateTime
+  periodStart       DateTime?
+  periodEnd         DateTime?
+  quantity          Decimal           @db.Decimal(18, 4)
+  unit              String
+  sourceType        RecordSourceType
+  sourceReference   String?
+  notes             String?
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+
+  organization      Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  facility          Facility?         @relation(fields: [facilityId], references: [id], onDelete: SetNull)
+  asset             Asset?            @relation(fields: [assetId], references: [id], onDelete: SetNull)
+  document          Document?         @relation(fields: [documentId], references: [id], onDelete: SetNull)
+  metricResults     MetricResult[]
+
+  @@index([organizationId])
+  @@index([facilityId])
+  @@index([assetId])
+  @@index([documentId])
+  @@index([activityType])
+  @@index([recordDate])
+}
+
+model ConversionFactor {
+  id                String          @id @default(cuid())
+  organizationId    String?
+  name              String
+  type              FactorType
+  activityType      ActivityType?
+  region            String?
+  country           String?
+  unit              String
+  factorValue       Decimal         @db.Decimal(18, 8)
+  resultUnit        String
+  sourceName        String?
+  sourceReference   String?
+  effectiveFrom     DateTime?
+  effectiveTo       DateTime?
+  isDefault         Boolean         @default(false)
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+
+  organization      Organization?   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  metricResults     MetricResult[]
+
+  @@index([organizationId])
+  @@index([type])
+  @@index([activityType])
+}
+
+model MetricResult {
+  id                String            @id @default(cuid())
+  organizationId    String
+  facilityId        String?
+  activityDataId    String?
+  factorId          String?
+  metricType        MetricType
+  value             Decimal           @db.Decimal(18, 6)
+  unit              String
+  calculationDate   DateTime          @default(now())
+  periodStart       DateTime?
+  periodEnd         DateTime?
+  detailsJson       Json?
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+
+  organization      Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  facility          Facility?         @relation(fields: [facilityId], references: [id], onDelete: SetNull)
+  activityData      ActivityData?     @relation(fields: [activityDataId], references: [id], onDelete: SetNull)
+  factor            ConversionFactor? @relation(fields: [factorId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId])
+  @@index([facilityId])
+  @@index([activityDataId])
+  @@index([factorId])
+  @@index([metricType])
+  @@index([periodStart, periodEnd])
+}
+
+model Report {
+  id                String          @id @default(cuid())
+  organizationId    String
+  facilityId        String?
+  title             String
+  reportingYear     Int?
+  periodStart       DateTime?
+  periodEnd         DateTime?
+  status            ReportStatus    @default(DRAFT)
+  summary           String?
+  contentMarkdown   String?
+  generatedPdfUrl   String?
+  createdById       String?
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+
+  organization      Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  facility          Facility?       @relation(fields: [facilityId], references: [id], onDelete: SetNull)
+  createdBy         User?           @relation("ReportCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  documents         Document[]
+  aiJobs            AIJob[]
+
+  @@index([organizationId])
+  @@index([facilityId])
+  @@index([status])
+}
+
+model Document {
+  id                String          @id @default(cuid())
+  organizationId    String
+  facilityId        String?
+  reportId          String?
+  uploadedById      String?
+  fileName          String
+  fileUrl           String
+  mimeType          String?
+  fileSize          Int?
+  type              DocumentType    @default(OTHER)
+  status            DocumentStatus  @default(UPLOADED)
+  extractedText     String?
+  extractedJson     Json?
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+
+  organization      Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  facility          Facility?       @relation(fields: [facilityId], references: [id], onDelete: SetNull)
+  report            Report?         @relation(fields: [reportId], references: [id], onDelete: SetNull)
+  uploadedBy        User?           @relation("DocumentUploadedBy", fields: [uploadedById], references: [id], onDelete: SetNull)
+  activityData      ActivityData[]
+  aiJobs            AIJob[]
+
+  @@index([organizationId])
+  @@index([facilityId])
+  @@index([reportId])
+  @@index([status])
+}
+
+model AIJob {
+  id                String          @id @default(cuid())
+  organizationId    String
+  reportId          String?
+  documentId        String?
+  createdById       String?
+  jobType           AIJobType
+  status            AIJobStatus     @default(PENDING)
+  prompt            String?
+  inputJson         Json?
+  outputText        String?
+  outputJson        Json?
+  errorMessage      String?
+  startedAt         DateTime?
+  completedAt       DateTime?
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+
+  organization      Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  report            Report?         @relation(fields: [reportId], references: [id], onDelete: SetNull)
+  document          Document?       @relation(fields: [documentId], references: [id], onDelete: SetNull)
+  createdBy         User?           @relation("AIJobCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@index([organizationId])
+  @@index([reportId])
+  @@index([documentId])
+  @@index([status])
+  @@index([jobType])
+}
+
+model AuditLog {
+  id                String          @id @default(cuid())
+  organizationId    String
+  actorUserId       String?
+  entityType        String
+  entityId          String
+  action            String
+  oldValues         Json?
+  newValues         Json?
+  createdAt         DateTime        @default(now())
+
+  organization      Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  actorUser         User?           @relation("AuditLogActor", fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId])
+  @@index([actorUserId])
+  @@index([entityType, entityId])
+}
