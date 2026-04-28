@@ -1,7 +1,10 @@
 node_modules
 dist
 uploads
-.DS_Store
 .env
 .env.*
+!.env.example
 *.log
+.DS_Store
+coverage
+.nestcli.json.tmp
