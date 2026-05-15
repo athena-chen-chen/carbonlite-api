@@ -1,46 +1,27 @@
-import {
-  Body,
-  Controller,
-  Get,
-  Post,
-  UseGuards,
-  Req,
-} from '@nestjs/common';
-import { IsEmail, IsOptional, IsString, MinLength, IsIn } from 'class-validator';
-import { AuthService } from './auth.service';
+import { Body, Controller, Get, Post, UseGuards } from '@nestjs/common';
+import { AuthenticatedUser, AuthService } from './auth.service';
+import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { JwtAuthGuard } from './jwt-auth.guard';
-
-class LoginDto {
-  @IsEmail() email!: string;
-  @IsString() @MinLength(6) password!: string;
-}
-
-class RegisterDto extends LoginDto {
-  @IsOptional()
-  @IsIn(['ADMIN', 'DATA_ENTRY'])
-  role?: 'ADMIN' | 'DATA_ENTRY';
-}
+import { LoginDto } from './dto/login.dto';
+import { RegisterDto } from './dto/register.dto';
 
 @Controller('auth')
 export class AuthController {
   constructor(private readonly auth: AuthService) {}
 
-  // @Post('login')
-  // async login(@Body() dto: LoginDto) {
-  //   return this.auth.login(dto.email, dto.password);
-  // }
+  @Post('register')
+  register(@Body() dto: RegisterDto) {
+    return this.auth.register(dto);
+  }
 
-  // // dev-only, keep or later guard behind ADMIN / remove
-  // @Post('register')
-  // async register(@Body() dto: RegisterDto) {
-  //   const role = dto.role ?? 'ADMIN';
-  //   return this.auth.register(dto.email, dto.password, role);
-  // }
+  @Post('login')
+  login(@Body() dto: LoginDto) {
+    return this.auth.login(dto.email, dto.password);
+  }
 
-  // @UseGuards(JwtAuthGuard)
-  // @Get('me')
-  // me(@Req() req: any) {
-  //   // whatever JwtStrategy puts into req.user
-  //   return req.user;
-  // }
+  @UseGuards(JwtAuthGuard)
+  @Get('me')
+  me(@CurrentUser() user: AuthenticatedUser) {
+    return user;
+  }
 }

@@ -14,44 +14,43 @@ import { BulkImportActivityDataDto } from './dto/bulk-import-activity-data.dto';
 export class ActivityDataService {
   constructor(private readonly prisma: PrismaService) {}
 
-  private readonly defaultOrganizationId = 'demo-org-id';
+  async create(organizationId: string, dto: CreateActivityDataDto) {
+    await this.validateRelations(organizationId, dto);
 
-  async create(dto: CreateActivityDataDto) {
-    await this.validateRelations(dto);
-
-    const created = await this.prisma.activityData.create({
+    return this.prisma.activityData.create({
       data: {
-        organizationId: this.defaultOrganizationId,
+        organizationId,
         facilityId: dto.facilityId ?? null,
         assetId: dto.assetId ?? null,
         documentId: dto.documentId ?? null,
-        activityType: dto.activityType as ActivityType,
+        activityType: dto.activityType,
         customTypeLabel: dto.customTypeLabel ?? null,
         recordDate: new Date(dto.recordDate),
         periodStart: dto.periodStart ? new Date(dto.periodStart) : null,
         periodEnd: dto.periodEnd ? new Date(dto.periodEnd) : null,
         quantity: new Prisma.Decimal(dto.quantity),
         unit: dto.unit,
-        sourceType: dto.sourceType as RecordSourceType,
+        sourceType: dto.sourceType,
         sourceReference: dto.sourceReference ?? null,
+        sourceFileName: dto.sourceFileName ?? null,
+        sourceDocumentId: dto.sourceDocumentId ?? null,
+        importBatchId: dto.importBatchId ?? null,
         notes: dto.notes ?? null,
       },
     });
-
-    return created;
   }
 
-  async bulkImport(dto: BulkImportActivityDataDto) {
+  async bulkImport(organizationId: string, dto: BulkImportActivityDataDto) {
     if (!dto.items?.length) {
       throw new BadRequestException('No activity data items provided.');
     }
 
     for (const item of dto.items) {
-      await this.validateRelations(item);
+      await this.validateRelations(organizationId, item);
     }
 
     const rows = dto.items.map((item) => ({
-      organizationId: this.defaultOrganizationId,
+      organizationId,
       facilityId: item.facilityId ?? null,
       assetId: item.assetId ?? null,
       documentId: item.documentId ?? null,
@@ -77,13 +76,13 @@ export class ActivityDataService {
     };
   }
 
-  async findAll(query: ActivityDataQueryDto) {
+  async findAll(organizationId: string, query: ActivityDataQueryDto) {
     const page = query.page ?? 1;
     const pageSize = query.pageSize ?? 20;
     const skip = (page - 1) * pageSize;
 
     const where: Prisma.ActivityDataWhereInput = {
-      organizationId: this.defaultOrganizationId,
+      organizationId,
       ...(query.facilityId ? { facilityId: query.facilityId } : {}),
       ...(query.activityType ? { activityType: query.activityType as ActivityType } : {}),
       ...(query.dateFrom || query.dateTo
@@ -132,11 +131,11 @@ export class ActivityDataService {
     };
   }
 
-  async findOne(id: string) {
+  async findOne(organizationId: string, id: string) {
     const item = await this.prisma.activityData.findFirst({
       where: {
         id,
-        organizationId: this.defaultOrganizationId,
+        organizationId,
       },
       include: {
         facility: true,
@@ -153,9 +152,9 @@ export class ActivityDataService {
     return item;
   }
 
-  async update(id: string, dto: UpdateActivityDataDto) {
-    await this.ensureExists(id);
-    await this.validateRelations(dto);
+  async update(organizationId: string, id: string, dto: UpdateActivityDataDto) {
+    await this.ensureExists(organizationId, id);
+    await this.validateRelations(organizationId, dto);
 
     const updated = await this.prisma.activityData.update({
       where: { id },
@@ -191,8 +190,8 @@ export class ActivityDataService {
     return updated;
   }
 
-  async remove(id: string) {
-    await this.ensureExists(id);
+  async remove(organizationId: string, id: string) {
+    await this.ensureExists(organizationId, id);
 
     await this.prisma.activityData.delete({
       where: { id },
@@ -204,11 +203,11 @@ export class ActivityDataService {
     };
   }
 
-  private async ensureExists(id: string) {
+  private async ensureExists(organizationId: string, id: string) {
     const existing = await this.prisma.activityData.findFirst({
       where: {
         id,
-        organizationId: this.defaultOrganizationId,
+        organizationId,
       },
       select: { id: true },
     });
@@ -221,6 +220,7 @@ export class ActivityDataService {
   }
 
   private async validateRelations(
+    organizationId: string,
     dto: Partial<{
       facilityId?: string;
       assetId?: string;
@@ -231,7 +231,7 @@ export class ActivityDataService {
       const facility = await this.prisma.facility.findFirst({
         where: {
           id: dto.facilityId,
-          organizationId: this.defaultOrganizationId,
+          organizationId,
         },
         select: { id: true },
       });
@@ -246,7 +246,7 @@ export class ActivityDataService {
         where: {
           id: dto.assetId,
           facility: {
-            organizationId: this.defaultOrganizationId,
+            organizationId,
           },
         },
         select: { id: true },
@@ -261,7 +261,7 @@ export class ActivityDataService {
       const document = await this.prisma.document.findFirst({
         where: {
           id: dto.documentId,
-          organizationId: this.defaultOrganizationId,
+          organizationId,
         },
         select: { id: true },
       });

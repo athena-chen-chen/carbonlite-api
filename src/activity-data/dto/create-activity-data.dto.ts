@@ -7,26 +7,12 @@ import {
   IsUUID,
   MaxLength,
 } from 'class-validator';
+import { ActivityType, RecordSourceType } from '@prisma/client';
 
-export enum ActivityTypeDto {
-  ELECTRICITY = 'ELECTRICITY',
-  NATURAL_GAS = 'NATURAL_GAS',
-  DIESEL = 'DIESEL',
-  GASOLINE = 'GASOLINE',
-  STEAM = 'STEAM',
-  WATER = 'WATER',
-  WASTE = 'WASTE',
-  BUSINESS_TRAVEL = 'BUSINESS_TRAVEL',
-  FREIGHT = 'FREIGHT',
-  CUSTOM = 'CUSTOM',
-}
-
-export enum RecordSourceTypeDto {
-  MANUAL = 'MANUAL',
-  IMPORT = 'IMPORT',
-  API = 'API',
-  DOCUMENT_AI = 'DOCUMENT_AI',
-}
+export {
+  ActivityType as ActivityTypeDto,
+  RecordSourceType as RecordSourceTypeDto,
+} from '@prisma/client';
 
 export class CreateActivityDataDto {
   @IsOptional()
@@ -41,8 +27,8 @@ export class CreateActivityDataDto {
   @IsString()
   documentId?: string;
 
-  @IsEnum(ActivityTypeDto)
-  activityType!: ActivityTypeDto;
+  @IsEnum(ActivityType)
+  activityType!: ActivityType;
 
   @IsOptional()
   @IsString()
@@ -67,8 +53,8 @@ export class CreateActivityDataDto {
   @MaxLength(40)
   unit!: string;
 
-  @IsEnum(RecordSourceTypeDto)
-  sourceType!: RecordSourceTypeDto;
+  @IsEnum(RecordSourceType)
+  sourceType!: RecordSourceType;
 
   @IsOptional()
   @IsString()
@@ -79,4 +65,15 @@ export class CreateActivityDataDto {
   @IsString()
   @MaxLength(500)
   notes?: string;
+  @IsOptional()
+  @IsString()
+  sourceFileName?: string;
+
+  @IsOptional()
+  @IsString()
+  sourceDocumentId?: string;
+
+  @IsOptional()
+  @IsString()
+  importBatchId?: string;
 }

@@ -8,13 +8,18 @@ import {
   Patch,
   Post,
   Query,
+  UseGuards,
 } from '@nestjs/common';
 import { ActivityDataService } from './activity-data.service';
 import { CreateActivityDataDto } from './dto/create-activity-data.dto';
 import { UpdateActivityDataDto } from './dto/update-activity-data.dto';
 import { ActivityDataQueryDto } from './dto/activity-data-query.dto';
 import { BulkImportActivityDataDto } from './dto/bulk-import-activity-data.dto';
+import { AuthenticatedUser } from '../auth/auth.service';
+import { JwtAuthGuard } from '../auth/jwt-auth.guard';
+import { CurrentUser } from '../common/decorators/current-user.decorator';
 
+@UseGuards(JwtAuthGuard)
 @Controller('activity-data')
 export class ActivityDataController {
   constructor(
@@ -23,32 +28,43 @@ export class ActivityDataController {
   ) {}
 
   @Post()
-  create(@Body() dto: CreateActivityDataDto) {
-    return this.activityDataService.create(dto);
+  create(@CurrentUser() user: AuthenticatedUser, @Body() dto: CreateActivityDataDto) {
+    return this.activityDataService.create(user.organizationId, dto);
   }
 
   @Post('bulk-import')
-  bulkImport(@Body() dto: BulkImportActivityDataDto) {
-    return this.activityDataService.bulkImport(dto);
+  bulkImport(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() dto: BulkImportActivityDataDto,
+  ) {
+    return this.activityDataService.bulkImport(user.organizationId, dto);
   }
 
   @Get()
-  findAll(@Query() query: ActivityDataQueryDto) {
-    return this.activityDataService.findAll(query);
+  findAll(
+    @CurrentUser() user: AuthenticatedUser,
+    @Query() query: ActivityDataQueryDto,
+  ) {
+    return this.activityDataService.findAll(user.organizationId, query);
   }
 
   @Get(':id')
-  findOne(@Param('id') id: string) {
-    return this.activityDataService.findOne(id);
+  findOne(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
+    return this.activityDataService.findOne(user.organizationId, id);
   }
 
   @Patch(':id')
-  update(@Param('id') id: string, @Body() dto: UpdateActivityDataDto) {
-    return this.activityDataService.update(id, dto);
+  update(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Body() dto: UpdateActivityDataDto,
+  ) {
+    return this.activityDataService.update(user.organizationId, id, dto);
   }
 
   @Delete(':id')
-  remove(@Param('id') id: string) {
-    return this.activityDataService.remove(id);
+  remove(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
+    return this.activityDataService.remove(user.organizationId, id);
   }
+  
 }

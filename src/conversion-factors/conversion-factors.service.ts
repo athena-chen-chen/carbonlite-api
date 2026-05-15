@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -13,14 +14,13 @@ import { ConversionFactorQueryDto } from './dto/conversion-factor-query.dto';
 export class ConversionFactorsService {
   constructor(private readonly prisma: PrismaService) {}
 
-  private readonly defaultOrganizationId = 'demo-org-id';
-
-  async create(dto: CreateConversionFactorDto) {
+  async create(organizationId: string, dto: CreateConversionFactorDto) {
     this.validateDateRange(dto.effectiveFrom, dto.effectiveTo);
 
     const created = await this.prisma.conversionFactor.create({
       data: {
-        organizationId: this.defaultOrganizationId,
+        organizationId,
+        isSystemDefault: false,
         name: dto.name,
         type: dto.type as FactorType,
         activityType: dto.activityType
@@ -42,15 +42,15 @@ export class ConversionFactorsService {
     return created;
   }
 
-  async findAll(query: ConversionFactorQueryDto) {
+  async findAll(organizationId: string, query: ConversionFactorQueryDto) {
     const page = query.page ?? 1;
     const pageSize = query.pageSize ?? 20;
     const skip = (page - 1) * pageSize;
 
     const where: Prisma.ConversionFactorWhereInput = {
       OR: [
-        { organizationId: this.defaultOrganizationId },
-        { organizationId: null },
+        { isSystemDefault: true },
+        { organizationId },
       ],
       ...(query.type ? { type: query.type as FactorType } : {}),
       ...(query.activityType
@@ -88,7 +88,11 @@ export class ConversionFactorsService {
     const [items, total] = await this.prisma.$transaction([
       this.prisma.conversionFactor.findMany({
         where,
-        orderBy: [{ isDefault: 'desc' }, { createdAt: 'desc' }],
+        orderBy: [
+          { isSystemDefault: 'asc' },
+          { isDefault: 'desc' },
+          { createdAt: 'desc' },
+        ],
         skip,
         take: pageSize,
       }),
@@ -104,13 +108,13 @@ export class ConversionFactorsService {
     };
   }
 
-  async findOne(id: string) {
+  async findOne(organizationId: string, id: string) {
     const factor = await this.prisma.conversionFactor.findFirst({
       where: {
         id,
         OR: [
-          { organizationId: this.defaultOrganizationId },
-          { organizationId: null },
+          { isSystemDefault: true },
+          { organizationId },
         ],
       },
     });
@@ -122,8 +126,8 @@ export class ConversionFactorsService {
     return factor;
   }
 
-  async update(id: string, dto: UpdateConversionFactorDto) {
-    await this.ensureExists(id);
+  async update(organizationId: string, id: string, dto: UpdateConversionFactorDto) {
+    await this.ensureEditable(organizationId, id);
     this.validateDateRange(dto.effectiveFrom, dto.effectiveTo);
 
     const updated = await this.prisma.conversionFactor.update({
@@ -164,14 +168,15 @@ export class ConversionFactorsService {
             }
           : {}),
         ...(dto.isDefault !== undefined ? { isDefault: dto.isDefault } : {}),
+        isSystemDefault: false,
       },
     });
 
     return updated;
   }
 
-  async remove(id: string) {
-    await this.ensureExists(id);
+  async remove(organizationId: string, id: string) {
+    await this.ensureEditable(organizationId, id);
 
     await this.prisma.conversionFactor.delete({
       where: { id },
@@ -183,19 +188,24 @@ export class ConversionFactorsService {
     };
   }
 
-  private async ensureExists(id: string) {
+  private async ensureEditable(organizationId: string, id: string) {
     const existing = await this.prisma.conversionFactor.findFirst({
       where: {
         id,
-        OR: [
-          { organizationId: this.defaultOrganizationId },
-          { organizationId: null },
-        ],
+        OR: [{ isSystemDefault: true }, { organizationId }],
       },
-      select: { id: true },
+      select: { id: true, organizationId: true, isSystemDefault: true },
     });
 
     if (!existing) {
+      throw new NotFoundException(`ConversionFactor ${id} not found.`);
+    }
+
+    if (existing.isSystemDefault) {
+      throw new ForbiddenException('System default factors cannot be modified.');
+    }
+
+    if (existing.organizationId !== organizationId) {
       throw new NotFoundException(`ConversionFactor ${id} not found.`);
     }
 
