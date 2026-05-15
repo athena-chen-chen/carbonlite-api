@@ -18,34 +18,46 @@ async function main() {
 
   console.log('✅ Organization ready:', org.id);
 
-  const existingFactor = await prisma.conversionFactor.findFirst({
-    where: {
-      organizationId: org.id,
-      name: 'Diesel emission factor',
-      activityType: 'DIESEL',
-      unit: 'liters',
-      resultUnit: 'kgCO2e',
-    },
-  });
+  const defaultFactors = [
+    ['Diesel emission factor', 'DIESEL', 'liters', 2.68],
+    ['Gasoline emission factor', 'GASOLINE', 'liters', 2.31],
+    ['Natural gas emission factor', 'NATURAL_GAS', 'm3', 1.89],
+    ['Electricity emission factor', 'ELECTRICITY', 'kWh', 0.53],
+    ['Air travel emission factor', 'AIR_TRAVEL', 'km', 0.115],
+    ['Hotel emission factor', 'HOTEL', 'nights', 15],
+    ['Shipping emission factor', 'SHIPPING', 'ton-km', 0.09],
+  ] as const;
 
-  const factor =
-    existingFactor ??
-    (await prisma.conversionFactor.create({
-      data: {
-        organizationId: org.id,
-        name: 'Diesel emission factor',
+  for (const [name, activityType, unit, factorValue] of defaultFactors) {
+    const existingFactor = await prisma.conversionFactor.findFirst({
+      where: {
+        isSystemDefault: true,
         type: 'EMISSION',
-        activityType: 'DIESEL',
-        unit: 'liters',
-        factorValue: 2.68,
-        resultUnit: 'kgCO2e',
-        sourceName: 'Default seed',
-        sourceReference: 'seed-script',
-        isDefault: true,
+        activityType,
+        unit,
       },
-    }));
+    });
 
-  console.log('✅ Conversion factor ready:', factor.id);
+    if (!existingFactor) {
+      await prisma.conversionFactor.create({
+        data: {
+          organizationId: null,
+          name,
+          type: 'EMISSION',
+          activityType,
+          unit,
+          factorValue,
+          resultUnit: 'kgCO2e',
+          sourceName: 'CarbonLite system defaults',
+          sourceReference: 'seed-script',
+          isDefault: true,
+          isSystemDefault: true,
+        },
+      });
+    }
+  }
+
+  console.log('✅ System conversion factors ready');
 
   const existingActivity = await prisma.activityData.findFirst({
     where: {

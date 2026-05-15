@@ -6,12 +6,16 @@ import { PaginationQueryDto } from '../common/dto/pagination-query.dto';
 export class DocumentsService {
   constructor(private readonly prisma: PrismaService) {}
 
-  private readonly defaultOrganizationId = 'demo-org-id';
-
-  async upload(file: Express.Multer.File, type?: string) {
+  async upload(
+    organizationId: string,
+    userId: string,
+    file: Express.Multer.File,
+    type?: string,
+  ) {
     const created = await this.prisma.document.create({
       data: {
-        organizationId: this.defaultOrganizationId,
+        organizationId,
+        uploadedById: userId,
         fileName: file.originalname,
         fileUrl: `/uploads/${file.filename}`,
         mimeType: file.mimetype,
@@ -24,13 +28,13 @@ export class DocumentsService {
     return created;
   }
 
-  async findAll(query: PaginationQueryDto) {
+  async findAll(organizationId: string, query: PaginationQueryDto) {
     const page = query.page ?? 1;
     const pageSize = query.pageSize ?? 20;
     const skip = (page - 1) * pageSize;
 
     const where = {
-      organizationId: this.defaultOrganizationId,
+      organizationId,
     };
 
     const [items, total] = await this.prisma.$transaction([

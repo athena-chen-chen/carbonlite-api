@@ -16,10 +16,8 @@ import { matchBestFactor } from './metrics.utils';
 export class MetricsService {
   constructor(private readonly prisma: PrismaService) {}
 
-  private readonly defaultOrganizationId = 'demo-org-id';
-
-  async calculate(dto: CalculateMetricsDto) {
-    const activityRecords = await this.findTargetActivityRecords(dto);
+  async calculate(organizationId: string, dto: CalculateMetricsDto) {
+    const activityRecords = await this.findTargetActivityRecords(organizationId, dto);
 
     if (!activityRecords.length) {
       throw new BadRequestException('No activity data found for calculation.');
@@ -29,12 +27,13 @@ export class MetricsService {
 
     const factors = await this.prisma.conversionFactor.findMany({
       where: {
-        OR: [
-          { organizationId: this.defaultOrganizationId },
-          { organizationId: null },
-        ],
+        OR: [{ isSystemDefault: true }, { organizationId }],
       },
-      orderBy: [{ isDefault: 'desc' }, { createdAt: 'desc' }],
+      orderBy: [
+        { isSystemDefault: 'asc' },
+        { isDefault: 'desc' },
+        { createdAt: 'desc' },
+      ],
     });
 
     const createdResults: Array<{
@@ -57,6 +56,7 @@ export class MetricsService {
           unit: record.unit,
           factors,
           metricType,
+          organizationId,
         });
 
         if (!factor) {
@@ -71,7 +71,7 @@ export class MetricsService {
         // 关键：先删旧结果，避免重复计算后 summary 翻倍
         await this.prisma.metricResult.deleteMany({
           where: {
-            organizationId: this.defaultOrganizationId,
+            organizationId,
             activityDataId: record.id,
             metricType,
           },
@@ -79,7 +79,7 @@ export class MetricsService {
 
         const result = await this.prisma.metricResult.create({
           data: {
-            organizationId: this.defaultOrganizationId,
+            organizationId,
             facilityId: record.facilityId,
             activityDataId: record.id,
             factorId: factor.id,
@@ -116,13 +116,13 @@ export class MetricsService {
     };
   }
 
-  async findAll(query: MetricQueryDto) {
+  async findAll(organizationId: string, query: MetricQueryDto) {
     const page = query.page ?? 1;
     const pageSize = query.pageSize ?? 20;
     const skip = (page - 1) * pageSize;
 
     const where: Prisma.MetricResultWhereInput = {
-      organizationId: this.defaultOrganizationId,
+      organizationId,
       ...(query.facilityId ? { facilityId: query.facilityId } : {}),
       ...(query.metricType ? { metricType: query.metricType as MetricType } : {}),
       ...(query.periodStart || query.periodEnd
@@ -165,9 +165,9 @@ export class MetricsService {
     };
   }
 
-  async getSummary(query: MetricQueryDto) {
+  async getSummary(organizationId: string, query: MetricQueryDto) {
     const where: Prisma.MetricResultWhereInput = {
-      organizationId: this.defaultOrganizationId,
+      organizationId,
       ...(query.facilityId ? { facilityId: query.facilityId } : {}),
       ...(query.metricType ? { metricType: query.metricType as MetricType } : {}),
       ...(query.periodStart || query.periodEnd
@@ -220,19 +220,22 @@ export class MetricsService {
     };
   }
 
-  private async findTargetActivityRecords(dto: CalculateMetricsDto): Promise<ActivityData[]> {
+  private async findTargetActivityRecords(
+    organizationId: string,
+    dto: CalculateMetricsDto,
+  ): Promise<ActivityData[]> {
     if (dto.activityDataIds?.length) {
       return this.prisma.activityData.findMany({
         where: {
           id: { in: dto.activityDataIds },
-          organizationId: this.defaultOrganizationId,
+          organizationId,
         },
       });
     }
 
     return this.prisma.activityData.findMany({
       where: {
-        organizationId: this.defaultOrganizationId,
+        organizationId,
         ...(dto.facilityId ? { facilityId: dto.facilityId } : {}),
         ...(dto.periodStart || dto.periodEnd
           ? {

@@ -1,8 +1,9 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { openai } from '../openai/openai.client';
 import { readFile } from 'fs/promises';
 import { join } from 'path';
+import { ActivityType } from '@prisma/client';
 
 type ConfidenceLevel = 'high' | 'medium' | 'low';
 
@@ -33,17 +34,21 @@ type ParsedActivityWithConfidence = {
 export class DocumentExtractionService {
   constructor(private readonly prisma: PrismaService) {}
 
-  private readonly defaultOrganizationId = 'demo-org-id';
-
-  async extract(documentId: string) {
-    const document = await this.prisma.document.findUnique({
-      where: { id: documentId },
+  async extract(organizationId: string, documentId: string) {
+    const document = await this.prisma.document.findFirst({
+      where: { id: documentId, organizationId },
     });
 
     if (!document) {
       throw new NotFoundException('Document not found');
     }
 
+    await this.prisma.document.update({
+      where: { id: documentId },
+      data: { status: 'PROCESSING' },
+    });
+
+    try {
     const relativePath = document.fileUrl.replace(/^\/+/, '');
     const absolutePath = join(process.cwd(), relativePath);
 
@@ -68,7 +73,7 @@ if (document.fileName.toLowerCase().endsWith('.csv')) {
                 'You extract operational activity data from invoices, utility bills, receipts, and similar business documents. ' +
                 'Return only the requested structured data. ' +
                 'If a value is missing, return null where allowed. ' +
-                'Supported activityType values: ELECTRICITY, NATURAL_GAS, DIESEL, GASOLINE, STEAM, WATER, WASTE, BUSINESS_TRAVEL, FREIGHT, CUSTOM. ' +
+                'Supported activityType values: ELECTRICITY, NATURAL_GAS, DIESEL, GASOLINE, AIR_TRAVEL,STEAM, WATER, WASTE, BUSINESS_TRAVEL, FREIGHT, CUSTOM. ' +
                 'Prefer the most explicit quantity and unit shown in the document.',
             },
           ],
@@ -131,6 +136,7 @@ Return all rows as activities array.
                         'NATURAL_GAS',
                         'DIESEL',
                         'GASOLINE',
+                        'AIR_TRAVEL',
                         'STEAM',
                         'WATER',
                         'WASTE',
@@ -183,15 +189,30 @@ const possibleMissingRows =
 const warning = possibleMissingRows
   ? `Possible missing rows: source has ${sourceRowCount} rows, AI extracted ${extractedRowCount}.`
   : null;
+    const status = extractedRowCount > 0 ? 'REVIEW_REQUIRED' : 'NO_DATA_FOUND';
+
+    await this.prisma.document.update({
+      where: { id: documentId },
+      data: { status },
+    });
+
     return {
       documentId,
-      status: 'COMPLETED',
+      status,
       parsedActivities,
        sourceRowCount,
   extractedRowCount,
   possibleMissingRows,
   warning,
     };
+    } catch (error) {
+      await this.prisma.document.update({
+        where: { id: documentId },
+        data: { status: 'EXTRACTION_FAILED' },
+      });
+
+      throw error;
+    }
   }
 private estimateSourceRowCount(document: { fileName: string }, fileText: string): number {
   const fileName = document.fileName.toLowerCase();
@@ -232,9 +253,13 @@ private estimateSourceRowCount(document: { fileName: string }, fileText: string)
 
   return candidateLines.length;
 }
-  async confirmImport(documentId: string, activities: any[]) {
-    const document = await this.prisma.document.findUnique({
-      where: { id: documentId },
+  async confirmImport(
+    organizationId: string,
+    documentId: string,
+    activities: any[],
+  ) {
+    const document = await this.prisma.document.findFirst({
+      where: { id: documentId, organizationId },
     });
 
     if (!document) {
@@ -248,7 +273,7 @@ private estimateSourceRowCount(document: { fileName: string }, fileText: string)
 
       const row = await this.prisma.activityData.create({
         data: {
-          organizationId: this.defaultOrganizationId,
+          organizationId,
           documentId,
           activityType: normalized.activityType as any,
           recordDate: new Date(normalized.recordDate),
@@ -261,6 +286,13 @@ private estimateSourceRowCount(document: { fileName: string }, fileText: string)
       });
 
       createdIds.push(row.id);
+    }
+
+    if (createdIds.length > 0) {
+      await this.prisma.document.update({
+        where: { id: documentId },
+        data: { status: 'PROCESSED' },
+      });
     }
 
     return {
@@ -312,11 +344,11 @@ private estimateSourceRowCount(document: { fileName: string }, fileText: string)
     };
 
     if (!normalized.activityType) {
-      throw new Error('activityType is required for import.');
+      throw new BadRequestException('activityType is required for import.');
     }
 
     if (!normalized.recordDate || !this.isValidDate(normalized.recordDate)) {
-      throw new Error('recordDate is invalid or missing.');
+      throw new BadRequestException('recordDate is invalid or missing.');
     }
 
     if (
@@ -324,11 +356,11 @@ private estimateSourceRowCount(document: { fileName: string }, fileText: string)
       Number.isNaN(normalized.quantity) ||
       normalized.quantity <= 0
     ) {
-      throw new Error('quantity must be a positive number.');
+      throw new BadRequestException('quantity must be a positive number.');
     }
 
     if (!normalized.unit) {
-      throw new Error('unit is required for import.');
+      throw new BadRequestException('unit is required for import.');
     }
 
     return normalized;
@@ -377,4 +409,25 @@ private estimateSourceRowCount(document: { fileName: string }, fileText: string)
 
     return 'medium';
   }
+  private normalizeActivityType(rawType?: string | null) {
+  const value = String(rawType ?? '').trim().toUpperCase();
+
+  const map: Record<string, string> = {
+    BUSINESS_TRAVEL: 'AIR_TRAVEL',
+    FLIGHT: 'AIR_TRAVEL',
+    AIRFARE: 'AIR_TRAVEL',
+    AIR_TICKET: 'AIR_TRAVEL',
+
+    FUEL: 'DIESEL',
+    DIESEL_FUEL: 'DIESEL',
+
+    POWER: 'ELECTRICITY',
+    UTILITY_ELECTRICITY: 'ELECTRICITY',
+
+    GAS: 'NATURAL_GAS',
+    NATURALGAS: 'NATURAL_GAS',
+  };
+
+  return map[value] ?? value;
+}
 }
