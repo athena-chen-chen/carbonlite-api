@@ -1,7 +1,10 @@
 import {
   Controller,
+  Delete,
   Get,
+  HttpCode,
   Inject,
+  Param,
   Post,
   Query,
   UploadedFile,
@@ -45,5 +48,14 @@ export class DocumentsController {
     @Query() query: PaginationQueryDto,
   ) {
     return this.documentsService.findAll(user.organizationId, query);
+  }
+
+  @Delete(':id')
+  @HttpCode(204)
+  async remove(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+  ) {
+    await this.documentsService.remove(user.organizationId, id);
   }
 }

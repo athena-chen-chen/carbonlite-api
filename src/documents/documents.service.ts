@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { PaginationQueryDto } from '../common/dto/pagination-query.dto';
 
@@ -54,5 +54,27 @@ export class DocumentsService {
       total,
       totalPages: Math.ceil(total / pageSize),
     };
+  }
+
+  async remove(organizationId: string, id: string) {
+    const document = await this.prisma.document.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        organizationId: true,
+      },
+    });
+
+    if (!document) {
+      throw new NotFoundException(`Document ${id} not found.`);
+    }
+
+    if (document.organizationId !== organizationId) {
+      throw new ForbiddenException('You cannot delete this document.');
+    }
+
+    await this.prisma.document.delete({
+      where: { id },
+    });
   }
 }
