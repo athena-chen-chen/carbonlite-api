@@ -191,15 +191,42 @@ export class ActivityDataService {
   }
 
   async remove(organizationId: string, id: string) {
-    await this.ensureExists(organizationId, id);
-
-    await this.prisma.activityData.delete({
-      where: { id },
+    const result = await this.prisma.activityData.deleteMany({
+      where: {
+        id,
+        organizationId,
+      },
     });
+
+    if (result.count === 0) {
+      throw new NotFoundException(`ActivityData ${id} not found.`);
+    }
 
     return {
       id,
       deleted: true,
+      deletedCount: result.count,
+    };
+  }
+
+  async bulkDelete(organizationId: string, ids: string[]) {
+    const uniqueIds = Array.from(new Set(ids));
+
+    const result = await this.prisma.activityData.deleteMany({
+      where: {
+        id: { in: uniqueIds },
+        organizationId,
+      },
+    });
+
+    if (result.count === 0) {
+      throw new NotFoundException('No activity data records were deleted.');
+    }
+
+    return {
+      ids: uniqueIds,
+      deleted: true,
+      deletedCount: result.count,
     };
   }
 

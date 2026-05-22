@@ -3,6 +3,7 @@ import {
   Controller,
   Delete,
   Get,
+  HttpCode,
   Inject,
   Param,
   Patch,
@@ -15,6 +16,7 @@ import { CreateActivityDataDto } from './dto/create-activity-data.dto';
 import { UpdateActivityDataDto } from './dto/update-activity-data.dto';
 import { ActivityDataQueryDto } from './dto/activity-data-query.dto';
 import { BulkImportActivityDataDto } from './dto/bulk-import-activity-data.dto';
+import { BulkDeleteActivityDataDto } from './dto/bulk-delete-activity-data.dto';
 import { AuthenticatedUser } from '../auth/auth.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
@@ -38,6 +40,24 @@ export class ActivityDataController {
     @Body() dto: BulkImportActivityDataDto,
   ) {
     return this.activityDataService.bulkImport(user.organizationId, dto);
+  }
+
+  @Post('bulk-delete')
+  @HttpCode(200)
+  bulkDelete(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() dto: BulkDeleteActivityDataDto,
+  ) {
+    return this.activityDataService.bulkDelete(user.organizationId, dto.ids);
+  }
+
+  @Delete('bulk-delete')
+  @HttpCode(200)
+  bulkDeleteWithDelete(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() dto: BulkDeleteActivityDataDto,
+  ) {
+    return this.activityDataService.bulkDelete(user.organizationId, dto.ids);
   }
 
   @Get()
