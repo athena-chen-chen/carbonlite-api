@@ -266,6 +266,14 @@ model ConversionFactor {
   resultUnit        String
   sourceName        String?
   sourceReference   String?
+  sourceAuthority   String?
+  sourceDocument    String?
+  sourceYear        Int?
+  sourceUrl         String?
+  methodology       String?
+  confidenceLevel   String?
+  verified          Boolean         @default(false)
+  notes             String?
   effectiveFrom     DateTime?
   effectiveTo       DateTime?
   isDefault         Boolean         @default(false)

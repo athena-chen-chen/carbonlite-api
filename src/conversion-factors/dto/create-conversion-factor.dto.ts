@@ -1,6 +1,7 @@
 import {
   IsBoolean,
   IsEnum,
+  IsInt,
   IsNumber,
   IsOptional,
   IsString,
@@ -57,6 +58,38 @@ export class CreateConversionFactorDto {
   @IsString()
   @MaxLength(200)
   sourceReference?: string;
+
+  @IsOptional()
+  @IsString()
+  sourceAuthority?: string;
+
+  @IsOptional()
+  @IsString()
+  sourceDocument?: string;
+
+  @IsOptional()
+  @IsInt()
+  sourceYear?: number;
+
+  @IsOptional()
+  @IsString()
+  sourceUrl?: string;
+
+  @IsOptional()
+  @IsString()
+  methodology?: string;
+
+  @IsOptional()
+  @IsString()
+  confidenceLevel?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  verified?: boolean;
+
+  @IsOptional()
+  @IsString()
+  notes?: string;
 
   @IsOptional()
   @IsString()

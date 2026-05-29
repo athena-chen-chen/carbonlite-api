@@ -33,6 +33,14 @@ export class ConversionFactorsService {
         resultUnit: dto.resultUnit,
         sourceName: dto.sourceName ?? null,
         sourceReference: dto.sourceReference ?? null,
+        sourceAuthority: dto.sourceAuthority ?? null,
+        sourceDocument: dto.sourceDocument ?? null,
+        sourceYear: dto.sourceYear ?? null,
+        sourceUrl: dto.sourceUrl ?? null,
+        methodology: dto.methodology ?? null,
+        confidenceLevel: dto.confidenceLevel ?? null,
+        verified: dto.verified ?? false,
+        notes: dto.notes ?? null,
         effectiveFrom: dto.effectiveFrom ? new Date(dto.effectiveFrom) : null,
         effectiveTo: dto.effectiveTo ? new Date(dto.effectiveTo) : null,
         isDefault: dto.isDefault ?? false,
@@ -155,6 +163,26 @@ export class ConversionFactorsService {
         ...(dto.sourceReference !== undefined
           ? { sourceReference: dto.sourceReference || null }
           : {}),
+        ...(dto.sourceAuthority !== undefined
+          ? { sourceAuthority: dto.sourceAuthority || null }
+          : {}),
+        ...(dto.sourceDocument !== undefined
+          ? { sourceDocument: dto.sourceDocument || null }
+          : {}),
+        ...(dto.sourceYear !== undefined
+          ? { sourceYear: dto.sourceYear ?? null }
+          : {}),
+        ...(dto.sourceUrl !== undefined
+          ? { sourceUrl: dto.sourceUrl || null }
+          : {}),
+        ...(dto.methodology !== undefined
+          ? { methodology: dto.methodology || null }
+          : {}),
+        ...(dto.confidenceLevel !== undefined
+          ? { confidenceLevel: dto.confidenceLevel || null }
+          : {}),
+        ...(dto.verified !== undefined ? { verified: dto.verified } : {}),
+        ...(dto.notes !== undefined ? { notes: dto.notes || null } : {}),
         ...(dto.effectiveFrom !== undefined
           ? {
               effectiveFrom: dto.effectiveFrom
