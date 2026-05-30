@@ -281,6 +281,8 @@ private estimateSourceRowCount(document: { fileName: string }, fileText: string)
           unit: normalized.unit,
           sourceType: 'DOCUMENT_AI' as any,
           sourceReference: normalized.sourceReference ?? null,
+          sourceDocumentId: documentId,
+          sourceFileName: document.fileName,
           notes: normalized.notes ?? null,
         },
       });

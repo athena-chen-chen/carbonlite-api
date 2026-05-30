@@ -97,24 +97,56 @@ export class DocumentsService {
   }
 
   async remove(organizationId: string, id: string) {
-    const document = await this.prisma.document.findUnique({
-      where: { id },
-      select: {
-        id: true,
-        organizationId: true,
-      },
-    });
+    return this.prisma.$transaction(async (tx) => {
+      const document = await tx.document.findUnique({
+        where: { id },
+        select: {
+          id: true,
+          organizationId: true,
+        },
+      });
 
-    if (!document) {
-      throw new NotFoundException(`Document ${id} not found.`);
-    }
+      if (!document) {
+        throw new NotFoundException(`Document ${id} not found.`);
+      }
 
-    if (document.organizationId !== organizationId) {
-      throw new ForbiddenException('You cannot delete this document.');
-    }
+      if (document.organizationId !== organizationId) {
+        throw new ForbiddenException('You cannot delete this document.');
+      }
 
-    await this.prisma.document.delete({
-      where: { id },
+      const relatedActivities = await tx.activityData.findMany({
+        where: {
+          organizationId,
+          sourceDocumentId: id,
+        },
+        select: { id: true },
+      });
+      const relatedActivityIds = relatedActivities.map((item) => item.id);
+
+      if (relatedActivityIds.length > 0) {
+        await tx.metricResult.deleteMany({
+          where: {
+            organizationId,
+            activityDataId: { in: relatedActivityIds },
+          },
+        });
+      }
+
+      const deletedActivityRecords = await tx.activityData.deleteMany({
+        where: {
+          organizationId,
+          sourceDocumentId: id,
+        },
+      });
+
+      await tx.document.delete({
+        where: { id },
+      });
+
+      return {
+        deletedDocument: true,
+        deletedActivityRecords: deletedActivityRecords.count,
+      };
     });
   }
 }

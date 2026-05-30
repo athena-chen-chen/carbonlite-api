@@ -2,7 +2,6 @@ import {
   Controller,
   Delete,
   Get,
-  HttpCode,
   Inject,
   Param,
   Post,
@@ -75,12 +74,11 @@ export class DocumentsController {
   }
 
   @Delete(':id')
-  @HttpCode(204)
   async remove(
     @CurrentUser() user: AuthenticatedUser,
     @Param('id') id: string,
   ) {
-    await this.documentsService.remove(user.organizationId, id);
+    return this.documentsService.remove(user.organizationId, id);
   }
 
   private escapeFileName(fileName: string) {

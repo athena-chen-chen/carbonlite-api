@@ -63,6 +63,9 @@ export class ActivityDataService {
       unit: item.unit,
       sourceType: item.sourceType as RecordSourceType,
       sourceReference: item.sourceReference ?? null,
+      sourceFileName: item.sourceFileName ?? null,
+      sourceDocumentId: item.sourceDocumentId ?? null,
+      importBatchId: item.importBatchId ?? null,
       notes: item.notes ?? null,
     }));
 
