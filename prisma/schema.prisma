@@ -92,6 +92,7 @@ enum DocumentStatus {
   NO_DATA_FOUND
   REVIEW_REQUIRED
   EXTRACTION_FAILED
+  FILE_MISSING
 }
 
 enum AIJobType {

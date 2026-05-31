@@ -1,7 +1,13 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { openai } from '../openai/openai.client';
-import { readFile } from 'fs/promises';
+import { access, readFile } from 'fs/promises';
+import { constants } from 'fs';
 import { join } from 'path';
 import { ActivityType } from '@prisma/client';
 
@@ -32,6 +38,8 @@ type ParsedActivityWithConfidence = {
 
 @Injectable()
 export class DocumentExtractionService {
+  private readonly logger = new Logger(DocumentExtractionService.name);
+
   constructor(private readonly prisma: PrismaService) {}
 
   async extract(organizationId: string, documentId: string) {
@@ -48,43 +56,67 @@ export class DocumentExtractionService {
       data: { status: 'PROCESSING' },
     });
 
-    try {
     const relativePath = document.fileUrl.replace(/^\/+/, '');
     const absolutePath = join(process.cwd(), relativePath);
+    this.logger.log(
+      `[DocumentExtraction] retry extract documentId=${documentId} filePath=${absolutePath} storageKey=${document.fileUrl}`,
+    );
 
-    const fileBuffer = await readFile(absolutePath);
-    const mimeType = document.mimeType || 'application/octet-stream';
-    const base64 = fileBuffer.toString('base64');
+    try {
+      this.validateSupportedFile(document);
 
-let localText = '';
+      try {
+        await access(absolutePath, constants.R_OK);
+        this.logger.log(
+          `[DocumentExtraction] file exists documentId=${documentId} filePath=${absolutePath}`,
+        );
+      } catch {
+        this.logger.warn(
+          `[DocumentExtraction] file missing documentId=${documentId} filePath=${absolutePath} storageKey=${document.fileUrl}`,
+        );
+        await this.prisma.document.update({
+          where: { id: documentId },
+          data: { status: 'FILE_MISSING' },
+        });
+        throw new NotFoundException(
+          'Uploaded file is no longer available. Please upload it again.',
+        );
+      }
 
-if (document.fileName.toLowerCase().endsWith('.csv')) {
-  localText = fileBuffer.toString('utf-8');
-}
-    const response = await openai.responses.create({
-      model: 'gpt-4o-mini',
-      input: [
-        {
-          role: 'system',
-          content: [
-            {
-              type: 'input_text',
-              text:
-                'You extract operational activity data from invoices, utility bills, receipts, and similar business documents. ' +
-                'Return only the requested structured data. ' +
-                'If a value is missing, return null where allowed. ' +
-                'Supported activityType values: ELECTRICITY, NATURAL_GAS, DIESEL, GASOLINE, AIR_TRAVEL,STEAM, WATER, WASTE, BUSINESS_TRAVEL, FREIGHT, CUSTOM. ' +
-                'Prefer the most explicit quantity and unit shown in the document.',
-            },
-          ],
-        },
-        {
-          role: 'user',
-          content: [
-            {
-              type: 'input_text',
-              text:
-                `
+      const fileBuffer = await readFile(absolutePath);
+      const mimeType = document.mimeType || 'application/octet-stream';
+      const base64 = fileBuffer.toString('base64');
+
+      let localText = '';
+
+      if (document.fileName.toLowerCase().endsWith('.csv')) {
+        localText = fileBuffer.toString('utf-8');
+      }
+
+      const response = await openai.responses.create({
+        model: 'gpt-4o-mini',
+        input: [
+          {
+            role: 'system',
+            content: [
+              {
+                type: 'input_text',
+                text:
+                  'You extract operational activity data from invoices, utility bills, receipts, and similar business documents. ' +
+                  'Return only the requested structured data. ' +
+                  'If a value is missing, return null where allowed. ' +
+                  'Supported activityType values: ELECTRICITY, NATURAL_GAS, DIESEL, GASOLINE, AIR_TRAVEL,STEAM, WATER, WASTE, BUSINESS_TRAVEL, FREIGHT, CUSTOM. ' +
+                  'Prefer the most explicit quantity and unit shown in the document.',
+              },
+            ],
+          },
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'input_text',
+                text:
+                  `
 Extract ALL activity records from the document.
 
 IMPORTANT:
@@ -103,119 +135,196 @@ For CSV or tabular data:
 
 Return all rows as activities array.
 ` +
-                'If the document contains a fuel invoice, prefer DIESEL or GASOLINE. ' +
-                'If it contains a utility bill, prefer ELECTRICITY or NATURAL_GAS.',
-            },
-            {
-              type: 'input_file',
-              filename: document.fileName,
-              file_data: `data:${mimeType};base64,${base64}`,
-            },
-          ],
-        },
-      ],
-      text: {
-        format: {
-          type: 'json_schema',
-          name: 'activity_extraction',
-          strict: true,
-          schema: {
-            type: 'object',
-            additionalProperties: false,
-            properties: {
-              activities: {
-                type: 'array',
-                items: {
-                  type: 'object',
-                  additionalProperties: false,
-                  properties: {
-                    activityType: {
-                      type: 'string',
-                      enum: [
-                        'ELECTRICITY',
-                        'NATURAL_GAS',
-                        'DIESEL',
-                        'GASOLINE',
-                        'AIR_TRAVEL',
-                        'STEAM',
-                        'WATER',
-                        'WASTE',
-                        'BUSINESS_TRAVEL',
-                        'FREIGHT',
-                        'CUSTOM',
-                      ],
+                  'If the document contains a fuel invoice, prefer DIESEL or GASOLINE. ' +
+                  'If it contains a utility bill, prefer ELECTRICITY or NATURAL_GAS.',
+              },
+              {
+                type: 'input_file',
+                filename: document.fileName,
+                file_data: `data:${mimeType};base64,${base64}`,
+              },
+            ],
+          },
+        ],
+        text: {
+          format: {
+            type: 'json_schema',
+            name: 'activity_extraction',
+            strict: true,
+            schema: {
+              type: 'object',
+              additionalProperties: false,
+              properties: {
+                activities: {
+                  type: 'array',
+                  items: {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                      activityType: {
+                        type: 'string',
+                        enum: [
+                          'ELECTRICITY',
+                          'NATURAL_GAS',
+                          'DIESEL',
+                          'GASOLINE',
+                          'AIR_TRAVEL',
+                          'STEAM',
+                          'WATER',
+                          'WASTE',
+                          'BUSINESS_TRAVEL',
+                          'FREIGHT',
+                          'CUSTOM',
+                        ],
+                      },
+                      recordDate: { type: 'string' },
+                      quantity: { type: 'number' },
+                      unit: { type: 'string' },
+                      sourceReference: {
+                        anyOf: [{ type: 'string' }, { type: 'null' }],
+                      },
+                      notes: {
+                        anyOf: [{ type: 'string' }, { type: 'null' }],
+                      },
                     },
-                    recordDate: { type: 'string' },
-                    quantity: { type: 'number' },
-                    unit: { type: 'string' },
-                    sourceReference: {
-                      anyOf: [{ type: 'string' }, { type: 'null' }],
-                    },
-                    notes: {
-                      anyOf: [{ type: 'string' }, { type: 'null' }],
-                    },
+                    required: [
+                      'activityType',
+                      'recordDate',
+                      'quantity',
+                      'unit',
+                      'sourceReference',
+                      'notes',
+                    ],
                   },
-                  required: [
-                    'activityType',
-                    'recordDate',
-                    'quantity',
-                    'unit',
-                    'sourceReference',
-                    'notes',
-                  ],
                 },
               },
+              required: ['activities'],
             },
-            required: ['activities'],
           },
         },
-      },
-    });
+      });
 
-    const rawText = response.output_text;
-    const parsed = JSON.parse(rawText) as { activities: ParsedActivityRaw[] };
+      const rawText = response.output_text;
+      const parsed = JSON.parse(rawText) as { activities: ParsedActivityRaw[] };
 
-    const parsedActivities = (parsed.activities ?? []).map((activity) =>
-      this.addConfidence(activity),
-    );
-const sourceRowCount = localText
-  ? this.estimateSourceRowCount(document, localText)
-  : 0;
+      const parsedActivities = (parsed.activities ?? []).map((activity) =>
+        this.addConfidence(activity),
+      );
+      const sourceRowCount = localText
+        ? this.estimateSourceRowCount(document, localText)
+        : 0;
 
-const extractedRowCount = parsedActivities.length;
-const possibleMissingRows =
-  sourceRowCount > 0 && extractedRowCount < sourceRowCount;
+      const extractedRowCount = parsedActivities.length;
+      const possibleMissingRows =
+        sourceRowCount > 0 && extractedRowCount < sourceRowCount;
 
-const warning = possibleMissingRows
-  ? `Possible missing rows: source has ${sourceRowCount} rows, AI extracted ${extractedRowCount}.`
-  : null;
-    const status = extractedRowCount > 0 ? 'REVIEW_REQUIRED' : 'NO_DATA_FOUND';
+      const warning = possibleMissingRows
+        ? `Possible missing rows: source has ${sourceRowCount} rows, AI extracted ${extractedRowCount}.`
+        : null;
+      const status = extractedRowCount > 0 ? 'REVIEW_REQUIRED' : 'NO_DATA_FOUND';
 
-    await this.prisma.document.update({
-      where: { id: documentId },
-      data: { status },
-    });
+      await this.prisma.document.update({
+        where: { id: documentId },
+        data: { status },
+      });
 
-    return {
-      documentId,
-      status,
-      parsedActivities,
-       sourceRowCount,
-  extractedRowCount,
-  possibleMissingRows,
-  warning,
-    };
+      if (extractedRowCount === 0) {
+        this.logger.warn(
+          `[DocumentExtraction] no data found documentId=${documentId} sourceRowCount=${sourceRowCount}`,
+        );
+      } else {
+        this.logger.log(
+          `[DocumentExtraction] completed documentId=${documentId} extractedRowCount=${extractedRowCount} sourceRowCount=${sourceRowCount}`,
+        );
+      }
+
+      return {
+        documentId,
+        status,
+        parsedActivities,
+        sourceRowCount,
+        extractedRowCount,
+        possibleMissingRows,
+        warning,
+      };
     } catch (error) {
+      if (error instanceof NotFoundException) {
+        throw error;
+      }
+
+      if (error instanceof BadRequestException) {
+        await this.prisma.document.update({
+          where: { id: documentId },
+          data: { status: 'EXTRACTION_FAILED' },
+        });
+        throw error;
+      }
+
+      this.logger.error(
+        `[DocumentExtraction] extraction failed documentId=${documentId} filePath=${absolutePath} storageKey=${document.fileUrl} reason=${
+          error instanceof Error ? error.message : String(error)
+        }`,
+        error instanceof Error ? error.stack : undefined,
+      );
+
       await this.prisma.document.update({
         where: { id: documentId },
         data: { status: 'EXTRACTION_FAILED' },
       });
 
-      throw error;
+      throw new BadRequestException(
+        'Extraction failed. Please try again or upload the file again.',
+      );
     }
   }
-private estimateSourceRowCount(document: { fileName: string }, fileText: string): number {
-  const fileName = document.fileName.toLowerCase();
+
+  private validateSupportedFile(document: {
+    id: string;
+    fileName: string;
+    mimeType: string | null;
+  }) {
+    const fileName = document.fileName.toLowerCase();
+    const mimeType = document.mimeType?.toLowerCase() ?? '';
+    const supportedExtensions = [
+      '.pdf',
+      '.csv',
+      '.xlsx',
+      '.xls',
+      '.png',
+      '.jpg',
+      '.jpeg',
+    ];
+    const supportedMimeTypes = [
+      'application/pdf',
+      'text/csv',
+      'application/csv',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'application/vnd.ms-excel',
+      'image/png',
+      'image/jpeg',
+    ];
+
+    const hasSupportedExtension = supportedExtensions.some((extension) =>
+      fileName.endsWith(extension),
+    );
+    const hasSupportedMimeType =
+      Boolean(mimeType) &&
+      supportedMimeTypes.some((supportedMimeType) =>
+        mimeType.startsWith(supportedMimeType),
+      );
+
+    if (!hasSupportedExtension && !hasSupportedMimeType) {
+      this.logger.warn(
+        `[DocumentExtraction] unsupported file type documentId=${document.id} fileName=${document.fileName} mimeType=${document.mimeType}`,
+      );
+      throw new BadRequestException(
+        'Unsupported file type. Please upload a PDF, CSV, XLSX, PNG, or JPG file.',
+      );
+    }
+  }
+
+  private estimateSourceRowCount(document: { fileName: string }, fileText: string): number {
+    const fileName = document.fileName.toLowerCase();
 
   // First pass: CSV
   if (fileName.endsWith('.csv')) {
