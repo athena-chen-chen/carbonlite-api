@@ -24,7 +24,7 @@ export class MetricsController {
 
   @Post('calculate')
   calculate(@CurrentUser() user: AuthenticatedUser, @Body() dto: CalculateMetricsDto) {
-    return this.metricsService.calculate(user.organizationId, dto);
+    return this.metricsService.calculate(user.organizationId, dto, user.id);
   }
 
   @Get()

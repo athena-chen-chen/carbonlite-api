@@ -108,6 +108,19 @@ enum AIJobStatus {
   FAILED
 }
 
+enum FeedbackType {
+  BUG
+  SUGGESTION
+  QUESTION
+  OTHER
+}
+
+enum FeedbackStatus {
+  NEW
+  REVIEWED
+  CLOSED
+}
+
 model User {
   id              String        @id @default(cuid())
   organizationId  String
@@ -125,7 +138,8 @@ model User {
   createdReports  Report[]      @relation("ReportCreatedBy")
   createdDocs     Document[]    @relation("DocumentUploadedBy")
   createdAIJobs   AIJob[]       @relation("AIJobCreatedBy")
-  auditLogs       AuditLog[]    @relation("AuditLogActor")
+  auditLogs       AuditLog[]    @relation("AuditLogUser")
+  activityEvents  UserActivityEvent[] @relation("UserActivityEventUser")
 
   @@index([organizationId])
 }
@@ -150,6 +164,8 @@ model Organization {
   documents       Document[]
   aiJobs          AIJob[]
   auditLogs       AuditLog[]
+  feedback        Feedback[]
+  activityEvents  UserActivityEvent[]
 
   // 缺的就是这两个
   activityData    ActivityData[]
@@ -409,19 +425,70 @@ model AIJob {
 
 model AuditLog {
   id                String          @id @default(cuid())
-  organizationId    String
-  actorUserId       String?
-  entityType        String
-  entityId          String
+  organizationId    String?
+  userId            String?
   action            String
-  oldValues         Json?
-  newValues         Json?
+  entityType        String
+  entityId          String?
+  description       String?
+  oldValue          Json?
+  newValue          Json?
+  page              String?
+  ipAddress         String?
+  userAgent         String?
   createdAt         DateTime        @default(now())
 
-  organization      Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  actorUser         User?           @relation("AuditLogActor", fields: [actorUserId], references: [id], onDelete: SetNull)
+  organization      Organization?   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user              User?           @relation("AuditLogUser", fields: [userId], references: [id], onDelete: SetNull)
 
   @@index([organizationId])
-  @@index([actorUserId])
+  @@index([userId])
+  @@index([action])
+  @@index([entityType])
   @@index([entityType, entityId])
+  @@index([createdAt])
+}
+
+model Feedback {
+  id              String          @id @default(cuid())
+  type            FeedbackType
+  intent          String          @db.Text
+  message         String          @db.Text
+  email           String?
+  page            String?
+  url             String?
+  organizationId  String
+  userAgent       String?
+  status          FeedbackStatus  @default(NEW)
+  createdAt       DateTime        @default(now())
+
+  organization    Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model UserActivityEvent {
+  id             String   @id @default(cuid())
+  organizationId String?
+  userId         String?
+  eventName      String
+  page           String?
+  url            String?
+  entityType     String?
+  entityId       String?
+  metadata       Json?
+  userAgent      String?
+  createdAt      DateTime @default(now())
+
+  organization   Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user           User?         @relation("UserActivityEventUser", fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId])
+  @@index([userId])
+  @@index([eventName])
+  @@index([page])
+  @@index([entityType, entityId])
+  @@index([createdAt])
 }

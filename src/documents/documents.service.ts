@@ -3,10 +3,16 @@ import { access } from 'fs/promises';
 import { join } from 'path';
 import { PrismaService } from '../prisma/prisma.service';
 import { PaginationQueryDto } from '../common/dto/pagination-query.dto';
+import { AuditLogService } from '../audit-log/audit-log.service';
+import { ActivityTrackingService } from '../activity-tracking/activity-tracking.service';
 
 @Injectable()
 export class DocumentsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly auditLog: AuditLogService,
+    private readonly activityTracking: ActivityTrackingService,
+  ) {}
 
   async upload(
     organizationId: string,
@@ -24,6 +30,29 @@ export class DocumentsService {
         fileSize: file.size,
         type: (type as any) ?? 'OTHER',
         status: 'UPLOADED',
+      },
+    });
+
+    await this.auditLog.log({
+      organizationId,
+      userId,
+      action: 'UPLOAD_DOCUMENT',
+      entityType: 'Document',
+      entityId: created.id,
+      description: `Uploaded document ${created.fileName}`,
+      newValue: created,
+    });
+
+    await this.activityTracking.track({
+      organizationId,
+      userId,
+      eventName: 'DOCUMENT_UPLOADED',
+      entityType: 'Document',
+      entityId: created.id,
+      metadata: {
+        fileType: created.type,
+        mimeType: created.mimeType,
+        fileSize: created.fileSize,
       },
     });
 
@@ -58,7 +87,12 @@ export class DocumentsService {
     };
   }
 
-  async getDownloadFile(organizationId: string, id: string) {
+  async getDownloadFile(
+    organizationId: string,
+    id: string,
+    userId?: string,
+    userAgent?: string,
+  ) {
     const document = await this.prisma.document.findUnique({
       where: { id },
       select: {
@@ -89,6 +123,18 @@ export class DocumentsService {
       );
     }
 
+    await this.activityTracking.track({
+      organizationId,
+      userId,
+      eventName: 'DOCUMENT_VIEWED',
+      entityType: 'Document',
+      entityId: id,
+      metadata: {
+        mimeType: document.mimeType,
+      },
+      userAgent,
+    });
+
     return {
       fileName: document.fileName,
       mimeType: document.mimeType || 'application/octet-stream',
@@ -96,14 +142,10 @@ export class DocumentsService {
     };
   }
 
-  async remove(organizationId: string, id: string) {
+  async remove(organizationId: string, id: string, userId?: string) {
     return this.prisma.$transaction(async (tx) => {
       const document = await tx.document.findUnique({
         where: { id },
-        select: {
-          id: true,
-          organizationId: true,
-        },
       });
 
       if (!document) {
@@ -141,6 +183,36 @@ export class DocumentsService {
 
       await tx.document.delete({
         where: { id },
+      });
+
+      await tx.auditLog.create({
+        data: {
+          organizationId,
+          userId: userId ?? null,
+          action: 'DELETE_DOCUMENT',
+          entityType: 'Document',
+          entityId: id,
+          description: `Deleted document ${document.fileName}`,
+          oldValue: JSON.parse(
+            JSON.stringify({
+              document,
+              deletedActivityRecords: deletedActivityRecords.count,
+            }),
+          ),
+        },
+      });
+
+      await tx.userActivityEvent.create({
+        data: {
+          organizationId,
+          userId: userId ?? null,
+          eventName: 'DOCUMENT_DELETED',
+          entityType: 'Document',
+          entityId: id,
+          metadata: {
+            deletedActivityRecords: deletedActivityRecords.count,
+          },
+        },
       });
 
       return {

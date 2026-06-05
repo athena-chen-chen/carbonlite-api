@@ -31,7 +31,7 @@ export class ActivityDataController {
 
   @Post()
   create(@CurrentUser() user: AuthenticatedUser, @Body() dto: CreateActivityDataDto) {
-    return this.activityDataService.create(user.organizationId, dto);
+    return this.activityDataService.create(user.organizationId, dto, user.id);
   }
 
   @Post('bulk-import')
@@ -39,7 +39,7 @@ export class ActivityDataController {
     @CurrentUser() user: AuthenticatedUser,
     @Body() dto: BulkImportActivityDataDto,
   ) {
-    return this.activityDataService.bulkImport(user.organizationId, dto);
+    return this.activityDataService.bulkImport(user.organizationId, dto, user.id);
   }
 
   @Post('bulk-delete')
@@ -48,7 +48,7 @@ export class ActivityDataController {
     @CurrentUser() user: AuthenticatedUser,
     @Body() dto: BulkDeleteActivityDataDto,
   ) {
-    return this.activityDataService.bulkDelete(user.organizationId, dto.ids);
+    return this.activityDataService.bulkDelete(user.organizationId, dto.ids, user.id);
   }
 
   @Delete('bulk-delete')
@@ -57,7 +57,7 @@ export class ActivityDataController {
     @CurrentUser() user: AuthenticatedUser,
     @Body() dto: BulkDeleteActivityDataDto,
   ) {
-    return this.activityDataService.bulkDelete(user.organizationId, dto.ids);
+    return this.activityDataService.bulkDelete(user.organizationId, dto.ids, user.id);
   }
 
   @Get()
@@ -79,12 +79,12 @@ export class ActivityDataController {
     @Param('id') id: string,
     @Body() dto: UpdateActivityDataDto,
   ) {
-    return this.activityDataService.update(user.organizationId, id, dto);
+    return this.activityDataService.update(user.organizationId, id, dto, user.id);
   }
 
   @Delete(':id')
   remove(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
-    return this.activityDataService.remove(user.organizationId, id);
+    return this.activityDataService.remove(user.organizationId, id, user.id);
   }
   
 }

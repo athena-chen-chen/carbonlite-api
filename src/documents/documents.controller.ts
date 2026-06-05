@@ -13,6 +13,7 @@ import {
   Res,
   StreamableFile,
   UseGuards,
+  Headers,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { createReadStream } from 'fs';
@@ -57,11 +58,14 @@ export class DocumentsController {
   async download(
     @CurrentUser() user: AuthenticatedUser,
     @Param('id') id: string,
+    @Headers('user-agent') userAgent: string | undefined,
     @Res({ passthrough: true }) response: Response,
   ) {
     const file = await this.documentsService.getDownloadFile(
       user.organizationId,
       id,
+      user.id,
+      userAgent,
     );
 
     response.set({
@@ -78,7 +82,7 @@ export class DocumentsController {
     @CurrentUser() user: AuthenticatedUser,
     @Param('id') id: string,
   ) {
-    return this.documentsService.remove(user.organizationId, id);
+    return this.documentsService.remove(user.organizationId, id, user.id);
   }
 
   private escapeFileName(fileName: string) {

@@ -11,12 +11,16 @@ import { PrismaService } from '../prisma/prisma.service';
 import { CalculateMetricsDto } from './dto/calculate-metrics.dto';
 import { MetricQueryDto } from './dto/metric-query.dto';
 import { matchBestFactor } from './metrics.utils';
+import { AuditLogService } from '../audit-log/audit-log.service';
 
 @Injectable()
 export class MetricsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly auditLog: AuditLogService,
+  ) {}
 
-  async calculate(organizationId: string, dto: CalculateMetricsDto) {
+  async calculate(organizationId: string, dto: CalculateMetricsDto, userId?: string) {
     const activityRecords = await this.findTargetActivityRecords(organizationId, dto);
 
     if (!activityRecords.length) {
@@ -110,10 +114,25 @@ export class MetricsService {
       }
     }
 
-    return {
+    const response = {
       count: createdResults.length,
       items: createdResults,
     };
+
+    await this.auditLog.log({
+      organizationId,
+      userId,
+      action: 'GENERATE_METRICS_SUMMARY',
+      entityType: 'MetricResult',
+      description: `Generated metrics summary with ${createdResults.length} metric results`,
+      newValue: {
+        request: dto,
+        count: createdResults.length,
+        activityRecordCount: activityRecords.length,
+      },
+    });
+
+    return response;
   }
 
   async findAll(organizationId: string, query: MetricQueryDto) {

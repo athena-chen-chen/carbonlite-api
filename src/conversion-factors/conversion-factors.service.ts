@@ -9,12 +9,18 @@ import { PrismaService } from '../prisma/prisma.service';
 import { CreateConversionFactorDto } from './dto/create-conversion-factor.dto';
 import { UpdateConversionFactorDto } from './dto/update-conversion-factor.dto';
 import { ConversionFactorQueryDto } from './dto/conversion-factor-query.dto';
+import { AuditLogService } from '../audit-log/audit-log.service';
+import { ActivityTrackingService } from '../activity-tracking/activity-tracking.service';
 
 @Injectable()
 export class ConversionFactorsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly auditLog: AuditLogService,
+    private readonly activityTracking: ActivityTrackingService,
+  ) {}
 
-  async create(organizationId: string, dto: CreateConversionFactorDto) {
+  async create(organizationId: string, dto: CreateConversionFactorDto, userId?: string) {
     this.validateDateRange(dto.effectiveFrom, dto.effectiveTo);
 
     const created = await this.prisma.conversionFactor.create({
@@ -44,6 +50,29 @@ export class ConversionFactorsService {
         effectiveFrom: dto.effectiveFrom ? new Date(dto.effectiveFrom) : null,
         effectiveTo: dto.effectiveTo ? new Date(dto.effectiveTo) : null,
         isDefault: dto.isDefault ?? false,
+      },
+    });
+
+    await this.auditLog.log({
+      organizationId,
+      userId,
+      action: 'CREATE_CONVERSION_FACTOR',
+      entityType: 'ConversionFactor',
+      entityId: created.id,
+      description: `Created conversion factor ${created.name}`,
+      newValue: created,
+    });
+
+    await this.activityTracking.track({
+      organizationId,
+      userId,
+      eventName: 'CONVERSION_FACTOR_CREATED',
+      entityType: 'ConversionFactor',
+      entityId: created.id,
+      metadata: {
+        activityType: created.activityType,
+        inputUnit: created.unit,
+        type: created.type,
       },
     });
 
@@ -134,8 +163,8 @@ export class ConversionFactorsService {
     return factor;
   }
 
-  async update(organizationId: string, id: string, dto: UpdateConversionFactorDto) {
-    await this.ensureEditable(organizationId, id);
+  async update(organizationId: string, id: string, dto: UpdateConversionFactorDto, userId?: string) {
+    const existing = await this.ensureEditable(organizationId, id);
     this.validateDateRange(dto.effectiveFrom, dto.effectiveTo);
 
     const updated = await this.prisma.conversionFactor.update({
@@ -200,14 +229,61 @@ export class ConversionFactorsService {
       },
     });
 
+    await this.auditLog.log({
+      organizationId,
+      userId,
+      action: 'UPDATE_CONVERSION_FACTOR',
+      entityType: 'ConversionFactor',
+      entityId: id,
+      description: `Updated conversion factor ${updated.name}`,
+      oldValue: existing,
+      newValue: updated,
+    });
+
+    await this.activityTracking.track({
+      organizationId,
+      userId,
+      eventName: 'CONVERSION_FACTOR_UPDATED',
+      entityType: 'ConversionFactor',
+      entityId: id,
+      metadata: {
+        changedFields: Object.keys(dto),
+        activityType: updated.activityType,
+        inputUnit: updated.unit,
+      },
+    });
+
     return updated;
   }
 
-  async remove(organizationId: string, id: string) {
-    await this.ensureEditable(organizationId, id);
+  async remove(organizationId: string, id: string, userId?: string) {
+    const existing = await this.ensureEditable(organizationId, id);
 
     await this.prisma.conversionFactor.delete({
       where: { id },
+    });
+
+    await this.auditLog.log({
+      organizationId,
+      userId,
+      action: 'DELETE_CONVERSION_FACTOR',
+      entityType: 'ConversionFactor',
+      entityId: id,
+      description: `Deleted conversion factor ${existing.name}`,
+      oldValue: existing,
+    });
+
+    await this.activityTracking.track({
+      organizationId,
+      userId,
+      eventName: 'CONVERSION_FACTOR_DELETED',
+      entityType: 'ConversionFactor',
+      entityId: id,
+      metadata: {
+        activityType: existing.activityType,
+        inputUnit: existing.unit,
+        type: existing.type,
+      },
     });
 
     return {
@@ -222,7 +298,6 @@ export class ConversionFactorsService {
         id,
         OR: [{ isSystemDefault: true }, { organizationId }],
       },
-      select: { id: true, organizationId: true, isSystemDefault: true },
     });
 
     if (!existing) {

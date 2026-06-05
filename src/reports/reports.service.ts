@@ -4,15 +4,21 @@ import { PrismaService } from '../prisma/prisma.service';
 import { CreateReportDto } from './dto/create-report.dto';
 import { ReportQueryDto } from './dto/report-query.dto';
 import { UpdateReportDto } from './dto/update-report.dto';
+import { AuditLogService } from '../audit-log/audit-log.service';
+import { ActivityTrackingService } from '../activity-tracking/activity-tracking.service';
 
 @Injectable()
 export class ReportsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly auditLog: AuditLogService,
+    private readonly activityTracking: ActivityTrackingService,
+  ) {}
 
   async create(organizationId: string, userId: string, dto: CreateReportDto) {
     await this.validateFacility(organizationId, dto.facilityId);
 
-    return this.prisma.report.create({
+    const created = await this.prisma.report.create({
       data: {
         organizationId,
         createdById: userId,
@@ -23,6 +29,31 @@ export class ReportsService {
         periodEnd: dto.periodEnd ? new Date(dto.periodEnd) : null,
       },
     });
+
+    await this.auditLog.log({
+      organizationId,
+      userId,
+      action: 'GENERATE_REPORT',
+      entityType: 'Report',
+      entityId: created.id,
+      description: `Generated report ${created.title}`,
+      newValue: created,
+    });
+
+    await this.activityTracking.track({
+      organizationId,
+      userId,
+      eventName: 'REPORT_GENERATED',
+      entityType: 'Report',
+      entityId: created.id,
+      metadata: {
+        reportingYear: created.reportingYear,
+        periodStart: created.periodStart,
+        periodEnd: created.periodEnd,
+      },
+    });
+
+    return created;
   }
 
   async findAll(organizationId: string, query: ReportQueryDto) {

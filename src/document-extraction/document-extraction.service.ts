@@ -10,6 +10,9 @@ import { access, readFile } from 'fs/promises';
 import { constants } from 'fs';
 import { join } from 'path';
 import { ActivityType } from '@prisma/client';
+import { AuditLogService } from '../audit-log/audit-log.service';
+import { captureBackendException } from '../sentry';
+import { ActivityTrackingService } from '../activity-tracking/activity-tracking.service';
 
 type ConfidenceLevel = 'high' | 'medium' | 'low';
 
@@ -39,10 +42,16 @@ type ParsedActivityWithConfidence = {
 @Injectable()
 export class DocumentExtractionService {
   private readonly logger = new Logger(DocumentExtractionService.name);
+  private readonly fileMissingMessage =
+    'Uploaded file is no longer available. Please upload it again.';
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly auditLog: AuditLogService,
+    private readonly activityTracking: ActivityTrackingService,
+  ) {}
 
-  async extract(organizationId: string, documentId: string) {
+  async extract(organizationId: string, documentId: string, userId?: string) {
     const document = await this.prisma.document.findFirst({
       where: { id: documentId, organizationId },
     });
@@ -54,6 +63,17 @@ export class DocumentExtractionService {
     await this.prisma.document.update({
       where: { id: documentId },
       data: { status: 'PROCESSING' },
+    });
+
+    await this.trackExtractionEvent({
+      organizationId,
+      userId,
+      documentId,
+      eventName: 'DOCUMENT_EXTRACT_STARTED',
+      metadata: {
+        statusBefore: document.status,
+        fileType: document.type,
+      },
     });
 
     const relativePath = document.fileUrl.replace(/^\/+/, '');
@@ -78,9 +98,19 @@ export class DocumentExtractionService {
           where: { id: documentId },
           data: { status: 'FILE_MISSING' },
         });
-        throw new NotFoundException(
-          'Uploaded file is no longer available. Please upload it again.',
-        );
+        await this.trackExtractionEvent({
+          organizationId,
+          userId,
+          documentId,
+          eventName: 'DOCUMENT_EXTRACT_FAILED',
+          metadata: {
+            reason: 'FILE_MISSING',
+          },
+        });
+        throw new NotFoundException({
+          message: this.fileMissingMessage,
+          status: 'FILE_MISSING',
+        });
       }
 
       const fileBuffer = await readFile(absolutePath);
@@ -238,7 +268,7 @@ Return all rows as activities array.
         );
       }
 
-      return {
+      const extractionResponse = {
         documentId,
         status,
         parsedActivities,
@@ -247,15 +277,84 @@ Return all rows as activities array.
         possibleMissingRows,
         warning,
       };
+
+      await this.auditLog.log({
+        organizationId,
+        userId,
+        action: 'EXTRACT_DOCUMENT',
+        entityType: 'Document',
+        entityId: documentId,
+        description:
+          status === 'NO_DATA_FOUND'
+            ? 'Extracted document but no emissions data was detected'
+            : 'Extracted document',
+        newValue: {
+          status,
+          sourceRowCount,
+          extractedRowCount,
+          possibleMissingRows,
+        },
+      });
+
+      await this.trackExtractionEvent({
+        organizationId,
+        userId,
+        documentId,
+        eventName:
+          extractedRowCount > 0
+            ? 'DOCUMENT_EXTRACT_SUCCEEDED'
+            : 'DOCUMENT_EXTRACT_FAILED',
+        metadata: {
+          status,
+          sourceRowCount,
+          extractedRowCount,
+          possibleMissingRows,
+          reason: extractedRowCount > 0 ? undefined : 'NO_DATA_FOUND',
+        },
+      });
+
+      return extractionResponse;
     } catch (error) {
       if (error instanceof NotFoundException) {
         throw error;
+      }
+
+      if (this.isMissingFileError(error)) {
+        this.logger.warn(
+          `[DocumentExtraction] file missing during read documentId=${documentId} filePath=${absolutePath} storageKey=${document.fileUrl}`,
+        );
+        await this.prisma.document.update({
+          where: { id: documentId },
+          data: { status: 'FILE_MISSING' },
+        });
+        await this.trackExtractionEvent({
+          organizationId,
+          userId,
+          documentId,
+          eventName: 'DOCUMENT_EXTRACT_FAILED',
+          metadata: {
+            reason: 'FILE_MISSING',
+          },
+        });
+        throw new NotFoundException({
+          message: this.fileMissingMessage,
+          status: 'FILE_MISSING',
+        });
       }
 
       if (error instanceof BadRequestException) {
         await this.prisma.document.update({
           where: { id: documentId },
           data: { status: 'EXTRACTION_FAILED' },
+        });
+        await this.trackExtractionEvent({
+          organizationId,
+          userId,
+          documentId,
+          eventName: 'DOCUMENT_EXTRACT_FAILED',
+          metadata: {
+            reason: 'BAD_REQUEST',
+          },
         });
         throw error;
       }
@@ -266,10 +365,27 @@ Return all rows as activities array.
         }`,
         error instanceof Error ? error.stack : undefined,
       );
+      captureBackendException(error, {
+        operation: 'document-extraction',
+        documentId,
+        organizationId,
+        filePath: absolutePath,
+        storageKey: document.fileUrl,
+      });
 
       await this.prisma.document.update({
         where: { id: documentId },
         data: { status: 'EXTRACTION_FAILED' },
+      });
+
+      await this.trackExtractionEvent({
+        organizationId,
+        userId,
+        documentId,
+        eventName: 'DOCUMENT_EXTRACT_FAILED',
+        metadata: {
+          reason: 'UNEXPECTED_ERROR',
+        },
       });
 
       throw new BadRequestException(
@@ -323,6 +439,11 @@ Return all rows as activities array.
     }
   }
 
+  private isMissingFileError(error: unknown) {
+    const code = (error as { code?: string } | null)?.code;
+    return code === 'ENOENT' || code === 'ENOTDIR';
+  }
+
   private estimateSourceRowCount(document: { fileName: string }, fileText: string): number {
     const fileName = document.fileName.toLowerCase();
 
@@ -366,6 +487,7 @@ Return all rows as activities array.
     organizationId: string,
     documentId: string,
     activities: any[],
+    userId?: string,
   ) {
     const document = await this.prisma.document.findFirst({
       where: { id: documentId, organizationId },
@@ -404,12 +526,41 @@ Return all rows as activities array.
         where: { id: documentId },
         data: { status: 'PROCESSED' },
       });
+
+      await this.activityTracking.track({
+        organizationId,
+        userId,
+        eventName: 'ACTIVITY_RECORD_IMPORTED',
+        entityType: 'Document',
+        entityId: documentId,
+        metadata: {
+          count: createdIds.length,
+          sourceType: 'DOCUMENT_AI',
+        },
+      });
     }
 
     return {
       count: createdIds.length,
       createdIds,
     };
+  }
+
+  private async trackExtractionEvent(input: {
+    organizationId: string;
+    userId?: string;
+    documentId: string;
+    eventName: string;
+    metadata?: Record<string, unknown>;
+  }) {
+    await this.activityTracking.track({
+      organizationId: input.organizationId,
+      userId: input.userId,
+      eventName: input.eventName,
+      entityType: 'Document',
+      entityId: input.documentId,
+      metadata: input.metadata,
+    });
   }
 
   private addConfidence(activity: ParsedActivityRaw): ParsedActivityWithConfidence {

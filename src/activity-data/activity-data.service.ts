@@ -9,15 +9,21 @@ import { CreateActivityDataDto } from './dto/create-activity-data.dto';
 import { UpdateActivityDataDto } from './dto/update-activity-data.dto';
 import { ActivityDataQueryDto } from './dto/activity-data-query.dto';
 import { BulkImportActivityDataDto } from './dto/bulk-import-activity-data.dto';
+import { AuditLogService } from '../audit-log/audit-log.service';
+import { ActivityTrackingService } from '../activity-tracking/activity-tracking.service';
 
 @Injectable()
 export class ActivityDataService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly auditLog: AuditLogService,
+    private readonly activityTracking: ActivityTrackingService,
+  ) {}
 
-  async create(organizationId: string, dto: CreateActivityDataDto) {
+  async create(organizationId: string, dto: CreateActivityDataDto, userId?: string) {
     await this.validateRelations(organizationId, dto);
 
-    return this.prisma.activityData.create({
+    const created = await this.prisma.activityData.create({
       data: {
         organizationId,
         facilityId: dto.facilityId ?? null,
@@ -38,9 +44,34 @@ export class ActivityDataService {
         notes: dto.notes ?? null,
       },
     });
+
+    await this.auditLog.log({
+      organizationId,
+      userId,
+      action: 'CREATE_ACTIVITY_RECORD',
+      entityType: 'ActivityData',
+      entityId: created.id,
+      description: 'Created activity record',
+      newValue: created,
+    });
+
+    await this.activityTracking.track({
+      organizationId,
+      userId,
+      eventName: 'ACTIVITY_RECORD_CREATED',
+      entityType: 'ActivityData',
+      entityId: created.id,
+      metadata: {
+        activityType: created.activityType,
+        unit: created.unit,
+        sourceType: created.sourceType,
+      },
+    });
+
+    return created;
   }
 
-  async bulkImport(organizationId: string, dto: BulkImportActivityDataDto) {
+  async bulkImport(organizationId: string, dto: BulkImportActivityDataDto, userId?: string) {
     if (!dto.items?.length) {
       throw new BadRequestException('No activity data items provided.');
     }
@@ -71,6 +102,17 @@ export class ActivityDataService {
 
     const result = await this.prisma.activityData.createMany({
       data: rows,
+    });
+
+    await this.activityTracking.track({
+      organizationId,
+      userId,
+      eventName: 'ACTIVITY_RECORD_IMPORTED',
+      entityType: 'ActivityData',
+      metadata: {
+        count: result.count,
+        sourceType: rows[0]?.sourceType ?? null,
+      },
     });
 
     return {
@@ -155,8 +197,8 @@ export class ActivityDataService {
     return item;
   }
 
-  async update(organizationId: string, id: string, dto: UpdateActivityDataDto) {
-    await this.ensureExists(organizationId, id);
+  async update(organizationId: string, id: string, dto: UpdateActivityDataDto, userId?: string) {
+    const existing = await this.ensureExists(organizationId, id);
     await this.validateRelations(organizationId, dto);
 
     const updated = await this.prisma.activityData.update({
@@ -190,10 +232,33 @@ export class ActivityDataService {
       },
     });
 
+    await this.auditLog.log({
+      organizationId,
+      userId,
+      action: 'UPDATE_ACTIVITY_RECORD',
+      entityType: 'ActivityData',
+      entityId: id,
+      description: 'Updated activity record',
+      oldValue: existing,
+      newValue: updated,
+    });
+
+    await this.activityTracking.track({
+      organizationId,
+      userId,
+      eventName: 'ACTIVITY_RECORD_UPDATED',
+      entityType: 'ActivityData',
+      entityId: id,
+      metadata: {
+        changedFields: Object.keys(dto),
+      },
+    });
+
     return updated;
   }
 
-  async remove(organizationId: string, id: string) {
+  async remove(organizationId: string, id: string, userId?: string) {
+    const existing = await this.ensureExists(organizationId, id);
     const result = await this.prisma.activityData.deleteMany({
       where: {
         id,
@@ -205,6 +270,28 @@ export class ActivityDataService {
       throw new NotFoundException(`ActivityData ${id} not found.`);
     }
 
+    await this.auditLog.log({
+      organizationId,
+      userId,
+      action: 'DELETE_ACTIVITY_RECORD',
+      entityType: 'ActivityData',
+      entityId: id,
+      description: 'Deleted activity record',
+      oldValue: existing,
+    });
+
+    await this.activityTracking.track({
+      organizationId,
+      userId,
+      eventName: 'ACTIVITY_RECORD_DELETED',
+      entityType: 'ActivityData',
+      entityId: id,
+      metadata: {
+        activityType: existing.activityType,
+        unit: existing.unit,
+      },
+    });
+
     return {
       id,
       deleted: true,
@@ -212,8 +299,14 @@ export class ActivityDataService {
     };
   }
 
-  async bulkDelete(organizationId: string, ids: string[]) {
+  async bulkDelete(organizationId: string, ids: string[], userId?: string) {
     const uniqueIds = Array.from(new Set(ids));
+    const existing = await this.prisma.activityData.findMany({
+      where: {
+        id: { in: uniqueIds },
+        organizationId,
+      },
+    });
 
     const result = await this.prisma.activityData.deleteMany({
       where: {
@@ -225,6 +318,27 @@ export class ActivityDataService {
     if (result.count === 0) {
       throw new NotFoundException('No activity data records were deleted.');
     }
+
+    await this.auditLog.log({
+      organizationId,
+      userId,
+      action: 'BULK_DELETE_ACTIVITY_RECORDS',
+      entityType: 'ActivityData',
+      description: `Bulk deleted ${result.count} activity records`,
+      oldValue: existing,
+      newValue: { ids: uniqueIds, deletedCount: result.count },
+    });
+
+    await this.activityTracking.track({
+      organizationId,
+      userId,
+      eventName: 'ACTIVITY_RECORD_BULK_DELETED',
+      entityType: 'ActivityData',
+      metadata: {
+        requestedCount: uniqueIds.length,
+        deletedCount: result.count,
+      },
+    });
 
     return {
       ids: uniqueIds,
@@ -239,7 +353,6 @@ export class ActivityDataService {
         id,
         organizationId,
       },
-      select: { id: true },
     });
 
     if (!existing) {

@@ -31,7 +31,7 @@ export class ConversionFactorsController {
     @CurrentUser() user: AuthenticatedUser,
     @Body() dto: CreateConversionFactorDto,
   ) {
-    return this.conversionFactorsService.create(user.organizationId, dto);
+    return this.conversionFactorsService.create(user.organizationId, dto, user.id);
   }
 
   @Get()
@@ -53,11 +53,11 @@ export class ConversionFactorsController {
     @Param('id') id: string,
     @Body() dto: UpdateConversionFactorDto,
   ) {
-    return this.conversionFactorsService.update(user.organizationId, id, dto);
+    return this.conversionFactorsService.update(user.organizationId, id, dto, user.id);
   }
 
   @Delete(':id')
   remove(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
-    return this.conversionFactorsService.remove(user.organizationId, id);
+    return this.conversionFactorsService.remove(user.organizationId, id, user.id);
   }
 }

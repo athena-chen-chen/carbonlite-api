@@ -8,6 +8,8 @@ import bcrypt from 'bcryptjs';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { RegisterDto } from './dto/register.dto';
+import { AuditLogService } from '../audit-log/audit-log.service';
+import { ActivityTrackingService } from '../activity-tracking/activity-tracking.service';
 
 export type AuthenticatedUser = {
   id: string;
@@ -27,6 +29,8 @@ export class AuthService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly jwt: JwtService,
+    private readonly auditLog: AuditLogService,
+    private readonly activityTracking: ActivityTrackingService,
   ) {}
 
   async register(dto: RegisterDto) {
@@ -53,6 +57,17 @@ export class AuthService {
             organization: true,
           },
         });
+      });
+
+      await this.activityTracking.track({
+        organizationId: user.organizationId,
+        userId: user.id,
+        eventName: 'USER_REGISTERED',
+        entityType: 'User',
+        entityId: user.id,
+        metadata: {
+          organizationId: user.organizationId,
+        },
       });
 
       return this.buildAuthResponse(user);
@@ -89,7 +104,45 @@ export class AuthService {
       data: { lastLoginAt: new Date() },
     });
 
+    await this.auditLog.log({
+      organizationId: user.organizationId,
+      userId: user.id,
+      action: 'LOGIN',
+      entityType: 'Authentication',
+      entityId: user.id,
+      description: 'User logged in',
+    });
+
+    await this.activityTracking.track({
+      organizationId: user.organizationId,
+      userId: user.id,
+      eventName: 'USER_LOGGED_IN',
+      entityType: 'User',
+      entityId: user.id,
+    });
+
     return this.buildAuthResponse(user);
+  }
+
+  async logout(user: AuthenticatedUser) {
+    await this.auditLog.log({
+      organizationId: user.organizationId,
+      userId: user.id,
+      action: 'LOGOUT',
+      entityType: 'Authentication',
+      entityId: user.id,
+      description: 'User logged out',
+    });
+
+    await this.activityTracking.track({
+      organizationId: user.organizationId,
+      userId: user.id,
+      eventName: 'USER_LOGGED_OUT',
+      entityType: 'User',
+      entityId: user.id,
+    });
+
+    return { loggedOut: true };
   }
 
   async validateJwtPayload(payload: JwtPayload): Promise<AuthenticatedUser> {

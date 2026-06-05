@@ -16,7 +16,7 @@ export class DocumentExtractionController {
 
   @Post('extract')
   extract(@CurrentUser() user: AuthenticatedUser, @Body() dto: ExtractDocumentDto) {
-    return this.service.extract(user.organizationId, dto.documentId);
+    return this.service.extract(user.organizationId, dto.documentId, user.id);
   }
 
   @Post('confirm')
@@ -28,6 +28,7 @@ export class DocumentExtractionController {
       user.organizationId,
       dto.documentId,
       dto.activities,
+      user.id,
     );
   }
 }

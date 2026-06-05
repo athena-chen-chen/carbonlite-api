@@ -109,6 +109,7 @@ describe('Document extraction retry (e2e)', () => {
     expect(response.body.message).toBe(
       'Uploaded file is no longer available. Please upload it again.',
     );
+    expect(response.body.status).toBe('FILE_MISSING');
 
     const updated = await prisma.document.findUnique({ where: { id: document.id } });
     expect(updated?.status).toBe('FILE_MISSING');
