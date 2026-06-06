@@ -10,6 +10,7 @@ export type TestUser = {
     email: string;
     organizationId: string;
     organizationName: string;
+    role: 'ADMIN' | 'USER';
   };
   password: string;
 };

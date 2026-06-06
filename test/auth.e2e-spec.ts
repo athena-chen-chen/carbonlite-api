@@ -39,6 +39,7 @@ describe('Auth MVP (e2e)', () => {
     expect(response.body.user).toMatchObject({
       email: `register-${testRunId}@carbonlite-e2e.test`,
       organizationName: `${testRunId} Register Org`,
+      role: 'USER',
     });
     expect(response.body.user.organizationId).toEqual(expect.any(String));
   });

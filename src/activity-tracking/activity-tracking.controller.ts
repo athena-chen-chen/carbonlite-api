@@ -5,6 +5,9 @@ import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { ActivityTrackingService } from './activity-tracking.service';
 import { ActivityEventQueryDto } from './dto/activity-event-query.dto';
 import { CreateActivityEventDto } from './dto/create-activity-event.dto';
+import { Roles } from '../auth/decorators/roles.decorator';
+import { RolesGuard } from '../auth/guards/roles.guard';
+import { UserRole } from '@prisma/client';
 
 @UseGuards(JwtAuthGuard)
 @Controller('activity-events')
@@ -31,6 +34,8 @@ export class ActivityTrackingController {
   }
 
   @Get()
+  @Roles(UserRole.ADMIN)
+  @UseGuards(RolesGuard)
   findAll(
     @CurrentUser() user: AuthenticatedUser,
     @Query() query: ActivityEventQueryDto,
@@ -39,6 +44,8 @@ export class ActivityTrackingController {
   }
 
   @Get('summary')
+  @Roles(UserRole.ADMIN)
+  @UseGuards(RolesGuard)
   summary(
     @CurrentUser() user: AuthenticatedUser,
     @Query() query: ActivityEventQueryDto,

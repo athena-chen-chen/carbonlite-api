@@ -5,7 +5,7 @@ import {
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import bcrypt from 'bcryptjs';
-import { Prisma } from '@prisma/client';
+import { Prisma, UserRole } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { RegisterDto } from './dto/register.dto';
 import { AuditLogService } from '../audit-log/audit-log.service';
@@ -16,6 +16,7 @@ export type AuthenticatedUser = {
   email: string;
   organizationId: string;
   organizationName: string;
+  role: UserRole;
 };
 
 type JwtPayload = {
@@ -52,6 +53,7 @@ export class AuthService {
             email,
             passwordHash,
             organizationId: organization.id,
+            role: UserRole.USER,
           },
           include: {
             organization: true,
@@ -185,6 +187,7 @@ export class AuthService {
       email: user.email,
       organizationId: user.organizationId,
       organizationName: user.organization.name,
+      role: user.role,
     };
   }
 

@@ -68,6 +68,10 @@ describe('Feedback (e2e)', () => {
       organizationName: `${testRunId} List Org B`,
       email: `list-b-${testRunId}@carbonlite-e2e.test`,
     });
+    await prisma.user.update({
+      where: { id: userA.user.id },
+      data: { role: 'ADMIN' },
+    });
 
     await prisma.feedback.createMany({
       data: [
@@ -120,6 +124,10 @@ describe('Feedback (e2e)', () => {
     const userB = await createTestUser(app, {
       organizationName: `${testRunId} Status Org B`,
       email: `status-b-${testRunId}@carbonlite-e2e.test`,
+    });
+    await prisma.user.updateMany({
+      where: { id: { in: [userA.user.id, userB.user.id] } },
+      data: { role: 'ADMIN' },
     });
 
     const feedback = await prisma.feedback.create({

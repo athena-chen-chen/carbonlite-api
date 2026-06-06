@@ -5,6 +5,20 @@ const prisma = new PrismaClient();
 async function main() {
   console.log('🌱 Seeding database...');
 
+  const adminUpgrade = await prisma.user.updateMany({
+    where: {
+      email: {
+        equals: 'carbonliteai@gmail.com',
+        mode: 'insensitive',
+      },
+    },
+    data: {
+      role: 'ADMIN',
+    },
+  });
+
+  console.log(`✅ Admin role ready: ${adminUpgrade.count} account(s) updated`);
+
   const org = await prisma.organization.upsert({
     where: { slug: 'demo-org' },
     update: {},

@@ -149,6 +149,10 @@ describe('Audit Log (e2e)', () => {
       organizationName: `${testRunId} List Org`,
       email: `list-${testRunId}@carbonlite-e2e.test`,
     });
+    await prisma.user.update({
+      where: { id: user.user.id },
+      data: { role: 'ADMIN' },
+    });
     const log = await prisma.auditLog.create({
       data: {
         organizationId: user.user.organizationId,

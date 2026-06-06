@@ -143,6 +143,10 @@ describe('User activity events (e2e)', () => {
       organizationName: `${testRunId} Report Org B`,
       email: `report-b-${testRunId}@carbonlite-e2e.test`,
     });
+    await prisma.user.update({
+      where: { id: userA.user.id },
+      data: { role: 'ADMIN' },
+    });
 
     await request(app.getHttpServer())
       .post('/api/activity-events')

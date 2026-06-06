@@ -16,6 +16,9 @@ import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { AuditLogService } from './audit-log.service';
 import { AuditLogQueryDto } from './dto/audit-log-query.dto';
 import { CreateClientAuditLogDto } from './dto/create-client-audit-log.dto';
+import { Roles } from '../auth/decorators/roles.decorator';
+import { RolesGuard } from '../auth/guards/roles.guard';
+import { UserRole } from '@prisma/client';
 
 @UseGuards(JwtAuthGuard)
 @Controller('audit-logs')
@@ -23,6 +26,8 @@ export class AuditLogController {
   constructor(private readonly auditLogService: AuditLogService) {}
 
   @Get()
+  @Roles(UserRole.ADMIN)
+  @UseGuards(RolesGuard)
   findAll(
     @CurrentUser() user: AuthenticatedUser,
     @Query() query: AuditLogQueryDto,
@@ -31,6 +36,8 @@ export class AuditLogController {
   }
 
   @Get(':id')
+  @Roles(UserRole.ADMIN)
+  @UseGuards(RolesGuard)
   findOne(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
     return this.auditLogService.findOne(user.organizationId, id);
   }

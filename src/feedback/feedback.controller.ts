@@ -16,6 +16,9 @@ import { CreateFeedbackDto } from './dto/create-feedback.dto';
 import { FeedbackQueryDto } from './dto/feedback-query.dto';
 import { UpdateFeedbackStatusDto } from './dto/update-feedback-status.dto';
 import { FeedbackService } from './feedback.service';
+import { Roles } from '../auth/decorators/roles.decorator';
+import { RolesGuard } from '../auth/guards/roles.guard';
+import { UserRole } from '@prisma/client';
 
 @UseGuards(JwtAuthGuard)
 @Controller('feedback')
@@ -32,6 +35,8 @@ export class FeedbackController {
   }
 
   @Get()
+  @Roles(UserRole.ADMIN)
+  @UseGuards(RolesGuard)
   findAll(
     @CurrentUser() user: AuthenticatedUser,
     @Query() query: FeedbackQueryDto,
@@ -40,6 +45,8 @@ export class FeedbackController {
   }
 
   @Patch(':id/status')
+  @Roles(UserRole.ADMIN)
+  @UseGuards(RolesGuard)
   updateStatus(
     @CurrentUser() user: AuthenticatedUser,
     @Param('id') id: string,
