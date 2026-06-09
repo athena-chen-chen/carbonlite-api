@@ -1,4 +1,5 @@
 import { INestApplication } from '@nestjs/common';
+import * as Sentry from '@sentry/nestjs';
 import request from 'supertest';
 import { openai } from '../src/openai/openai.client';
 import { PrismaService } from '../src/prisma/prisma.service';
@@ -10,10 +11,32 @@ import {
   uniqueTestId,
 } from './helpers/factories';
 
+jest.mock('@sentry/nestjs', () => {
+  const actual = jest.requireActual('@sentry/nestjs');
+  const captureException = jest.fn();
+  return {
+    ...actual,
+    withScope: jest.fn((callback) =>
+      callback({
+        setTag: jest.fn(),
+        setUser: jest.fn(),
+        setContext: jest.fn(),
+      }),
+    ),
+    captureException,
+    __mockCaptureException: captureException,
+    addBreadcrumb: jest.fn(),
+  };
+});
+
 describe('Document extraction retry (e2e)', () => {
   let app: INestApplication;
   let prisma: PrismaService;
   const testRunId = uniqueTestId('extraction-retry');
+  const originalSentryDsn = process.env.SENTRY_DSN;
+  const mockCaptureException = (
+    Sentry as typeof Sentry & { __mockCaptureException: jest.Mock }
+  ).__mockCaptureException;
 
   beforeAll(async () => {
     const e2e = await createE2eApp();
@@ -23,6 +46,12 @@ describe('Document extraction retry (e2e)', () => {
 
   afterEach(() => {
     jest.restoreAllMocks();
+    mockCaptureException.mockClear();
+    if (originalSentryDsn === undefined) {
+      delete process.env.SENTRY_DSN;
+    } else {
+      process.env.SENTRY_DSN = originalSentryDsn;
+    }
   });
 
   afterAll(async () => {
@@ -158,5 +187,31 @@ describe('Document extraction retry (e2e)', () => {
     expect(response.body.message).toBe(
       'Unsupported file type. Please upload a PDF, CSV, XLSX, PNG, or JPG file.',
     );
+  });
+
+  it('captures an unexpected extraction failure and returns a friendly error', async () => {
+    process.env.SENTRY_DSN = 'https://public@example.test/1';
+    const user = await createTestUser(app, {
+      organizationName: `${testRunId} Failure Org`,
+      email: `failure-${testRunId}@carbonlite-e2e.test`,
+    });
+    const document = await uploadTestDocument(
+      user.accessToken,
+      `${testRunId}-failure.csv`,
+    );
+    jest
+      .spyOn(openai.responses, 'create')
+      .mockRejectedValue(new Error('Extraction provider unavailable'));
+
+    const response = await request(app.getHttpServer())
+      .post('/api/document-extraction/extract')
+      .set(authHeader(user.accessToken))
+      .send({ documentId: document.id })
+      .expect(500);
+
+    expect(response.body.message).toBe(
+      'Extraction failed. Please try again or upload the file again.',
+    );
+    expect(mockCaptureException).toHaveBeenCalledWith(expect.any(Error));
   });
 });

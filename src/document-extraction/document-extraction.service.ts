@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   Injectable,
+  InternalServerErrorException,
   Logger,
   NotFoundException,
 } from '@nestjs/common';
@@ -11,8 +12,12 @@ import { constants } from 'fs';
 import { join } from 'path';
 import { ActivityType } from '@prisma/client';
 import { AuditLogService } from '../audit-log/audit-log.service';
-import { captureBackendException } from '../sentry';
 import { ActivityTrackingService } from '../activity-tracking/activity-tracking.service';
+import {
+  addAppBreadcrumb,
+  captureAppError,
+  markAppErrorCaptured,
+} from '../common/monitoring/capture-app-error';
 
 type ConfidenceLevel = 'high' | 'medium' | 'low';
 
@@ -51,7 +56,12 @@ export class DocumentExtractionService {
     private readonly activityTracking: ActivityTrackingService,
   ) {}
 
-  async extract(organizationId: string, documentId: string, userId?: string) {
+  async extract(
+    organizationId: string,
+    documentId: string,
+    userId?: string,
+    userEmail?: string,
+  ) {
     const document = await this.prisma.document.findFirst({
       where: { id: documentId, organizationId },
     });
@@ -71,6 +81,23 @@ export class DocumentExtractionService {
       documentId,
       eventName: 'DOCUMENT_EXTRACT_STARTED',
       metadata: {
+        statusBefore: document.status,
+        fileType: document.type,
+      },
+    });
+    addAppBreadcrumb('Document extraction started', {
+      feature: 'document-extraction',
+      operation:
+        document.status === 'EXTRACTION_FAILED' ||
+        document.status === 'NO_DATA_FOUND'
+          ? 'retry-extract'
+          : 'extract',
+      organizationId,
+      entityType: 'Document',
+      entityId: documentId,
+      metadata: {
+        route: '/api/document-extraction/extract',
+        method: 'POST',
         statusBefore: document.status,
         fileType: document.type,
       },
@@ -105,6 +132,16 @@ export class DocumentExtractionService {
           eventName: 'DOCUMENT_EXTRACT_FAILED',
           metadata: {
             reason: 'FILE_MISSING',
+          },
+        });
+        addAppBreadcrumb('Uploaded file missing during extraction', {
+          feature: 'document-extraction',
+          operation: 'file-missing',
+          organizationId,
+          entityType: 'Document',
+          entityId: documentId,
+          metadata: {
+            storageKey: document.fileUrl,
           },
         });
         throw new NotFoundException({
@@ -262,6 +299,17 @@ Return all rows as activities array.
         this.logger.warn(
           `[DocumentExtraction] no data found documentId=${documentId} sourceRowCount=${sourceRowCount}`,
         );
+        addAppBreadcrumb('No emissions data found', {
+          feature: 'document-extraction',
+          operation: 'no-data-found',
+          organizationId,
+          entityType: 'Document',
+          entityId: documentId,
+          metadata: {
+            sourceRowCount,
+            extractedRowCount,
+          },
+        });
       } else {
         this.logger.log(
           `[DocumentExtraction] completed documentId=${documentId} extractedRowCount=${extractedRowCount} sourceRowCount=${sourceRowCount}`,
@@ -336,6 +384,16 @@ Return all rows as activities array.
             reason: 'FILE_MISSING',
           },
         });
+        addAppBreadcrumb('Uploaded file missing during extraction', {
+          feature: 'document-extraction',
+          operation: 'file-missing',
+          organizationId,
+          entityType: 'Document',
+          entityId: documentId,
+          metadata: {
+            storageKey: document.fileUrl,
+          },
+        });
         throw new NotFoundException({
           message: this.fileMissingMessage,
           status: 'FILE_MISSING',
@@ -365,14 +423,26 @@ Return all rows as activities array.
         }`,
         error instanceof Error ? error.stack : undefined,
       );
-      captureBackendException(error, {
-        operation: 'document-extraction',
-        documentId,
+      captureAppError(error, {
+        feature: 'document-extraction',
+        operation:
+          document.status === 'EXTRACTION_FAILED' ||
+          document.status === 'NO_DATA_FOUND'
+            ? 'retry-extract'
+            : 'extract',
+        userId,
+        userEmail,
         organizationId,
-        filePath: absolutePath,
-        storageKey: document.fileUrl,
+        entityType: 'Document',
+        entityId: documentId,
+        metadata: {
+          route: '/api/document-extraction/extract',
+          method: 'POST',
+          storageKey: document.fileUrl,
+          mimeType: document.mimeType,
+          documentStatus: document.status,
+        },
       });
-
       await this.prisma.document.update({
         where: { id: documentId },
         data: { status: 'EXTRACTION_FAILED' },
@@ -388,14 +458,17 @@ Return all rows as activities array.
         },
       });
 
-      throw new BadRequestException(
+      const friendlyError = new InternalServerErrorException(
         'Extraction failed. Please try again or upload the file again.',
       );
+      markAppErrorCaptured(friendlyError);
+      throw friendlyError;
     }
   }
 
   private validateSupportedFile(document: {
     id: string;
+    organizationId: string;
     fileName: string;
     mimeType: string | null;
   }) {
@@ -433,6 +506,19 @@ Return all rows as activities array.
       this.logger.warn(
         `[DocumentExtraction] unsupported file type documentId=${document.id} fileName=${document.fileName} mimeType=${document.mimeType}`,
       );
+      addAppBreadcrumb('Unsupported document type', {
+        feature: 'document-extraction',
+        operation: 'unsupported-file-type',
+        organizationId: document.organizationId,
+        entityType: 'Document',
+        entityId: document.id,
+        metadata: {
+          mimeType: document.mimeType,
+          fileExtension: document.fileName.includes('.')
+            ? document.fileName.split('.').pop()
+            : undefined,
+        },
+      });
       throw new BadRequestException(
         'Unsupported file type. Please upload a PDF, CSV, XLSX, PNG, or JPG file.',
       );

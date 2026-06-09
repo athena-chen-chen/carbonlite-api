@@ -1,4 +1,9 @@
-import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  ForbiddenException,
+  Injectable,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
 import { access } from 'fs/promises';
 import { join } from 'path';
 import { PrismaService } from '../prisma/prisma.service';
@@ -8,6 +13,8 @@ import { ActivityTrackingService } from '../activity-tracking/activity-tracking.
 
 @Injectable()
 export class DocumentsService {
+  private readonly logger = new Logger(DocumentsService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly auditLog: AuditLogService,
@@ -118,6 +125,9 @@ export class DocumentsService {
     try {
       await access(absolutePath);
     } catch {
+      this.logger.warn(
+        `Uploaded file missing organizationId=${organizationId} documentId=${id} storageKey=${document.fileUrl}`,
+      );
       throw new NotFoundException(
         'Uploaded file is no longer available on the server.',
       );

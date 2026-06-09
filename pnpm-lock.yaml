@@ -38,6 +38,9 @@ importers:
       '@sentry/nestjs':
         specifier: ^10.56.0
         version: 10.56.0(@nestjs/common@11.1.19(class-transformer@0.5.1)(class-validator@0.14.4)(reflect-metadata@0.1.14)(rxjs@7.8.2))(@nestjs/core@11.1.19)
+      '@sentry/node':
+        specifier: ^10.56.0
+        version: 10.56.0
       axios:
         specifier: ^1.12.2
         version: 1.15.2

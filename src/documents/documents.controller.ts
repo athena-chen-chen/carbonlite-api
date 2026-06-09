@@ -23,6 +23,7 @@ import { PaginationQueryDto } from '../common/dto/pagination-query.dto';
 import { AuthenticatedUser } from '../auth/auth.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
+import { throwCapturedAppError } from '../common/monitoring/capture-app-error';
 
 @UseGuards(JwtAuthGuard)
 @Controller('documents')
@@ -34,7 +35,7 @@ export class DocumentsController {
 
   @Post('upload')
   @UseInterceptors(FileInterceptor('file'))
-  upload(
+  async upload(
     @CurrentUser() user: AuthenticatedUser,
     @UploadedFile() file: Express.Multer.File,
     @Body('type') type: string,
@@ -43,7 +44,34 @@ export class DocumentsController {
       throw new BadRequestException('File is required.');
     }
 
-    return this.documentsService.upload(user.organizationId, user.id, file, type);
+    try {
+      return await this.documentsService.upload(
+        user.organizationId,
+        user.id,
+        file,
+        type,
+      );
+    } catch (error) {
+      throwCapturedAppError(
+        error,
+        {
+          feature: 'documents',
+          operation: 'upload',
+          userId: user.id,
+          userEmail: user.email,
+          organizationId: user.organizationId,
+          entityType: 'Document',
+          metadata: {
+            route: '/api/documents/upload',
+            method: 'POST',
+            mimeType: file.mimetype,
+            fileSize: file.size,
+            documentType: type,
+          },
+        },
+        'Document upload failed. Please try again.',
+      );
+    }
   }
 
   @Get()
@@ -61,12 +89,33 @@ export class DocumentsController {
     @Headers('user-agent') userAgent: string | undefined,
     @Res({ passthrough: true }) response: Response,
   ) {
-    const file = await this.documentsService.getDownloadFile(
-      user.organizationId,
-      id,
-      user.id,
-      userAgent,
-    );
+    let file;
+    try {
+      file = await this.documentsService.getDownloadFile(
+        user.organizationId,
+        id,
+        user.id,
+        userAgent,
+      );
+    } catch (error) {
+      throwCapturedAppError(
+        error,
+        {
+          feature: 'documents',
+          operation: 'download',
+          userId: user.id,
+          userEmail: user.email,
+          organizationId: user.organizationId,
+          entityType: 'Document',
+          entityId: id,
+          metadata: {
+            route: '/api/documents/:id/download',
+            method: 'GET',
+          },
+        },
+        'Document could not be opened. Please try again.',
+      );
+    }
 
     response.set({
       'Content-Type': file.mimeType,
@@ -82,7 +131,31 @@ export class DocumentsController {
     @CurrentUser() user: AuthenticatedUser,
     @Param('id') id: string,
   ) {
-    return this.documentsService.remove(user.organizationId, id, user.id);
+    try {
+      return await this.documentsService.remove(
+        user.organizationId,
+        id,
+        user.id,
+      );
+    } catch (error) {
+      throwCapturedAppError(
+        error,
+        {
+          feature: 'documents',
+          operation: 'delete',
+          userId: user.id,
+          userEmail: user.email,
+          organizationId: user.organizationId,
+          entityType: 'Document',
+          entityId: id,
+          metadata: {
+            route: '/api/documents/:id',
+            method: 'DELETE',
+          },
+        },
+        'Document deletion failed. Please try again.',
+      );
+    }
   }
 
   private escapeFileName(fileName: string) {

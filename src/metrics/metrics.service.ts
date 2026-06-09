@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   Injectable,
+  Logger,
 } from '@nestjs/common';
 import {
   ActivityData,
@@ -12,9 +13,12 @@ import { CalculateMetricsDto } from './dto/calculate-metrics.dto';
 import { MetricQueryDto } from './dto/metric-query.dto';
 import { matchBestFactor } from './metrics.utils';
 import { AuditLogService } from '../audit-log/audit-log.service';
+import { addAppBreadcrumb } from '../common/monitoring/capture-app-error';
 
 @Injectable()
 export class MetricsService {
+  private readonly logger = new Logger(MetricsService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly auditLog: AuditLogService,
@@ -64,6 +68,21 @@ export class MetricsService {
         });
 
         if (!factor) {
+          this.logger.warn(
+            `No conversion factor match organizationId=${organizationId} activityDataId=${record.id} activityType=${record.activityType} unit=${record.unit} metricType=${metricType}`,
+          );
+          addAppBreadcrumb('No conversion factor match', {
+            feature: 'metrics',
+            operation: 'factor-match-missing',
+            organizationId,
+            entityType: 'ActivityData',
+            entityId: record.id,
+            metadata: {
+              activityType: record.activityType,
+              unit: record.unit,
+              metricType,
+            },
+          });
           continue;
         }
 

@@ -16,6 +16,7 @@ import { CreateReportDto } from './dto/create-report.dto';
 import { ReportQueryDto } from './dto/report-query.dto';
 import { UpdateReportDto } from './dto/update-report.dto';
 import { ReportsService } from './reports.service';
+import { throwCapturedAppError } from '../common/monitoring/capture-app-error';
 
 @UseGuards(JwtAuthGuard)
 @Controller('reports')
@@ -23,8 +24,36 @@ export class ReportsController {
   constructor(private readonly reportsService: ReportsService) {}
 
   @Post()
-  create(@CurrentUser() user: AuthenticatedUser, @Body() dto: CreateReportDto) {
-    return this.reportsService.create(user.organizationId, user.id, dto);
+  async create(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() dto: CreateReportDto,
+  ) {
+    try {
+      return await this.reportsService.create(
+        user.organizationId,
+        user.id,
+        dto,
+      );
+    } catch (error) {
+      throwCapturedAppError(
+        error,
+        {
+          feature: 'reports',
+          operation: 'generate-report',
+          userId: user.id,
+          userEmail: user.email,
+          organizationId: user.organizationId,
+          entityType: 'Report',
+          metadata: {
+            route: '/api/reports',
+            method: 'POST',
+            reportScope: dto.facilityId ? 'facility' : 'organization',
+            reportingYear: dto.reportingYear,
+          },
+        },
+        'Report generation failed. Please try again.',
+      );
+    }
   }
 
   @Get()
