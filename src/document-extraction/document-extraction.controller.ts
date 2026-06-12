@@ -34,6 +34,7 @@ export class DocumentExtractionController {
       dto.documentId,
       dto.activities,
       user.id,
+      dto.importBatchId,
     );
   }
 }

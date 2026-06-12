@@ -88,6 +88,7 @@ enum DocumentStatus {
   UPLOADED
   PROCESSING
   PROCESSED
+  IMPORTED
   FAILED
   NO_DATA_FOUND
   REVIEW_REQUIRED
@@ -249,6 +250,7 @@ model ActivityData {
   activityType      ActivityType
   customTypeLabel   String?
   recordDate        DateTime
+  dateEstimated     Boolean           @default(false)
   periodStart       DateTime?
   periodEnd         DateTime?
   quantity          Decimal           @db.Decimal(18, 4)
@@ -282,6 +284,7 @@ model ConversionFactor {
   name              String
   type              FactorType
   activityType      ActivityType?
+  jurisdiction      String?
   region            String?
   country           String?
   unit              String
@@ -310,6 +313,8 @@ model ConversionFactor {
   @@index([organizationId])
   @@index([type])
   @@index([activityType])
+  @@index([jurisdiction])
+  @@index([sourceYear])
   @@index([isSystemDefault])
 }
 
@@ -379,6 +384,9 @@ model Document {
   fileUrl           String
   mimeType          String?
   fileSize          Int?
+  fileHash          String?
+  importedAt        DateTime?
+  importBatchId     String?
   type              DocumentType    @default(OTHER)
   status            DocumentStatus  @default(UPLOADED)
   extractedText     String?
@@ -394,6 +402,7 @@ model Document {
   aiJobs            AIJob[]
 
   @@index([organizationId])
+  @@index([organizationId, fileHash])
   @@index([facilityId])
   @@index([reportId])
   @@index([status])

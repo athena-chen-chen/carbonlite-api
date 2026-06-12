@@ -28,6 +28,19 @@ export function normalizeUnit(unit: string): string {
     'kw h': 'kwh',
     'kilowatt hour': 'kwh',
     'kilowatt hours': 'kwh',
+    m3: 'm3',
+    'm³': 'm3',
+    'cubic meter': 'm3',
+    'cubic meters': 'm3',
+    'cubic metre': 'm3',
+    'cubic metres': 'm3',
+    kg: 'kg',
+    kilogram: 'kg',
+    kilograms: 'kg',
+    tonne: 'tonne',
+    tonnes: 'tonne',
+    ton: 'ton',
+    tons: 'ton',
   };
 
   return aliases[normalized] ?? normalized;

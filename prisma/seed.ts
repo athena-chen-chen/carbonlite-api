@@ -33,42 +33,73 @@ async function main() {
   console.log('✅ Organization ready:', org.id);
 
   const defaultFactors = [
-    ['Diesel emission factor', 'DIESEL', 'liters', 2.68],
-    ['Gasoline emission factor', 'GASOLINE', 'liters', 2.31],
-    ['Natural gas emission factor', 'NATURAL_GAS', 'm3', 1.89],
-    ['Electricity emission factor', 'ELECTRICITY', 'kWh', 0.53],
-    ['Air travel emission factor', 'AIR_TRAVEL', 'km', 0.115],
-    ['Hotel emission factor', 'HOTEL', 'nights', 15],
-    ['Shipping emission factor', 'SHIPPING', 'ton-km', 0.09],
+    { name: 'Diesel emission factor', activityType: 'DIESEL', unit: 'liters', factorValue: 2.68 },
+    { name: 'Gasoline emission factor', activityType: 'GASOLINE', unit: 'liters', factorValue: 2.31 },
+    { name: 'Natural gas emission factor', activityType: 'NATURAL_GAS', unit: 'm3', factorValue: 1.89 },
+    {
+      name: 'Electricity - Alberta - 2025',
+      activityType: 'ELECTRICITY',
+      unit: 'kWh',
+      factorValue: 0.53,
+      jurisdiction: 'Alberta, Canada',
+      sourceYear: 2025,
+      notes:
+        'Electricity factors vary by province and reporting year. Replace with a verified jurisdiction-specific factor before client or regulatory reporting.',
+    },
+    { name: 'Air travel emission factor', activityType: 'AIR_TRAVEL', unit: 'km', factorValue: 0.115 },
+    { name: 'Hotel emission factor', activityType: 'HOTEL', unit: 'nights', factorValue: 15 },
+    { name: 'Shipping emission factor', activityType: 'SHIPPING', unit: 'ton-km', factorValue: 0.09 },
   ] as const;
 
-  for (const [name, activityType, unit, factorValue] of defaultFactors) {
+  for (const factor of defaultFactors) {
     const existingFactor = await prisma.conversionFactor.findFirst({
       where: {
         isSystemDefault: true,
         type: 'EMISSION',
-        activityType,
-        unit,
+        activityType: factor.activityType,
+        unit: factor.unit,
       },
     });
 
-    if (!existingFactor) {
-      await prisma.conversionFactor.create({
+    const governanceData = {
+      jurisdiction: 'jurisdiction' in factor ? factor.jurisdiction : 'Canada',
+      sourceAuthority: 'Demo / Placeholder',
+      sourceDocument: 'Pilot default factor library',
+      sourceYear: 'sourceYear' in factor ? factor.sourceYear : null,
+      sourceName: 'Demo / Placeholder',
+      sourceReference: 'Pilot default factor library',
+      verified: false,
+      notes:
+        'notes' in factor
+          ? factor.notes
+          : 'Pilot workflow factor. Verify the applicable authority, jurisdiction, and reporting year before final reporting.',
+    };
+
+    if (existingFactor) {
+      await prisma.conversionFactor.update({
+        where: { id: existingFactor.id },
         data: {
-          organizationId: null,
-          name,
-          type: 'EMISSION',
-          activityType,
-          unit,
-          factorValue,
-          resultUnit: 'kgCO2e',
-          sourceName: 'CarbonLite system defaults',
-          sourceReference: 'seed-script',
-          isDefault: true,
-          isSystemDefault: true,
+          name: factor.name,
+          ...governanceData,
         },
       });
+      continue;
     }
+
+    await prisma.conversionFactor.create({
+      data: {
+        organizationId: null,
+        name: factor.name,
+        type: 'EMISSION',
+        activityType: factor.activityType,
+        unit: factor.unit,
+        factorValue: factor.factorValue,
+        resultUnit: 'kgCO2e',
+        isDefault: true,
+        isSystemDefault: true,
+        ...governanceData,
+      },
+    });
   }
 
   console.log('✅ System conversion factors ready');

@@ -32,6 +32,7 @@ export class ActivityDataService {
         activityType: dto.activityType,
         customTypeLabel: dto.customTypeLabel ?? null,
         recordDate: new Date(dto.recordDate),
+        dateEstimated: dto.dateEstimated ?? false,
         periodStart: dto.periodStart ? new Date(dto.periodStart) : null,
         periodEnd: dto.periodEnd ? new Date(dto.periodEnd) : null,
         quantity: new Prisma.Decimal(dto.quantity),
@@ -88,6 +89,7 @@ export class ActivityDataService {
       activityType: item.activityType as ActivityType,
       customTypeLabel: item.customTypeLabel ?? null,
       recordDate: new Date(item.recordDate),
+      dateEstimated: item.dateEstimated ?? false,
       periodStart: item.periodStart ? new Date(item.periodStart) : null,
       periodEnd: item.periodEnd ? new Date(item.periodEnd) : null,
       quantity: new Prisma.Decimal(item.quantity),
@@ -214,6 +216,9 @@ export class ActivityDataService {
           ? { customTypeLabel: dto.customTypeLabel || null }
           : {}),
         ...(dto.recordDate !== undefined ? { recordDate: new Date(dto.recordDate) } : {}),
+        ...(dto.dateEstimated !== undefined
+          ? { dateEstimated: dto.dateEstimated }
+          : {}),
         ...(dto.periodStart !== undefined
           ? { periodStart: dto.periodStart ? new Date(dto.periodStart) : null }
           : {}),

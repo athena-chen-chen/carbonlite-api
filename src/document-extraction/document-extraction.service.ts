@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   Injectable,
   InternalServerErrorException,
   Logger,
@@ -574,6 +575,7 @@ Return all rows as activities array.
     documentId: string,
     activities: any[],
     userId?: string,
+    importBatchId?: string,
   ) {
     const document = await this.prisma.document.findFirst({
       where: { id: documentId, organizationId },
@@ -583,36 +585,66 @@ Return all rows as activities array.
       throw new NotFoundException('Document not found');
     }
 
-    const createdIds: string[] = [];
+    const existingImport = await this.prisma.activityData.findFirst({
+      where: { organizationId, sourceDocumentId: documentId },
+      select: { id: true },
+    });
 
-    for (const activity of activities) {
-      const normalized = this.normalizeActivityForImport(activity);
+    if (document.importedAt || existingImport) {
+      throw new ConflictException('This document has already been imported.');
+    }
 
-      const row = await this.prisma.activityData.create({
-        data: {
+    const normalizedActivities = activities.map((activity) =>
+      this.normalizeActivityForImport(activity),
+    );
+    const stableImportBatchId =
+      importBatchId?.trim() || `document-${documentId}`;
+    const createdIds = await this.prisma.$transaction(async (tx) => {
+      const ids: string[] = [];
+      const claimedDocument = await tx.document.updateMany({
+        where: {
+          id: documentId,
           organizationId,
-          documentId,
-          activityType: normalized.activityType as any,
-          recordDate: new Date(normalized.recordDate),
-          quantity: normalized.quantity,
-          unit: normalized.unit,
-          sourceType: 'DOCUMENT_AI' as any,
-          sourceReference: normalized.sourceReference ?? null,
-          sourceDocumentId: documentId,
-          sourceFileName: document.fileName,
-          notes: normalized.notes ?? null,
+          importedAt: null,
+        },
+        data: {
+          status: 'IMPORTED',
+          importedAt: new Date(),
+          importBatchId: stableImportBatchId,
         },
       });
 
-      createdIds.push(row.id);
-    }
+      if (claimedDocument.count === 0) {
+        throw new ConflictException(
+          'This document has already been imported.',
+        );
+      }
+
+      for (const normalized of normalizedActivities) {
+        const row = await tx.activityData.create({
+          data: {
+            organizationId,
+            documentId,
+            activityType: normalized.activityType as any,
+            recordDate: new Date(normalized.recordDate),
+            quantity: normalized.quantity,
+            unit: normalized.unit,
+            sourceType: 'DOCUMENT_AI' as any,
+            sourceReference: normalized.sourceReference ?? null,
+            sourceDocumentId: documentId,
+            sourceFileName: document.fileName,
+            importBatchId: stableImportBatchId,
+            notes: normalized.notes ?? null,
+          },
+        });
+
+        ids.push(row.id);
+      }
+
+      return ids;
+    });
 
     if (createdIds.length > 0) {
-      await this.prisma.document.update({
-        where: { id: documentId },
-        data: { status: 'PROCESSED' },
-      });
-
       await this.activityTracking.track({
         organizationId,
         userId,
@@ -622,6 +654,7 @@ Return all rows as activities array.
         metadata: {
           count: createdIds.length,
           sourceType: 'DOCUMENT_AI',
+          importBatchId: stableImportBatchId,
         },
       });
     }
@@ -629,6 +662,7 @@ Return all rows as activities array.
     return {
       count: createdIds.length,
       createdIds,
+      importBatchId: stableImportBatchId,
     };
   }
 

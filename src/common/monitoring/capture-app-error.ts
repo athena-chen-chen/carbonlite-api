@@ -144,6 +144,6 @@ function sanitizeValue(value: unknown, depth: number): unknown {
 function isExpectedHttpError(error: unknown) {
   return (
     error instanceof HttpException &&
-    [400, 401, 403, 404].includes(error.getStatus())
+    [400, 401, 403, 404, 409].includes(error.getStatus())
   );
 }

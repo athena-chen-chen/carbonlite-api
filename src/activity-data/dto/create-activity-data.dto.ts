@@ -1,4 +1,5 @@
 import {
+  IsBoolean,
   IsDateString,
   IsEnum,
   IsNumber,
@@ -37,6 +38,10 @@ export class CreateActivityDataDto {
 
   @IsDateString()
   recordDate!: string;
+
+  @IsOptional()
+  @IsBoolean()
+  dateEstimated?: boolean;
 
   @IsOptional()
   @IsDateString()

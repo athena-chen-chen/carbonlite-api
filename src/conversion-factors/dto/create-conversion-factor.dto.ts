@@ -30,6 +30,11 @@ export class CreateConversionFactorDto {
 
   @IsOptional()
   @IsString()
+  @MaxLength(160)
+  jurisdiction?: string;
+
+  @IsOptional()
+  @IsString()
   @MaxLength(80)
   region?: string;
 

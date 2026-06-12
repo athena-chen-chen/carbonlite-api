@@ -39,6 +39,7 @@ export class DocumentsController {
     @CurrentUser() user: AuthenticatedUser,
     @UploadedFile() file: Express.Multer.File,
     @Body('type') type: string,
+    @Body('allowDuplicate') allowDuplicate?: string,
   ) {
     if (!file) {
       throw new BadRequestException('File is required.');
@@ -50,6 +51,7 @@ export class DocumentsController {
         user.id,
         file,
         type,
+        allowDuplicate === 'true',
       );
     } catch (error) {
       throwCapturedAppError(

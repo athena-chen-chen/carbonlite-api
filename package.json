@@ -4,6 +4,7 @@
   "version": "0.0.0",
   "scripts": {
     "build": "nest build",
+    "test:unit": "jest --config ./jest.unit.json --runInBand",
     "test:e2e": "jest --config ./test/jest-e2e.json --runInBand",
     "start": "node dist/main.js",
     "dev": "nest start --watch",

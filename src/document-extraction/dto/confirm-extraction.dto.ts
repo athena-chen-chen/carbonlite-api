@@ -1,4 +1,10 @@
-import { IsArray, IsString, IsNumber } from 'class-validator';
+import {
+  ArrayMinSize,
+  IsArray,
+  IsString,
+  IsNumber,
+  IsOptional,
+} from 'class-validator';
 
 export class ParsedActivityDto {
   @IsString()
@@ -18,6 +24,18 @@ export class ParsedActivityDto {
 
   @IsString()
   notes?: string;
+
+  @IsOptional()
+  @IsString()
+  sourceDocumentId?: string;
+
+  @IsOptional()
+  @IsString()
+  sourceFileName?: string;
+
+  @IsOptional()
+  @IsString()
+  importBatchId?: string;
 }
 
 export class ConfirmExtractionDto {
@@ -25,5 +43,10 @@ export class ConfirmExtractionDto {
   documentId!: string;
 
   @IsArray()
+  @ArrayMinSize(1)
   activities!: ParsedActivityDto[];
+
+  @IsOptional()
+  @IsString()
+  importBatchId?: string;
 }

@@ -1,10 +1,12 @@
 import {
+  ConflictException,
   ForbiddenException,
   Injectable,
   Logger,
   NotFoundException,
 } from '@nestjs/common';
-import { access } from 'fs/promises';
+import { access, readFile, unlink } from 'fs/promises';
+import { createHash } from 'crypto';
 import { join } from 'path';
 import { PrismaService } from '../prisma/prisma.service';
 import { PaginationQueryDto } from '../common/dto/pagination-query.dto';
@@ -26,7 +28,29 @@ export class DocumentsService {
     userId: string,
     file: Express.Multer.File,
     type?: string,
+    allowDuplicate = false,
   ) {
+    const fileHash = createHash('sha256')
+      .update(await readFile(file.path))
+      .digest('hex');
+    const existingDocument = await this.prisma.document.findFirst({
+      where: { organizationId, fileHash },
+      orderBy: { createdAt: 'asc' },
+      select: {
+        id: true,
+        fileName: true,
+        createdAt: true,
+      },
+    });
+
+    if (existingDocument && !allowDuplicate) {
+      await unlink(file.path).catch(() => undefined);
+      throw new ConflictException({
+        message: 'This file appears to have already been uploaded.',
+        existingDocument,
+      });
+    }
+
     const created = await this.prisma.document.create({
       data: {
         organizationId,
@@ -35,6 +59,7 @@ export class DocumentsService {
         fileUrl: `/uploads/${file.filename}`,
         mimeType: file.mimetype,
         fileSize: file.size,
+        fileHash,
         type: (type as any) ?? 'OTHER',
         status: 'UPLOADED',
       },

@@ -32,6 +32,7 @@ export class ConversionFactorsService {
         activityType: dto.activityType
           ? (dto.activityType as ActivityType)
           : null,
+        jurisdiction: dto.jurisdiction ?? null,
         region: dto.region ?? null,
         country: dto.country ?? null,
         unit: dto.unit,
@@ -93,6 +94,15 @@ export class ConversionFactorsService {
       ...(query.activityType
         ? { activityType: query.activityType as ActivityType }
         : {}),
+      ...(query.jurisdiction
+        ? {
+            jurisdiction: {
+              contains: query.jurisdiction,
+              mode: 'insensitive',
+            },
+          }
+        : {}),
+      ...(query.sourceYear ? { sourceYear: query.sourceYear } : {}),
       ...(query.search
         ? {
             AND: [
@@ -109,6 +119,12 @@ export class ConversionFactorsService {
                   },
                   {
                     sourceReference: {
+                      contains: query.search,
+                      mode: 'insensitive',
+                    },
+                  },
+                  {
+                    jurisdiction: {
                       contains: query.search,
                       mode: 'insensitive',
                     },
@@ -178,6 +194,9 @@ export class ConversionFactorsService {
                 ? (dto.activityType as ActivityType)
                 : null,
             }
+          : {}),
+        ...(dto.jurisdiction !== undefined
+          ? { jurisdiction: dto.jurisdiction || null }
           : {}),
         ...(dto.region !== undefined ? { region: dto.region || null } : {}),
         ...(dto.country !== undefined ? { country: dto.country || null } : {}),

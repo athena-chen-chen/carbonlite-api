@@ -30,6 +30,7 @@ describe('Conversion factor traceability fields (e2e)', () => {
       name: `${testRunId} Diesel factor`,
       type: 'EMISSION',
       activityType: 'DIESEL',
+      jurisdiction: 'Alberta, Canada',
       unit: 'liters',
       factorValue: 2.72,
       resultUnit: 'kgCO2e',
@@ -61,6 +62,7 @@ describe('Conversion factor traceability fields (e2e)', () => {
 
     expect(created.body).toMatchObject({
       sourceAuthority: 'Environment Canada',
+      jurisdiction: 'Alberta, Canada',
       sourceDocument: 'National Inventory Report',
       sourceYear: 2026,
       sourceUrl: 'https://example.com/factors',
@@ -88,6 +90,7 @@ describe('Conversion factor traceability fields (e2e)', () => {
     );
     expect(listed).toMatchObject({
       sourceAuthority: 'Environment Canada',
+      jurisdiction: 'Alberta, Canada',
       sourceYear: 2026,
       verified: true,
       notes: 'Created by conversion factor traceability e2e test.',
@@ -110,6 +113,7 @@ describe('Conversion factor traceability fields (e2e)', () => {
       .patch(`/api/conversion-factors/${created.body.id}`)
       .set(authHeader(user.accessToken))
       .send({
+        jurisdiction: 'British Columbia, Canada',
         sourceAuthority: 'Updated Authority',
         sourceDocument: 'Updated Document',
         sourceYear: 2027,
@@ -122,6 +126,7 @@ describe('Conversion factor traceability fields (e2e)', () => {
       .expect(200);
 
     expect(updated.body).toMatchObject({
+      jurisdiction: 'British Columbia, Canada',
       sourceAuthority: 'Updated Authority',
       sourceDocument: 'Updated Document',
       sourceYear: 2027,
@@ -131,6 +136,57 @@ describe('Conversion factor traceability fields (e2e)', () => {
       verified: false,
       notes: 'Updated traceability notes.',
     });
+  });
+
+  it('filters multiple electricity factors by jurisdiction and source year', async () => {
+    const user = await createTestUser(app, {
+      organizationName: `${testRunId} Electricity Org`,
+      email: `electricity-${testRunId}@carbonlite-e2e.test`,
+    });
+
+    await request(app.getHttpServer())
+      .post('/api/conversion-factors')
+      .set(authHeader(user.accessToken))
+      .send(factorPayload({
+        name: `${testRunId} Electricity Alberta 2025`,
+        activityType: 'ELECTRICITY',
+        unit: 'kWh',
+        jurisdiction: 'Alberta, Canada',
+        sourceYear: 2025,
+      }))
+      .expect(201);
+
+    await request(app.getHttpServer())
+      .post('/api/conversion-factors')
+      .set(authHeader(user.accessToken))
+      .send(factorPayload({
+        name: `${testRunId} Electricity BC 2025`,
+        activityType: 'ELECTRICITY',
+        unit: 'kWh',
+        jurisdiction: 'British Columbia, Canada',
+        sourceYear: 2025,
+      }))
+      .expect(201);
+
+    const filtered = await request(app.getHttpServer())
+      .get(
+        '/api/conversion-factors?activityType=ELECTRICITY&jurisdiction=British%20Columbia&sourceYear=2025',
+      )
+      .set(authHeader(user.accessToken))
+      .expect(200);
+
+    expect(
+      filtered.body.items.some(
+        (item: { name: string }) =>
+          item.name === `${testRunId} Electricity BC 2025`,
+      ),
+    ).toBe(true);
+    expect(
+      filtered.body.items.some(
+        (item: { name: string }) =>
+          item.name === `${testRunId} Electricity Alberta 2025`,
+      ),
+    ).toBe(false);
   });
 
   it('still rejects unknown fields', async () => {

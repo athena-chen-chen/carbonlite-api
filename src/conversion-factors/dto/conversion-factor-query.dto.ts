@@ -1,6 +1,6 @@
 // api/src/factors/dto/factor-query.dto.ts
 import { Type } from 'class-transformer';
-import { IsIn, IsInt, IsOptional, IsPositive, IsString, Max, Min ,IsEnum} from 'class-validator';
+import { IsIn, IsInt, IsOptional, IsString, Max, Min, IsEnum } from 'class-validator';
 
 import { PaginationQueryDto } from '../../common/dto/pagination-query.dto';
 import { ActivityTypeDto } from '../../activity-data/dto/create-activity-data.dto';
@@ -43,6 +43,17 @@ export class ConversionFactorQueryDto extends PaginationQueryDto {
   @IsOptional()
   @IsEnum(ActivityTypeDto)
   activityType?: ActivityTypeDto;
+
+  @IsOptional()
+  @IsString()
+  jurisdiction?: string;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1900)
+  @Max(2100)
+  sourceYear?: number;
 
   @IsOptional()
   @IsString()

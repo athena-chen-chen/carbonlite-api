@@ -14,6 +14,7 @@ import { MetricQueryDto } from './dto/metric-query.dto';
 import { matchBestFactor } from './metrics.utils';
 import { AuditLogService } from '../audit-log/audit-log.service';
 import { addAppBreadcrumb } from '../common/monitoring/capture-app-error';
+import { CalculationQualityService } from './calculation-quality.service';
 
 @Injectable()
 export class MetricsService {
@@ -22,6 +23,7 @@ export class MetricsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly auditLog: AuditLogService,
+    private readonly calculationQuality: CalculationQualityService,
   ) {}
 
   async calculate(organizationId: string, dto: CalculateMetricsDto, userId?: string) {
@@ -32,6 +34,19 @@ export class MetricsService {
     }
 
     const requestedMetricTypes = dto.metricTypes as MetricType[];
+    const qualitySummary = requestedMetricTypes.includes('CARBON_EMISSION')
+      ? await this.calculationQuality.buildSummary(organizationId, {
+          selectedActivityRecordIds: activityRecords
+            .map((record) => record.id)
+            .join(','),
+        })
+      : null;
+    const carbonDetailsByActivityId = new Map(
+      (qualitySummary?.calculationDetails ?? []).map((detail) => [
+        detail.activityDataId,
+        detail,
+      ]),
+    );
 
     const factors = await this.prisma.conversionFactor.findMany({
       where: {
@@ -59,13 +74,20 @@ export class MetricsService {
           continue;
         }
 
-        const factor = matchBestFactor({
-          activityType: record.activityType,
-          unit: record.unit,
-          factors,
-          metricType,
-          organizationId,
-        });
+        const carbonDetail =
+          metricType === 'CARBON_EMISSION'
+            ? carbonDetailsByActivityId.get(record.id)
+            : undefined;
+        const factor =
+          metricType === 'CARBON_EMISSION'
+            ? factors.find((item) => item.id === carbonDetail?.factorId) ?? null
+            : matchBestFactor({
+                activityType: record.activityType,
+                unit: record.unit,
+                factors,
+                metricType,
+                organizationId,
+              });
 
         if (!factor) {
           this.logger.warn(
@@ -86,10 +108,12 @@ export class MetricsService {
           continue;
         }
 
-        const value = this.calculateMetricValue(
-          record.quantity,
-          factor.factorValue,
-        );
+        const value =
+          metricType === 'CARBON_EMISSION' &&
+          carbonDetail?.calculatedEmissionsKgCO2e !== null &&
+          carbonDetail?.calculatedEmissionsKgCO2e !== undefined
+            ? new Prisma.Decimal(carbonDetail.calculatedEmissionsKgCO2e)
+            : this.calculateMetricValue(record.quantity, factor.factorValue);
 
         // 关键：先删旧结果，避免重复计算后 summary 翻倍
         await this.prisma.metricResult.deleteMany({
@@ -118,6 +142,14 @@ export class MetricsService {
               factorValue: factor.factorValue.toString(),
               factorUnit: factor.unit,
               resultUnit: factor.resultUnit,
+              calculationStatus: carbonDetail?.status ?? 'CALCULATED',
+              jurisdiction: carbonDetail?.jurisdiction ?? null,
+              reportingYear: carbonDetail?.reportingYear ?? null,
+              sourceAuthority: carbonDetail?.sourceAuthority ?? null,
+              sourceDocument: carbonDetail?.sourceDocument ?? null,
+              sourceUrl: carbonDetail?.sourceUrl ?? null,
+              sourceYear: carbonDetail?.sourceYear ?? null,
+              verified: carbonDetail?.factorVerified ?? factor.verified,
             },
           },
         });
@@ -204,58 +236,10 @@ export class MetricsService {
   }
 
   async getSummary(organizationId: string, query: MetricQueryDto) {
-    const where: Prisma.MetricResultWhereInput = {
-      organizationId,
-      ...(query.facilityId ? { facilityId: query.facilityId } : {}),
-      ...(query.metricType ? { metricType: query.metricType as MetricType } : {}),
-      ...(query.periodStart || query.periodEnd
-        ? {
-            AND: [
-              ...(query.periodStart
-                ? [{ periodStart: { gte: new Date(query.periodStart) } }]
-                : []),
-              ...(query.periodEnd
-                ? [{ periodEnd: { lte: new Date(query.periodEnd) } }]
-                : []),
-            ],
-          }
-        : {}),
-    };
-
-    const [groupedByMetric, groupedByFacility] = await Promise.all([
-      this.prisma.metricResult.groupBy({
-        by: ['metricType', 'unit'],
-        where,
-        _sum: {
-          value: true,
-        },
-        _count: {
-          _all: true,
-        },
-      }),
-      this.prisma.metricResult.groupBy({
-        by: ['facilityId', 'metricType', 'unit'],
-        where,
-        _sum: {
-          value: true,
-        },
-      }),
-    ]);
-
-    return {
-      totalsByMetric: groupedByMetric.map((row) => ({
-        metricType: row.metricType,
-        unit: row.unit,
-        totalValue: row._sum.value?.toString() ?? '0',
-        count: row._count._all,
-      })),
-      totalsByFacility: groupedByFacility.map((row) => ({
-        facilityId: row.facilityId,
-        metricType: row.metricType,
-        unit: row.unit,
-        totalValue: row._sum.value?.toString() ?? '0',
-      })),
-    };
+    return this.calculationQuality.buildSummary(organizationId, {
+      periodStart: query.periodStart,
+      periodEnd: query.periodEnd,
+    });
   }
 
   private async findTargetActivityRecords(

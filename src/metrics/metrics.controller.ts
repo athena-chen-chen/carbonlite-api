@@ -14,6 +14,8 @@ import { AuthenticatedUser } from '../auth/auth.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { throwCapturedAppError } from '../common/monitoring/capture-app-error';
+import { CalculationQualityService } from './calculation-quality.service';
+import { CalculationSummaryQueryDto } from './dto/calculation-summary-query.dto';
 
 @UseGuards(JwtAuthGuard)
 @Controller('metrics')
@@ -21,6 +23,7 @@ export class MetricsController {
   constructor(
     @Inject(MetricsService)
     private readonly metricsService: MetricsService,
+    private readonly calculationQualityService: CalculationQualityService,
   ) {}
 
   @Post('calculate')
@@ -92,5 +95,16 @@ export class MetricsController {
         'Metrics summary could not be calculated.',
       );
     }
+  }
+
+  @Get('calculation-summary')
+  calculationSummary(
+    @CurrentUser() user: AuthenticatedUser,
+    @Query() query: CalculationSummaryQueryDto,
+  ) {
+    return this.calculationQualityService.buildSummary(
+      user.organizationId,
+      query,
+    );
   }
 }
