@@ -173,6 +173,7 @@ model Organization {
   auditLogs       AuditLog[]
   feedback        Feedback[]
   activityEvents  UserActivityEvent[]
+  documentExtractions DocumentExtraction[]
 
   // 缺的就是这两个
   activityData    ActivityData[]
@@ -400,12 +401,37 @@ model Document {
   uploadedBy        User?           @relation("DocumentUploadedBy", fields: [uploadedById], references: [id], onDelete: SetNull)
   activityData      ActivityData[]
   aiJobs            AIJob[]
+  extractions        DocumentExtraction[]
 
   @@index([organizationId])
   @@index([organizationId, fileHash])
   @@index([facilityId])
   @@index([reportId])
   @@index([status])
+}
+
+model DocumentExtraction {
+  id                String          @id @default(cuid())
+  organizationId    String
+  documentId        String
+  status            DocumentStatus
+  extractedJson     Json
+  extractedRows     Json
+  sourceRowCount    Int             @default(0)
+  extractedRowCount Int             @default(0)
+  possibleMissingRows Boolean       @default(false)
+  warning           String?
+  extractedAt       DateTime        @default(now())
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+
+  organization      Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  document          Document        @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@unique([documentId])
+  @@index([organizationId])
+  @@index([status])
+  @@index([extractedAt])
 }
 
 model AIJob {

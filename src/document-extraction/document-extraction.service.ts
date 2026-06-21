@@ -147,6 +147,8 @@ export class DocumentExtractionService {
         });
         throw new NotFoundException({
           message: this.fileMissingMessage,
+          error: 'File Missing',
+          statusCode: 404,
           status: 'FILE_MISSING',
         });
       }
@@ -325,7 +327,19 @@ Return all rows as activities array.
         extractedRowCount,
         possibleMissingRows,
         warning,
+        extractedAt: new Date().toISOString(),
       };
+
+      await this.saveExtractionResult({
+        organizationId,
+        documentId,
+        status,
+        parsedActivities,
+        sourceRowCount,
+        extractedRowCount,
+        possibleMissingRows,
+        warning,
+      });
 
       await this.auditLog.log({
         organizationId,
@@ -397,6 +411,8 @@ Return all rows as activities array.
         });
         throw new NotFoundException({
           message: this.fileMissingMessage,
+          error: 'File Missing',
+          statusCode: 404,
           status: 'FILE_MISSING',
         });
       }
@@ -664,6 +680,77 @@ Return all rows as activities array.
       createdIds,
       importBatchId: stableImportBatchId,
     };
+  }
+
+  async findLatest(organizationId: string, documentId: string) {
+    const extraction = await this.prisma.documentExtraction.findFirst({
+      where: {
+        organizationId,
+        documentId,
+      },
+      orderBy: {
+        extractedAt: 'desc',
+      },
+    });
+
+    if (!extraction) {
+      throw new NotFoundException('No extraction results found for this document.');
+    }
+
+    return {
+      documentId: extraction.documentId,
+      status: extraction.status,
+      parsedActivities: extraction.extractedRows,
+      sourceRowCount: extraction.sourceRowCount,
+      extractedRowCount: extraction.extractedRowCount,
+      possibleMissingRows: extraction.possibleMissingRows,
+      warning: extraction.warning,
+      extractedAt: extraction.extractedAt,
+    };
+  }
+
+  private async saveExtractionResult(input: {
+    organizationId: string;
+    documentId: string;
+    status: 'REVIEW_REQUIRED' | 'NO_DATA_FOUND';
+    parsedActivities: ParsedActivityWithConfidence[];
+    sourceRowCount: number;
+    extractedRowCount: number;
+    possibleMissingRows: boolean;
+    warning: string | null;
+  }) {
+    await this.prisma.documentExtraction.upsert({
+      where: {
+        documentId: input.documentId,
+      },
+      create: {
+        organizationId: input.organizationId,
+        documentId: input.documentId,
+        status: input.status,
+        extractedJson: {
+          activities: input.parsedActivities,
+        },
+        extractedRows: input.parsedActivities,
+        sourceRowCount: input.sourceRowCount,
+        extractedRowCount: input.extractedRowCount,
+        possibleMissingRows: input.possibleMissingRows,
+        warning: input.warning,
+        extractedAt: new Date(),
+      },
+      update: {
+        organizationId: input.organizationId,
+        status: input.status,
+        extractedJson: {
+          activities: input.parsedActivities,
+        },
+        extractedRows: input.parsedActivities,
+        sourceRowCount: input.sourceRowCount,
+        extractedRowCount: input.extractedRowCount,
+        possibleMissingRows: input.possibleMissingRows,
+        warning: input.warning,
+        extractedAt: new Date(),
+      },
+    });
   }
 
   private async trackExtractionEvent(input: {

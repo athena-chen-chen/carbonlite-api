@@ -1,4 +1,4 @@
-import { Body, Controller, Inject, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Inject, Param, Post, UseGuards } from '@nestjs/common';
 import { DocumentExtractionService } from './document-extraction.service';
 import { ExtractDocumentDto } from './dto/extract-document.dto';
 import { ConfirmExtractionDto } from './dto/confirm-extraction.dto';
@@ -22,6 +22,14 @@ export class DocumentExtractionController {
       user.id,
       user.email,
     );
+  }
+
+  @Get(':documentId')
+  findLatest(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('documentId') documentId: string,
+  ) {
+    return this.service.findLatest(user.organizationId, documentId);
   }
 
   @Post('confirm')
