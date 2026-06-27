@@ -4,6 +4,8 @@ import { ActivityDataModule } from './activity-data/activity-data.module';
 import { MetricsModule } from './metrics/metrics.module';
 import { HealthController } from './health.controller';
 import { ConversionFactorsModule } from './conversion-factors/conversion-factors.module';
+import { FactorsModule } from './conversion-factors/factors.module';
+import { FactorSourcesModule } from './conversion-factors/factor-sources.module';
 import { DocumentsModule } from './documents/documents.module';
 import { DocumentExtractionModule } from './document-extraction/document-extraction.module';
 import { AuthModule } from './auth/auth.module';
@@ -22,6 +24,8 @@ import { SentryTestController } from './sentry-test.controller';
     ActivityDataModule,
     MetricsModule,
     ConversionFactorsModule,
+    FactorsModule,
+    FactorSourcesModule,
     DocumentsModule,
     DocumentExtractionModule,
     ReportsModule,

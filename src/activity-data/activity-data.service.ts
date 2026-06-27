@@ -33,6 +33,9 @@ export class ActivityDataService {
         customTypeLabel: dto.customTypeLabel ?? null,
         recordDate: new Date(dto.recordDate),
         dateEstimated: dto.dateEstimated ?? false,
+        jurisdictionCountry: dto.jurisdictionCountry ?? null,
+        jurisdictionRegion: dto.jurisdictionRegion ?? null,
+        recordYear: dto.recordYear ?? new Date(dto.recordDate).getUTCFullYear(),
         periodStart: dto.periodStart ? new Date(dto.periodStart) : null,
         periodEnd: dto.periodEnd ? new Date(dto.periodEnd) : null,
         quantity: new Prisma.Decimal(dto.quantity),
@@ -41,6 +44,9 @@ export class ActivityDataService {
         sourceReference: dto.sourceReference ?? null,
         sourceFileName: dto.sourceFileName ?? null,
         sourceDocumentId: dto.sourceDocumentId ?? null,
+        sourcePage: normalizeOptionalText(dto.sourcePage),
+        sourceRow: normalizeOptionalText(dto.sourceRow),
+        sourceTextSnippet: dto.sourceTextSnippet ?? null,
         importBatchId: dto.importBatchId ?? null,
         notes: dto.notes ?? null,
       },
@@ -90,6 +96,9 @@ export class ActivityDataService {
       customTypeLabel: item.customTypeLabel ?? null,
       recordDate: new Date(item.recordDate),
       dateEstimated: item.dateEstimated ?? false,
+      jurisdictionCountry: item.jurisdictionCountry ?? null,
+      jurisdictionRegion: item.jurisdictionRegion ?? null,
+      recordYear: item.recordYear ?? new Date(item.recordDate).getUTCFullYear(),
       periodStart: item.periodStart ? new Date(item.periodStart) : null,
       periodEnd: item.periodEnd ? new Date(item.periodEnd) : null,
       quantity: new Prisma.Decimal(item.quantity),
@@ -98,6 +107,9 @@ export class ActivityDataService {
       sourceReference: item.sourceReference ?? null,
       sourceFileName: item.sourceFileName ?? null,
       sourceDocumentId: item.sourceDocumentId ?? null,
+      sourcePage: normalizeOptionalText(item.sourcePage),
+      sourceRow: normalizeOptionalText(item.sourceRow),
+      sourceTextSnippet: item.sourceTextSnippet ?? null,
       importBatchId: item.importBatchId ?? null,
       notes: item.notes ?? null,
     }));
@@ -219,6 +231,15 @@ export class ActivityDataService {
         ...(dto.dateEstimated !== undefined
           ? { dateEstimated: dto.dateEstimated }
           : {}),
+        ...(dto.jurisdictionCountry !== undefined
+          ? { jurisdictionCountry: dto.jurisdictionCountry || null }
+          : {}),
+        ...(dto.jurisdictionRegion !== undefined
+          ? { jurisdictionRegion: dto.jurisdictionRegion || null }
+          : {}),
+        ...(dto.recordYear !== undefined
+          ? { recordYear: dto.recordYear || null }
+          : {}),
         ...(dto.periodStart !== undefined
           ? { periodStart: dto.periodStart ? new Date(dto.periodStart) : null }
           : {}),
@@ -232,6 +253,21 @@ export class ActivityDataService {
           : {}),
         ...(dto.sourceReference !== undefined
           ? { sourceReference: dto.sourceReference || null }
+          : {}),
+        ...(dto.sourceFileName !== undefined
+          ? { sourceFileName: dto.sourceFileName || null }
+          : {}),
+        ...(dto.sourceDocumentId !== undefined
+          ? { sourceDocumentId: dto.sourceDocumentId || null }
+          : {}),
+        ...(dto.sourcePage !== undefined
+          ? { sourcePage: normalizeOptionalText(dto.sourcePage) }
+          : {}),
+        ...(dto.sourceRow !== undefined
+          ? { sourceRow: normalizeOptionalText(dto.sourceRow) }
+          : {}),
+        ...(dto.sourceTextSnippet !== undefined
+          ? { sourceTextSnippet: dto.sourceTextSnippet || null }
           : {}),
         ...(dto.notes !== undefined ? { notes: dto.notes || null } : {}),
       },
@@ -419,4 +455,10 @@ export class ActivityDataService {
       }
     }
   }
+}
+
+function normalizeOptionalText(value?: string | number | null) {
+  if (value === null || value === undefined) return null;
+  const text = String(value).trim();
+  return text || null;
 }

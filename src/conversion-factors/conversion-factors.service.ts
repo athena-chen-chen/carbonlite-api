@@ -4,13 +4,54 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { ActivityType, FactorType, Prisma } from '@prisma/client';
+import { ActivityType, FactorStatus, FactorType, Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateConversionFactorDto } from './dto/create-conversion-factor.dto';
 import { UpdateConversionFactorDto } from './dto/update-conversion-factor.dto';
 import { ConversionFactorQueryDto } from './dto/conversion-factor-query.dto';
+import { CreateFactorVersionDto } from './dto/create-factor-version.dto';
+import { UpdateFactorVersionDraftDto } from './dto/update-factor-version-draft.dto';
 import { AuditLogService } from '../audit-log/audit-log.service';
 import { ActivityTrackingService } from '../activity-tracking/activity-tracking.service';
+import { normalizeUnit } from '../metrics/metrics.utils';
+
+type ApplicableFactorInput = {
+  activityType: string;
+  inputUnit: string;
+  jurisdictionCountry?: string | null;
+  jurisdictionRegion?: string | null;
+  factorYear?: number | null;
+  recordDate?: Date | string | null;
+  allowDemoFactors?: boolean | null;
+  organizationId: string;
+};
+
+type ApplicableFactor = {
+  factorValue: number;
+  inputUnit: string;
+  resultUnit: string;
+  factorId?: string;
+  factorVersionId?: string;
+  displayName?: string;
+  sourceAuthority?: string | null;
+  sourceDocument?: string | null;
+  sourceYear?: number | null;
+  sourceUrl?: string | null;
+  status?: string;
+  confidenceLevel?: string;
+  factorType: 'ORGANIZATION_CUSTOM' | 'GOVERNED_LIBRARY' | 'LEGACY_SYSTEM_DEFAULT';
+};
+
+type FactorReviewInput = {
+  reviewedBy: string;
+  reviewedAt?: Date;
+  reviewNotes?: string;
+  approvalSource?: string;
+};
+
+type FactorVersionWithGovernance = Awaited<
+  ReturnType<ConversionFactorsService['findGovernedFactorVersion']>
+>;
 
 @Injectable()
 export class ConversionFactorsService {
@@ -19,6 +60,444 @@ export class ConversionFactorsService {
     private readonly auditLog: AuditLogService,
     private readonly activityTracking: ActivityTrackingService,
   ) {}
+
+  async verifyFactor(id: string, input: FactorReviewInput) {
+    const reviewedAt = input.reviewedAt ?? new Date();
+    const existing = await this.findGovernedFactorVersion(id);
+    this.validateProductionReadiness(existing, {
+      ...input,
+      reviewedAt,
+      status: 'VERIFIED',
+    });
+
+    await this.deprecatePreviousProductionVersions(existing);
+
+    const updated = await this.prisma.factorVersion.update({
+      where: { id },
+      data: {
+        verified: true,
+        status: 'VERIFIED',
+        reviewedBy: input.reviewedBy,
+        reviewedAt,
+        reviewNotes: input.reviewNotes ?? null,
+        approvalSource: input.approvalSource ?? existing.source.sourceAuthority,
+      },
+      include: { factor: true, source: true },
+    });
+
+    await this.prisma.factorReviewLog.create({
+      data: {
+        factorVersionId: id,
+        reviewedBy: input.reviewedBy,
+        reviewStatus: 'APPROVED',
+        reviewNotes: input.reviewNotes ?? null,
+        reviewedAt,
+      },
+    });
+
+    await this.logFactorVersionChange({
+      factorId: existing.factorId,
+      factorVersionId: id,
+      action: 'VERSION_VERIFIED',
+      oldFactorVersionId: existing.id,
+      newFactorVersionId: updated.id,
+      oldValue: existing,
+      newValue: updated,
+      reason: input.reviewNotes,
+      changedBy: input.reviewedBy,
+    });
+
+    return updated;
+  }
+
+  async approveFactor(id: string, input: FactorReviewInput) {
+    return this.verifyFactor(id, input);
+  }
+
+  async deprecateFactor(id: string, reason?: string, changedBy?: string) {
+    const existing = await this.findGovernedFactorVersion(id);
+    const updated = await this.prisma.factorVersion.update({
+      where: { id },
+      data: { status: 'DEPRECATED' },
+      include: { factor: true, source: true },
+    });
+
+    await this.logFactorVersionChange({
+      factorId: existing.factorId,
+      factorVersionId: id,
+      action: 'VERSION_DEPRECATED',
+      oldFactorVersionId: existing.id,
+      newFactorVersionId: updated.id,
+      oldValue: existing,
+      newValue: updated,
+      reason,
+      changedBy,
+    });
+
+    return updated;
+  }
+
+  async archiveFactor(id: string, reason?: string, changedBy?: string) {
+    const existing = await this.findGovernedFactorVersion(id);
+    const replacement = await this.prisma.factorVersion.findFirst({
+      where: {
+        id: { not: id },
+        factorId: existing.factorId,
+        inputUnit: existing.inputUnit,
+        jurisdictionCountry: existing.jurisdictionCountry,
+        jurisdictionRegion: existing.jurisdictionRegion,
+        factorYear: existing.factorYear,
+        status: { in: ['OFFICIAL', 'VERIFIED'] },
+      },
+    });
+
+    if (!replacement && ['OFFICIAL', 'VERIFIED'].includes(existing.status)) {
+      throw new BadRequestException(
+        'Cannot archive the latest active factor version unless another active version replaces it.',
+      );
+    }
+
+    const updated = await this.prisma.factorVersion.update({
+      where: { id },
+      data: { status: 'ARCHIVED' },
+      include: { factor: true, source: true },
+    });
+
+    await this.logFactorVersionChange({
+      factorId: existing.factorId,
+      factorVersionId: id,
+      action: 'VERSION_ARCHIVED',
+      oldFactorVersionId: existing.id,
+      newFactorVersionId: updated.id,
+      oldValue: existing,
+      newValue: updated,
+      reason,
+      changedBy,
+    });
+
+    return updated;
+  }
+
+  async isProductionReady(id: string) {
+    const version = await this.findGovernedFactorVersion(id);
+    return this.isProductionReadyVersion(version);
+  }
+
+  isOfficialSource(sourceAuthority?: string | null) {
+    return isOfficialSourceAuthority(sourceAuthority);
+  }
+
+  async getFactorVersions(factorId: string, includeArchived = true) {
+    await this.ensureFactorExists(factorId);
+
+    const versions = await this.prisma.factorVersion.findMany({
+      where: {
+        factorId,
+        ...(includeArchived ? {} : { status: { not: 'ARCHIVED' } }),
+      },
+      include: { factor: true, source: true },
+      orderBy: [{ factorYear: 'desc' }, { createdAt: 'desc' }],
+    });
+
+    return {
+      items: versions.map((version) => this.toFactorVersionDto(version)),
+      total: versions.length,
+      currentActiveVersion: this.toFactorVersionDto(
+        versions.find((version) => ['VERIFIED', 'OFFICIAL'].includes(version.status)) ??
+          versions.find((version) => version.status === 'DRAFT') ??
+          versions[0],
+      ),
+    };
+  }
+
+  async getFactorVersion(id: string) {
+    const version = await this.findGovernedFactorVersion(id);
+    return this.toFactorVersionDto(version);
+  }
+
+  async getFactorVersionUsage(id: string) {
+    await this.findGovernedFactorVersion(id);
+
+    const metricResults = await this.prisma.metricResult.findMany({
+      where: { factorVersionId: id },
+      select: {
+        id: true,
+        organizationId: true,
+        activityDataId: true,
+        metricType: true,
+        calculationDate: true,
+      },
+      orderBy: { calculationDate: 'desc' },
+    });
+
+    const activityRecordIds = new Set(
+      metricResults.map((item) => item.activityDataId).filter(Boolean),
+    );
+    const organizationIds = new Set(metricResults.map((item) => item.organizationId));
+
+    return {
+      reportsUsingThisFactor: 0,
+      activityRecordsUsingThisFactor: activityRecordIds.size,
+      calculations: metricResults.length,
+      organizations: organizationIds.size,
+      recentCalculations: metricResults.slice(0, 10),
+    };
+  }
+
+  async getFactorHistory(factorId: string) {
+    await this.ensureFactorExists(factorId);
+
+    const logs = await this.prisma.factorChangeLog.findMany({
+      where: { factorId },
+      include: {
+        factorVersion: true,
+        oldFactorVersion: true,
+        newFactorVersion: true,
+        changedByUser: {
+          select: { id: true, email: true, firstName: true, lastName: true },
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    return { items: logs, total: logs.length };
+  }
+
+  async createNewFactorVersion(
+    factorId: string,
+    data: CreateFactorVersionDto,
+    reason?: string,
+    changedBy?: string,
+  ) {
+    const factor = await this.ensureFactorExists(factorId);
+    const previous = await this.prisma.factorVersion.findFirst({
+      where: { factorId },
+      include: { factor: true, source: true },
+      orderBy: [{ factorYear: 'desc' }, { createdAt: 'desc' }],
+    });
+
+    if (!previous && (!data.factorValue || !data.inputUnit || !data.resultUnit || !data.sourceId)) {
+      throw new BadRequestException(
+        'factorValue, inputUnit, resultUnit, and sourceId are required for the first factor version.',
+      );
+    }
+
+    const sourceId = data.sourceId ?? previous?.sourceId;
+    if (!sourceId) {
+      throw new BadRequestException('Source is required for a factor version.');
+    }
+    await this.ensureSourceExists(sourceId);
+
+    const factorYear = data.factorYear ?? previous?.factorYear ?? null;
+    const nextVersion = data.version ?? (await this.nextVersionLabel(factorId, factorYear));
+
+    const created = await this.prisma.factorVersion.create({
+      data: {
+        factorId,
+        version: nextVersion,
+        factorValue: new Prisma.Decimal(data.factorValue ?? Number(previous?.factorValue)),
+        inputUnit: data.inputUnit ?? previous?.inputUnit ?? '',
+        resultUnit: data.resultUnit ?? previous?.resultUnit ?? '',
+        jurisdictionCountry: data.jurisdictionCountry ?? previous?.jurisdictionCountry ?? null,
+        jurisdictionRegion: data.jurisdictionRegion ?? previous?.jurisdictionRegion ?? null,
+        factorYear,
+        effectiveFrom: parseOptionalDate(data.effectiveFrom) ?? previous?.effectiveFrom ?? null,
+        effectiveTo: parseOptionalDate(data.effectiveTo) ?? previous?.effectiveTo ?? null,
+        status: 'DRAFT',
+        confidenceLevel: data.confidenceLevel ?? previous?.confidenceLevel ?? 'DEMO',
+        verified: false,
+        sourceId,
+        sourcePage: data.sourcePage ?? previous?.sourcePage ?? null,
+        sourceTable: data.sourceTable ?? previous?.sourceTable ?? null,
+        sourceSection: data.sourceSection ?? previous?.sourceSection ?? null,
+        sourceRow: data.sourceRow ?? previous?.sourceRow ?? null,
+        sourceColumn: data.sourceColumn ?? previous?.sourceColumn ?? null,
+        citationText: data.citationText ?? previous?.citationText ?? null,
+        notes: data.notes ?? previous?.notes ?? null,
+      },
+      include: { factor: true, source: true },
+    });
+
+    await this.logFactorVersionChange({
+      factorId,
+      factorVersionId: created.id,
+      oldFactorVersionId: previous?.id,
+      newFactorVersionId: created.id,
+      action: inferVersionCreateAction(previous, created),
+      oldValue: previous,
+      newValue: created,
+      reason,
+      changedBy,
+    });
+
+    return this.toFactorVersionDto(created, factor.displayName);
+  }
+
+  async updateDraftFactorVersion(
+    id: string,
+    dto: UpdateFactorVersionDraftDto,
+    reason?: string,
+    changedBy?: string,
+  ) {
+    const existing = await this.findGovernedFactorVersion(id);
+    this.ensureDraftEditable(existing);
+
+    if (dto.sourceId !== undefined) {
+      await this.ensureSourceExists(dto.sourceId);
+    }
+
+    const updated = await this.prisma.factorVersion.update({
+      where: { id },
+      data: {
+        ...(dto.version !== undefined ? { version: dto.version } : {}),
+        ...(dto.factorValue !== undefined ? { factorValue: new Prisma.Decimal(dto.factorValue) } : {}),
+        ...(dto.inputUnit !== undefined ? { inputUnit: dto.inputUnit } : {}),
+        ...(dto.resultUnit !== undefined ? { resultUnit: dto.resultUnit } : {}),
+        ...(dto.jurisdictionCountry !== undefined ? { jurisdictionCountry: dto.jurisdictionCountry || null } : {}),
+        ...(dto.jurisdictionRegion !== undefined ? { jurisdictionRegion: dto.jurisdictionRegion || null } : {}),
+        ...(dto.factorYear !== undefined ? { factorYear: dto.factorYear ?? null } : {}),
+        ...(dto.effectiveFrom !== undefined ? { effectiveFrom: parseOptionalDate(dto.effectiveFrom) } : {}),
+        ...(dto.effectiveTo !== undefined ? { effectiveTo: parseOptionalDate(dto.effectiveTo) } : {}),
+        ...(dto.confidenceLevel !== undefined ? { confidenceLevel: dto.confidenceLevel } : {}),
+        ...(dto.sourceId !== undefined ? { sourceId: dto.sourceId } : {}),
+        ...(dto.sourcePage !== undefined ? { sourcePage: dto.sourcePage || null } : {}),
+        ...(dto.sourceTable !== undefined ? { sourceTable: dto.sourceTable || null } : {}),
+        ...(dto.sourceSection !== undefined ? { sourceSection: dto.sourceSection || null } : {}),
+        ...(dto.sourceRow !== undefined ? { sourceRow: dto.sourceRow || null } : {}),
+        ...(dto.sourceColumn !== undefined ? { sourceColumn: dto.sourceColumn || null } : {}),
+        ...(dto.citationText !== undefined ? { citationText: dto.citationText || null } : {}),
+        ...(dto.notes !== undefined ? { notes: dto.notes || null } : {}),
+      },
+      include: { factor: true, source: true },
+    });
+
+    await this.logFactorVersionChange({
+      factorId: existing.factorId,
+      factorVersionId: id,
+      oldFactorVersionId: existing.id,
+      newFactorVersionId: updated.id,
+      action: inferDraftUpdateAction(existing, updated),
+      oldValue: existing,
+      newValue: updated,
+      reason,
+      changedBy,
+    });
+
+    return this.toFactorVersionDto(updated);
+  }
+
+  async getApplicableFactor(input: ApplicableFactorInput): Promise<ApplicableFactor | null> {
+    const activityType = input.activityType as ActivityType;
+    const normalizedInputUnit = normalizeUnit(input.inputUnit);
+    const recordYear = input.factorYear ?? inferYear(input.recordDate);
+
+    const legacyFactors = await this.prisma.conversionFactor.findMany({
+      where: {
+        type: 'EMISSION',
+        activityType,
+        OR: [{ organizationId: input.organizationId }, { isSystemDefault: true }],
+      },
+      orderBy: [
+        { isSystemDefault: 'asc' },
+        { verified: 'desc' },
+        { isDefault: 'desc' },
+        { updatedAt: 'desc' },
+      ],
+    });
+
+    const legacyMatches = legacyFactors.filter(
+      (factor) => normalizeUnit(factor.unit) === normalizedInputUnit,
+    );
+    const organizationCustom = legacyMatches.find(
+      (factor) => factor.organizationId === input.organizationId,
+    );
+
+    if (organizationCustom) {
+      return {
+        factorValue: Number(organizationCustom.factorValue),
+        inputUnit: organizationCustom.unit,
+        resultUnit: organizationCustom.resultUnit,
+        factorId: organizationCustom.id,
+        displayName: organizationCustom.name,
+        sourceAuthority: organizationCustom.sourceAuthority ?? organizationCustom.sourceName,
+        sourceDocument: organizationCustom.sourceDocument ?? organizationCustom.sourceReference,
+        sourceYear: organizationCustom.sourceYear,
+        sourceUrl: organizationCustom.sourceUrl,
+        status: organizationCustom.verified ? 'VERIFIED' : 'DRAFT',
+        confidenceLevel: organizationCustom.confidenceLevel ?? 'CUSTOM',
+        factorType: 'ORGANIZATION_CUSTOM',
+      };
+    }
+
+    const governedVersions = await this.prisma.factorVersion.findMany({
+      where: {
+        factor: {
+          activityType,
+          isActive: true,
+        },
+        status: {
+          notIn: ['DEPRECATED', 'ARCHIVED'] as FactorStatus[],
+        },
+      },
+      include: {
+        factor: true,
+        source: true,
+      },
+      orderBy: [
+        { status: 'desc' },
+        { factorYear: 'desc' },
+        { updatedAt: 'desc' },
+      ],
+    });
+
+    const governedMatch = governedVersions
+      .filter((version) => !['DEPRECATED', 'ARCHIVED'].includes(version.status))
+      .filter((version) => version.source?.isActive !== false)
+      .filter((version) => ['VERIFIED', 'OFFICIAL'].includes(version.status) || (input.allowDemoFactors && version.confidenceLevel === 'DEMO'))
+      .filter((version) => normalizeUnit(version.inputUnit) === normalizedInputUnit)
+      .filter((version) => jurisdictionCountryMatches(version.jurisdictionCountry, input.jurisdictionCountry))
+      .filter((version) => jurisdictionRegionMatches(version.jurisdictionRegion, input.jurisdictionRegion))
+      .filter((version) => !version.factorYear || !recordYear || version.factorYear <= recordYear)
+      .sort(compareFactorVersions(recordYear))[0];
+
+    if (governedMatch) {
+      return {
+        factorValue: Number(governedMatch.factorValue),
+        inputUnit: governedMatch.inputUnit,
+        resultUnit: governedMatch.resultUnit,
+        factorId: governedMatch.factorId,
+        factorVersionId: governedMatch.id,
+        displayName: governedMatch.factor.displayName,
+        sourceAuthority: governedMatch.source?.sourceAuthority ?? null,
+        sourceDocument: governedMatch.source?.sourceDocument ?? null,
+        sourceYear: governedMatch.source?.sourceYear ?? governedMatch.factorYear,
+        sourceUrl: governedMatch.source?.sourceUrl ?? null,
+        status: governedMatch.status,
+        confidenceLevel: governedMatch.confidenceLevel,
+        factorType: 'GOVERNED_LIBRARY',
+      };
+    }
+
+    const legacySystemDefault = legacyMatches.find((factor) => factor.isSystemDefault);
+    if (legacySystemDefault) {
+      return {
+        factorValue: Number(legacySystemDefault.factorValue),
+        inputUnit: legacySystemDefault.unit,
+        resultUnit: legacySystemDefault.resultUnit,
+        factorId: legacySystemDefault.id,
+        displayName: legacySystemDefault.name,
+        sourceAuthority: legacySystemDefault.sourceAuthority ?? legacySystemDefault.sourceName,
+        sourceDocument: legacySystemDefault.sourceDocument ?? legacySystemDefault.sourceReference,
+        sourceYear: legacySystemDefault.sourceYear,
+        sourceUrl: legacySystemDefault.sourceUrl,
+        status: legacySystemDefault.verified ? 'VERIFIED' : 'DRAFT',
+        confidenceLevel: legacySystemDefault.confidenceLevel ?? 'DEMO',
+        factorType: 'LEGACY_SYSTEM_DEFAULT',
+      };
+    }
+
+    return null;
+  }
 
   async create(organizationId: string, dto: CreateConversionFactorDto, userId?: string) {
     this.validateDateRange(dto.effectiveFrom, dto.effectiveTo);
@@ -334,6 +813,253 @@ export class ConversionFactorsService {
     return existing;
   }
 
+  async findGovernedFactorVersion(id: string) {
+    const version = await this.prisma.factorVersion.findUnique({
+      where: { id },
+      include: { factor: true, source: true },
+    });
+
+    if (!version) {
+      throw new NotFoundException(`FactorVersion ${id} not found.`);
+    }
+
+    return version;
+  }
+
+  private async ensureFactorExists(factorId: string) {
+    const factor = await this.prisma.factor.findUnique({ where: { id: factorId } });
+    if (!factor) {
+      throw new NotFoundException(`Factor ${factorId} not found.`);
+    }
+    return factor;
+  }
+
+  private async ensureSourceExists(sourceId: string) {
+    const source = await this.prisma.factorSource.findUnique({ where: { id: sourceId } });
+    if (!source) {
+      throw new NotFoundException(`FactorSource ${sourceId} not found.`);
+    }
+    return source;
+  }
+
+  private ensureDraftEditable(version: NonNullable<FactorVersionWithGovernance>) {
+    if (version.status !== 'DRAFT') {
+      throw new BadRequestException(
+        'Verified or official factor versions are immutable. Create a new factor version instead.',
+      );
+    }
+  }
+
+  private async nextVersionLabel(factorId: string, factorYear?: number | null) {
+    const year = factorYear ?? new Date().getFullYear();
+    const prefix = `v${year}.`;
+    const existing = await this.prisma.factorVersion.findMany({
+      where: { factorId, version: { startsWith: prefix } },
+      select: { version: true },
+    });
+    const suffixes = existing
+      .map((item) => Number(item.version.replace(prefix, '')))
+      .filter((value) => Number.isFinite(value));
+    const next = suffixes.length ? Math.max(...suffixes) + 1 : 1;
+    return `${prefix}${next}`;
+  }
+
+  private toFactorVersionDto(version?: (NonNullable<FactorVersionWithGovernance> & { factor?: { displayName?: string } }) | null, fallbackName?: string) {
+    if (!version) return null;
+    return {
+      id: version.id,
+      factorId: version.factorId,
+      displayName: version.factor?.displayName ?? fallbackName,
+      version: version.version,
+      factorValue: Number(version.factorValue),
+      inputUnit: version.inputUnit,
+      resultUnit: version.resultUnit,
+      jurisdictionCountry: version.jurisdictionCountry,
+      jurisdictionRegion: version.jurisdictionRegion,
+      factorYear: version.factorYear,
+      effectiveFrom: version.effectiveFrom,
+      effectiveTo: version.effectiveTo,
+      status: version.status,
+      confidenceLevel: version.confidenceLevel,
+      verified: version.verified,
+      reviewedBy: version.reviewedBy,
+      reviewedAt: version.reviewedAt,
+      reviewNotes: version.reviewNotes,
+      approvalSource: version.approvalSource,
+      sourceId: version.sourceId,
+      sourcePage: version.sourcePage,
+      sourceSection: version.sourceSection,
+      sourceTable: version.sourceTable,
+      sourceRow: version.sourceRow,
+      sourceColumn: version.sourceColumn,
+      citationText: version.citationText,
+      source: version.source
+        ? {
+            id: version.source.id,
+            sourceAuthority: version.source.sourceAuthority,
+            sourceShortName: version.source.sourceShortName,
+            sourceDocument: version.source.sourceDocument,
+            sourceYear: version.source.sourceYear,
+            sourceUrl: version.source.sourceUrl,
+            isOfficial: version.source.isOfficial,
+            isActive: version.source.isActive,
+            publisherType: version.source.publisherType,
+          }
+        : null,
+      notes: version.notes,
+      createdAt: version.createdAt,
+      updatedAt: version.updatedAt,
+    };
+  }
+
+  private validateProductionReadiness(
+    version: NonNullable<FactorVersionWithGovernance>,
+    input: FactorReviewInput & { reviewedAt: Date; status: FactorStatus },
+  ) {
+    if (input.status !== 'VERIFIED') return;
+
+    if (!input.reviewedBy?.trim()) {
+      throw new BadRequestException('Reviewed by is required before verifying a factor version.');
+    }
+
+    if (!input.reviewedAt || Number.isNaN(input.reviewedAt.getTime())) {
+      throw new BadRequestException('Reviewed at is required before verifying a factor version.');
+    }
+
+    if (!version.source) {
+      throw new BadRequestException('A source is required before verifying a factor version.');
+    }
+
+    if (version.factorValue === null || version.factorValue === undefined) {
+      throw new BadRequestException('Factor value is required before verifying a factor version.');
+    }
+
+    if (!version.jurisdictionCountry && !version.jurisdictionRegion) {
+      throw new BadRequestException('Jurisdiction is required before verifying a factor version.');
+    }
+
+    if (!version.factorYear) {
+      throw new BadRequestException('Factor year is required before verifying a factor version.');
+    }
+
+    if (['VERIFIED', 'OFFICIAL'].includes(input.status)) {
+      this.validateActiveOfficialSource(version.source);
+    }
+
+    if (version.confidenceLevel === 'OFFICIAL_GOVERNMENT') {
+      this.validateActiveOfficialSource(version.source);
+
+      if (version.source.publisherType !== 'GOVERNMENT') {
+        throw new BadRequestException(
+          'Official government confidence requires a government source.',
+        );
+      }
+
+      if (!this.isOfficialSource(version.source.sourceAuthority)) {
+        throw new BadRequestException(
+          'Official government confidence requires an official source authority.',
+        );
+      }
+    }
+  }
+
+  private isProductionReadyVersion(version: NonNullable<FactorVersionWithGovernance>) {
+    return Boolean(
+      version.status === 'VERIFIED' &&
+        version.verified &&
+        version.reviewedBy?.trim() &&
+        version.reviewedAt &&
+        version.source &&
+        version.source.isActive &&
+        version.source.isOfficial &&
+        version.factorValue !== null &&
+        version.factorValue !== undefined &&
+        (version.jurisdictionCountry || version.jurisdictionRegion) &&
+        version.factorYear,
+    );
+  }
+
+  private validateActiveOfficialSource(
+    source?: { isActive?: boolean | null; isOfficial?: boolean | null } | null,
+  ) {
+    if (!source) {
+      throw new BadRequestException('An active official source is required before marking a factor version production-ready.');
+    }
+
+    if (!source.isActive) {
+      throw new BadRequestException('Archived sources cannot be used for new production-ready factor versions.');
+    }
+
+    if (!source.isOfficial) {
+      throw new BadRequestException('A verified or official factor version must link to an official source.');
+    }
+  }
+
+  private async deprecatePreviousProductionVersions(version: NonNullable<FactorVersionWithGovernance>) {
+    const previousVersions = await this.prisma.factorVersion.findMany({
+      where: {
+        id: { not: version.id },
+        factorId: version.factorId,
+        inputUnit: version.inputUnit,
+        jurisdictionCountry: version.jurisdictionCountry,
+        jurisdictionRegion: version.jurisdictionRegion,
+        factorYear: version.factorYear,
+        status: { in: ['VERIFIED', 'OFFICIAL'] },
+      },
+      include: { factor: true, source: true },
+    });
+
+    for (const previous of previousVersions) {
+      const deprecated = await this.prisma.factorVersion.update({
+        where: { id: previous.id },
+        data: { status: 'DEPRECATED' },
+        include: { factor: true, source: true },
+      });
+
+      await this.logFactorVersionChange({
+        factorId: previous.factorId,
+        factorVersionId: previous.id,
+        oldFactorVersionId: previous.id,
+        newFactorVersionId: version.id,
+        action: 'VERSION_DEPRECATED',
+        oldValue: previous,
+        newValue: deprecated,
+        reason: `Replaced by factor version ${version.version}`,
+        changedBy: version.reviewedBy ?? undefined,
+      });
+    }
+  }
+
+  private async logFactorVersionChange(input: {
+    factorId: string;
+    factorVersionId: string;
+    oldFactorVersionId?: string | null;
+    newFactorVersionId?: string | null;
+    action: string;
+    oldValue?: unknown;
+    newValue?: unknown;
+    reason?: string;
+    changedBy?: string;
+  }) {
+    await this.prisma.factorChangeLog.create({
+      data: {
+        factorId: input.factorId,
+        factorVersionId: input.factorVersionId,
+        oldFactorVersionId: input.oldFactorVersionId ?? null,
+        newFactorVersionId: input.newFactorVersionId ?? null,
+        action: input.action,
+        oldValue: input.oldValue
+          ? (JSON.parse(JSON.stringify(input.oldValue)) as Prisma.InputJsonValue)
+          : undefined,
+        newValue: input.newValue
+          ? (JSON.parse(JSON.stringify(input.newValue)) as Prisma.InputJsonValue)
+          : undefined,
+        reason: input.reason ?? null,
+        changedBy: input.changedBy ?? null,
+      },
+    });
+  }
+
   private validateDateRange(
     effectiveFrom?: string | null,
     effectiveTo?: string | null,
@@ -353,4 +1079,92 @@ export class ConversionFactorsService {
       }
     }
   }
+}
+
+
+function parseOptionalDate(value?: string | null) {
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    throw new BadRequestException('Invalid factor version date.');
+  }
+  return date;
+}
+
+function inferVersionCreateAction(previous: unknown, created: { factorValue: Prisma.Decimal; sourceId: string }) {
+  if (!previous) return 'VERSION_CREATED';
+  const oldVersion = previous as { factorValue?: Prisma.Decimal; sourceId?: string };
+  if (oldVersion.sourceId !== created.sourceId) return 'SOURCE_CHANGED';
+  if (String(oldVersion.factorValue) !== String(created.factorValue)) return 'VALUE_CHANGED';
+  return 'VERSION_CREATED';
+}
+
+function inferDraftUpdateAction(previous: { factorValue: Prisma.Decimal; sourceId: string }, updated: { factorValue: Prisma.Decimal; sourceId: string; status: string }) {
+  if (previous.sourceId !== updated.sourceId) return 'SOURCE_CHANGED';
+  if (String(previous.factorValue) !== String(updated.factorValue)) return 'VALUE_CHANGED';
+  return 'STATUS_CHANGED';
+}
+
+
+const OFFICIAL_SOURCE_AUTHORITIES = [
+  'environment and climate change canada',
+  'eccc',
+  'us epa',
+  'epa',
+  'defra',
+  'ipcc',
+  'ghg protocol',
+  'greenhouse gas protocol',
+];
+
+function isOfficialSourceAuthority(sourceAuthority?: string | null) {
+  const source = normalizeText(sourceAuthority);
+  if (!source) return false;
+  return OFFICIAL_SOURCE_AUTHORITIES.some(
+    (authority) => source === authority || source.includes(authority),
+  );
+}
+
+function normalizeText(value?: string | null) {
+  return String(value ?? '').trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+function jurisdictionCountryMatches(factorCountry?: string | null, requestedCountry?: string | null) {
+  const factor = normalizeText(factorCountry);
+  const requested = normalizeText(requestedCountry);
+  return !factor || !requested || factor === requested;
+}
+
+function jurisdictionRegionMatches(factorRegion?: string | null, requestedRegion?: string | null) {
+  const factor = normalizeText(factorRegion);
+  const requested = normalizeText(requestedRegion);
+  if (!factor || !requested) return true;
+  return factor === requested || requested.includes(factor) || factor.includes(requested);
+}
+
+function inferYear(value?: Date | string | null) {
+  if (!value) return null;
+  const date = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date.getUTCFullYear();
+}
+
+function compareFactorVersions(requestedYear?: number | null) {
+  const statusRank: Record<string, number> = {
+    VERIFIED: 5,
+    OFFICIAL: 4,
+    DRAFT: 3,
+    DEPRECATED: 1,
+    ARCHIVED: 0,
+  };
+
+  return (a: { status: string; factorYear: number | null; updatedAt: Date }, b: { status: string; factorYear: number | null; updatedAt: Date }) => {
+    const aExactYear = requestedYear && a.factorYear === requestedYear ? 1 : 0;
+    const bExactYear = requestedYear && b.factorYear === requestedYear ? 1 : 0;
+    if (aExactYear !== bExactYear) return bExactYear - aExactYear;
+
+    const statusDiff = (statusRank[b.status] ?? 0) - (statusRank[a.status] ?? 0);
+    if (statusDiff !== 0) return statusDiff;
+
+    return b.updatedAt.getTime() - a.updatedAt.getTime();
+  };
 }

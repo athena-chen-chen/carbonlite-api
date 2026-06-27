@@ -7,6 +7,8 @@ describe('CalculationQualityService', () => {
     id: 'org-1',
     provinceState: 'Alberta',
     country: 'Canada',
+    defaultReportingYear: null,
+    allowDemoFactorsForCalculations: false,
   };
 
   function record(overrides: Record<string, unknown> = {}) {
@@ -27,6 +29,9 @@ describe('CalculationQualityService', () => {
       sourceReference: 'test record',
       sourceFileName: null,
       sourceDocumentId: null,
+      sourcePage: null,
+      sourceRow: null,
+      sourceTextSnippet: null,
       importBatchId: null,
       notes: null,
       createdAt: new Date(),
@@ -234,7 +239,7 @@ describe('CalculationQualityService', () => {
           id: 'factor-custom',
           organizationId: 'org-1',
           isSystemDefault: false,
-          verified: false,
+          verified: true,
           factorValue: new Prisma.Decimal(3),
         }),
       ],
@@ -246,6 +251,267 @@ describe('CalculationQualityService', () => {
       factorValue: 3,
       factorPriority: 'ORGANIZATION_CUSTOM',
       calculatedEmissionsKgCO2e: 3000,
+    });
+  });
+
+  function source(overrides: Record<string, unknown> = {}) {
+    return {
+      id: 'source-eccc',
+      sourceAuthority: 'Environment and Climate Change Canada',
+      sourceShortName: 'ECCC',
+      sourceDocument: 'Emission Factors and Reference Values',
+      sourceVersion: '2025',
+      sourceYear: 2025,
+      sourceUrl: 'https://example.com/eccc.pdf',
+      sourcePage: null,
+      sourceTable: null,
+      page: '',
+      tableReference: '',
+      publishedDate: new Date('2025-01-01T00:00:00.000Z'),
+      country: 'Canada',
+      jurisdictionRegion: 'Canada',
+      publisherType: 'GOVERNMENT',
+      description: null,
+      notes: '',
+      isOfficial: true,
+      isActive: true,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      ...overrides,
+    } as any;
+  }
+
+  function governedFactor(overrides: Record<string, unknown> = {}) {
+    return {
+      id: 'factor-version-ab-2025',
+      factorId: 'factor-electricity-ab',
+      version: 'v2025.1',
+      factorValue: new Prisma.Decimal(0.5),
+      inputUnit: 'kWh',
+      resultUnit: 'kgCO2e',
+      jurisdictionCountry: 'Canada',
+      jurisdictionRegion: 'Alberta',
+      factorYear: 2025,
+      effectiveFrom: null,
+      effectiveTo: null,
+      status: 'VERIFIED',
+      confidenceLevel: 'OFFICIAL_GOVERNMENT',
+      verified: true,
+      reviewedBy: 'reviewer-1',
+      reviewedAt: new Date(),
+      reviewNotes: null,
+      approvalSource: 'ECCC',
+      sourceId: 'source-eccc',
+      sourcePage: null,
+      sourceSection: null,
+      sourceTable: null,
+      sourceRow: null,
+      sourceColumn: null,
+      citationText: null,
+      notes: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      factor: {
+        id: 'factor-electricity-ab',
+        activityType: 'ELECTRICITY',
+        displayName: 'Electricity - Alberta',
+        category: 'ELECTRICITY',
+        scope: 'Scope 2',
+        description: null,
+        isSystem: true,
+        isActive: true,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+      source: source(),
+      ...overrides,
+    } as any;
+  }
+
+  it('uses Alberta electricity 2025 factor for Alberta 2025 records', () => {
+    const result = service.evaluate({
+      organization,
+      records: [
+        record({
+          activityType: 'ELECTRICITY',
+          quantity: new Prisma.Decimal(1000),
+          unit: 'KWH',
+          recordDate: new Date('2025-06-30T00:00:00.000Z'),
+          jurisdictionRegion: 'Alberta',
+          jurisdictionCountry: 'Canada',
+          sourceType: 'AI_EXTRACTION',
+          sourceFileName: 'electricity-bill.pdf',
+          sourceReference: 'Utility charges',
+          sourcePage: '2',
+          sourceRow: '5',
+          sourceTextSnippet: 'Electricity usage 1000 kWh',
+        }),
+      ],
+      factors: [],
+      governedFactors: [
+        governedFactor({
+          sourcePage: '12',
+          sourceTable: 'Table 3',
+        }),
+      ],
+    });
+
+    expect(result.totalEstimatedEmissionsKgCO2e).toBe(500);
+    expect(result.calculationDetails[0]).toMatchObject({
+      factorVersionId: 'factor-version-ab-2025',
+      matchedBy: 'exact province and year',
+      matchingStatus: 'MATCHED',
+      factorDisplayName: 'Electricity - Alberta',
+      sourceAuthority: 'Environment and Climate Change Canada',
+      sourceDocument: 'Emission Factors and Reference Values',
+      factorSourcePage: '12',
+      factorSourceTable: 'Table 3',
+      calculationFormula: '1000 × 0.5 = 500 kgCO2e',
+      sourceFileName: 'electricity-bill.pdf',
+      sourcePage: '2',
+      sourceRow: '5',
+      sourceTextSnippet: 'Electricity usage 1000 kWh',
+      normalizedUnit: 'kwh',
+    });
+    expect(result.conversionFactorsUsed[0]).toMatchObject({
+      factorVersionId: 'factor-version-ab-2025',
+      sourcePage: '12',
+      sourceTable: 'Table 3',
+      usedRecordsCount: 1,
+    });
+    expect(result.matchedActivityEmissions[0]).toMatchObject({
+      factorVersionId: 'factor-version-ab-2025',
+      calculationFormula: '1000 × 0.5 = 500 kgCO2e',
+      sourceFileName: 'electricity-bill.pdf',
+      sourcePage: '2',
+    });
+  });
+
+  it('does not use Alberta electricity factor for British Columbia records', () => {
+    const result = service.evaluate({
+      organization: { ...organization, provinceState: 'British Columbia' },
+      records: [
+        record({
+          activityType: 'ELECTRICITY',
+          quantity: new Prisma.Decimal(1000),
+          unit: 'kWh',
+          jurisdictionRegion: 'British Columbia',
+          jurisdictionCountry: 'Canada',
+        }),
+      ],
+      factors: [],
+      governedFactors: [governedFactor()],
+    });
+
+    expect(result.totalEstimatedEmissionsKgCO2e).toBe(0);
+    expect(result.calculationDetails[0]).toMatchObject({
+      status: 'MISSING_FACTOR',
+    });
+  });
+
+  it('uses nearest prior year factor with warning', () => {
+    const result = service.evaluate({
+      organization,
+      records: [
+        record({
+          activityType: 'ELECTRICITY',
+          quantity: new Prisma.Decimal(1000),
+          unit: 'kWh',
+          recordDate: new Date('2026-06-30T00:00:00.000Z'),
+          jurisdictionRegion: 'Alberta',
+          jurisdictionCountry: 'Canada',
+        }),
+      ],
+      factors: [],
+      governedFactors: [governedFactor()],
+    });
+
+    expect(result.totalEstimatedEmissionsKgCO2e).toBe(500);
+    expect(result.calculationDetails[0]).toMatchObject({
+      matchingStatus: 'MATCHED_PRIOR_YEAR',
+      matchedBy: 'nearest prior year',
+      factorYear: 2025,
+      recordYear: 2026,
+    });
+  });
+
+  it('uses country-level fuel factor when province-specific factor is absent', () => {
+    const result = service.evaluate({
+      organization,
+      records: [record({ quantity: new Prisma.Decimal(1000), unit: 'LTR' })],
+      factors: [],
+      governedFactors: [
+        governedFactor({
+          id: 'diesel-canada-2025',
+          factorValue: new Prisma.Decimal(2.68),
+          inputUnit: 'liters',
+          jurisdictionRegion: 'Canada',
+          factor: {
+            id: 'factor-diesel-canada',
+            activityType: 'DIESEL',
+            displayName: 'Diesel - Canada',
+            category: 'FUEL',
+            scope: 'Scope 1',
+            description: null,
+            isSystem: true,
+            isActive: true,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          },
+        }),
+      ],
+    });
+
+    expect(result.totalEstimatedEmissionsKgCO2e).toBe(2680);
+    expect(result.calculationDetails[0]).toMatchObject({
+      factorVersionId: 'diesel-canada-2025',
+      matchedBy: 'country-level fallback',
+    });
+  });
+
+  it('does not use demo factors by default', () => {
+    const result = service.evaluate({
+      organization,
+      records: [record({ quantity: new Prisma.Decimal(1000) })],
+      factors: [],
+      governedFactors: [
+        governedFactor({
+          id: 'demo-diesel',
+          inputUnit: 'liters',
+          status: 'DRAFT',
+          confidenceLevel: 'DEMO',
+          verified: false,
+          factor: {
+            id: 'factor-demo-diesel',
+            activityType: 'DIESEL',
+            displayName: 'Demo Diesel',
+            category: 'FUEL',
+            scope: 'Scope 1',
+            description: null,
+            isSystem: true,
+            isActive: true,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          },
+        }),
+      ],
+    });
+
+    expect(result.totalEstimatedEmissionsKgCO2e).toBe(0);
+    expect(result.calculationDetails[0].status).toBe('MISSING_FACTOR');
+  });
+
+  it('invalid numeric unit prevents calculation', () => {
+    const result = service.evaluate({
+      organization,
+      records: [record({ unit: '20', quantity: new Prisma.Decimal(1000) })],
+      factors: [factor()],
+    });
+
+    expect(result.totalEstimatedEmissionsKgCO2e).toBe(0);
+    expect(result.calculationDetails[0]).toMatchObject({
+      status: 'INVALID_UNIT',
+      reason: 'A valid activity unit is required.',
     });
   });
 

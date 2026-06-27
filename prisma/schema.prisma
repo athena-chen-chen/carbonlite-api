@@ -60,6 +60,50 @@ enum FactorType {
   CUSTOM
 }
 
+enum FactorStatus {
+  DRAFT
+  OFFICIAL
+  VERIFIED
+  DEPRECATED
+  ARCHIVED
+}
+
+enum FactorConfidenceLevel {
+  OFFICIAL_GOVERNMENT
+  INDUSTRY_STANDARD
+  ESTIMATED
+  CUSTOM
+  DEMO
+}
+
+enum FactorCategory {
+  FUEL
+  ELECTRICITY
+  NATURAL_GAS
+  WATER
+  WASTE
+  TRANSPORT
+  HOTEL
+  SHIPPING
+  OTHER
+}
+
+enum ReviewStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  NEEDS_UPDATE
+}
+
+enum PublisherType {
+  GOVERNMENT
+  INDUSTRY_BODY
+  STANDARD_BODY
+  COMPANY
+  CUSTOM
+  UNKNOWN
+}
+
 enum MetricType {
   CARBON_EMISSION
   ENERGY_CONSUMPTION
@@ -128,148 +172,158 @@ enum UserRole {
 }
 
 model User {
-  id              String        @id @default(cuid())
-  organizationId  String
-  email           String        @unique
-  passwordHash    String?
-  firstName       String?
-  lastName        String?
-  role            UserRole      @default(USER)
-  isActive        Boolean       @default(true)
-  lastLoginAt     DateTime?
-  createdAt       DateTime      @default(now())
-  updatedAt       DateTime      @updatedAt
+  id             String    @id @default(cuid())
+  organizationId String
+  email          String    @unique
+  passwordHash   String?
+  firstName      String?
+  lastName       String?
+  role           UserRole  @default(USER)
+  isActive       Boolean   @default(true)
+  lastLoginAt    DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
 
-  organization    Organization  @relation("OrganizationUsers", fields: [organizationId], references: [id], onDelete: Cascade)
-  memberships     Membership[]
-  createdReports  Report[]      @relation("ReportCreatedBy")
-  createdDocs     Document[]    @relation("DocumentUploadedBy")
-  createdAIJobs   AIJob[]       @relation("AIJobCreatedBy")
-  auditLogs       AuditLog[]    @relation("AuditLogUser")
-  activityEvents  UserActivityEvent[] @relation("UserActivityEventUser")
+  organization   Organization        @relation("OrganizationUsers", fields: [organizationId], references: [id], onDelete: Cascade)
+  memberships    Membership[]
+  createdReports Report[]            @relation("ReportCreatedBy")
+  createdDocs    Document[]          @relation("DocumentUploadedBy")
+  createdAIJobs  AIJob[]             @relation("AIJobCreatedBy")
+  auditLogs      AuditLog[]          @relation("AuditLogUser")
+  activityEvents UserActivityEvent[] @relation("UserActivityEventUser")
+  factorReviews  FactorReviewLog[]   @relation("FactorReviewReviewedBy")
+  factorChanges  FactorChangeLog[]   @relation("FactorChangeChangedBy")
 
   @@index([organizationId])
 }
 
 model Organization {
-  id              String             @id @default(cuid())
-  name            String
-  slug            String             @unique
-  industry        String?
-  country         String?
-  provinceState   String?
-  timezone        String?
-  isActive        Boolean            @default(true)
-  createdAt       DateTime           @default(now())
-  updatedAt       DateTime           @updatedAt
+  id                              String   @id @default(cuid())
+  name                            String
+  slug                            String   @unique
+  industry                        String?
+  country                         String?
+  provinceState                   String?
+  timezone                        String?
+  defaultReportingYear            Int?
+  allowDemoFactorsForCalculations Boolean  @default(false)
+  isActive                        Boolean  @default(true)
+  createdAt                       DateTime @default(now())
+  updatedAt                       DateTime @updatedAt
 
-  memberships     Membership[]
-  users           User[]             @relation("OrganizationUsers")
-  facilities      Facility[]
-  factors         ConversionFactor[]
-  reports         Report[]
-  documents       Document[]
-  aiJobs          AIJob[]
-  auditLogs       AuditLog[]
-  feedback        Feedback[]
-  activityEvents  UserActivityEvent[]
+  memberships         Membership[]
+  users               User[]               @relation("OrganizationUsers")
+  facilities          Facility[]
+  factors             ConversionFactor[]
+  reports             Report[]
+  documents           Document[]
+  aiJobs              AIJob[]
+  auditLogs           AuditLog[]
+  feedback            Feedback[]
+  activityEvents      UserActivityEvent[]
   documentExtractions DocumentExtraction[]
 
   // 缺的就是这两个
-  activityData    ActivityData[]
-  metricResults   MetricResult[]
+  activityData  ActivityData[]
+  metricResults MetricResult[]
 }
 
 model Membership {
-  id              String          @id @default(cuid())
-  userId          String
-  organizationId  String
-  role            MembershipRole
-  createdAt       DateTime        @default(now())
-  updatedAt       DateTime        @updatedAt
+  id             String         @id @default(cuid())
+  userId         String
+  organizationId String
+  role           MembershipRole
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
 
-  user            User            @relation(fields: [userId], references: [id], onDelete: Cascade)
-  organization    Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
   @@unique([userId, organizationId])
   @@index([organizationId])
 }
 
 model Facility {
-  id              String          @id @default(cuid())
-  organizationId  String
-  name            String
-  code            String?
-  type            FacilityType    @default(OTHER)
-  addressLine1    String?
-  addressLine2    String?
-  city            String?
-  provinceState   String?
-  country         String?
-  postalCode      String?
-  latitude        Float?
-  longitude       Float?
-  isActive        Boolean         @default(true)
-  createdAt       DateTime        @default(now())
-  updatedAt       DateTime        @updatedAt
+  id             String       @id @default(cuid())
+  organizationId String
+  name           String
+  code           String?
+  type           FacilityType @default(OTHER)
+  addressLine1   String?
+  addressLine2   String?
+  city           String?
+  provinceState  String?
+  country        String?
+  postalCode     String?
+  latitude       Float?
+  longitude      Float?
+  isActive       Boolean      @default(true)
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
 
-  organization    Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  assets          Asset[]
-  activityData    ActivityData[]
-  metricResults   MetricResult[]
-  reports         Report[]
-  documents       Document[]
+  organization  Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  assets        Asset[]
+  activityData  ActivityData[]
+  metricResults MetricResult[]
+  reports       Report[]
+  documents     Document[]
 
   @@index([organizationId])
 }
 
 model Asset {
-  id              String          @id @default(cuid())
-  facilityId      String
-  name            String
-  type            AssetType       @default(OTHER)
-  serialNumber    String?
-  manufacturer    String?
-  model           String?
-  notes           String?
-  isActive        Boolean         @default(true)
-  createdAt       DateTime        @default(now())
-  updatedAt       DateTime        @updatedAt
+  id           String    @id @default(cuid())
+  facilityId   String
+  name         String
+  type         AssetType @default(OTHER)
+  serialNumber String?
+  manufacturer String?
+  model        String?
+  notes        String?
+  isActive     Boolean   @default(true)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
 
-  facility        Facility        @relation(fields: [facilityId], references: [id], onDelete: Cascade)
-  activityData    ActivityData[]
+  facility     Facility       @relation(fields: [facilityId], references: [id], onDelete: Cascade)
+  activityData ActivityData[]
 
   @@index([facilityId])
 }
 
 model ActivityData {
-  id                String            @id @default(cuid())
-  organizationId    String
-  facilityId        String?
-  assetId           String?
-  documentId        String?
-  activityType      ActivityType
-  customTypeLabel   String?
-  recordDate        DateTime
-  dateEstimated     Boolean           @default(false)
-  periodStart       DateTime?
-  periodEnd         DateTime?
-  quantity          Decimal           @db.Decimal(18, 4)
-  unit              String
-  sourceType        RecordSourceType
-  sourceReference   String?
-  sourceFileName    String?
-  sourceDocumentId  String?
-  importBatchId     String?
-  notes             String?
-  createdAt         DateTime          @default(now())
-  updatedAt         DateTime          @updatedAt
+  id                  String           @id @default(cuid())
+  organizationId      String
+  facilityId          String?
+  assetId             String?
+  documentId          String?
+  activityType        ActivityType
+  customTypeLabel     String?
+  recordDate          DateTime
+  dateEstimated       Boolean          @default(false)
+  jurisdictionCountry String?
+  jurisdictionRegion  String?
+  recordYear          Int?
+  periodStart         DateTime?
+  periodEnd           DateTime?
+  quantity            Decimal          @db.Decimal(18, 4)
+  unit                String
+  sourceType          RecordSourceType
+  sourceReference     String?
+  sourceFileName      String?
+  sourceDocumentId    String?
+  sourcePage          String?
+  sourceRow           String?
+  sourceTextSnippet   String?
+  importBatchId       String?
+  notes               String?
+  createdAt           DateTime         @default(now())
+  updatedAt           DateTime         @updatedAt
 
-  organization      Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  facility          Facility?         @relation(fields: [facilityId], references: [id], onDelete: SetNull)
-  asset             Asset?            @relation(fields: [assetId], references: [id], onDelete: SetNull)
-  document          Document?         @relation(fields: [documentId], references: [id], onDelete: SetNull)
-  metricResults     MetricResult[]
+  organization  Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  facility      Facility?      @relation(fields: [facilityId], references: [id], onDelete: SetNull)
+  asset         Asset?         @relation(fields: [assetId], references: [id], onDelete: SetNull)
+  document      Document?      @relation(fields: [documentId], references: [id], onDelete: SetNull)
+  metricResults MetricResult[]
 
   @@index([organizationId])
   @@index([facilityId])
@@ -277,39 +331,189 @@ model ActivityData {
   @@index([documentId])
   @@index([activityType])
   @@index([recordDate])
+  @@index([jurisdictionCountry])
+  @@index([jurisdictionRegion])
+  @@index([recordYear])
+}
+
+model Factor {
+  id           String         @id @default(cuid())
+  activityType ActivityType
+  displayName  String
+  category     FactorCategory @default(OTHER)
+  scope        String?
+  description  String?
+  isSystem     Boolean        @default(true)
+  isActive     Boolean        @default(true)
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+
+  versions   FactorVersion[]
+  changeLogs FactorChangeLog[]
+
+  @@index([activityType])
+  @@index([category])
+  @@index([isSystem])
+  @@index([isActive])
+}
+
+model FactorVersion {
+  id                  String                @id @default(cuid())
+  factorId            String
+  version             String
+  factorValue         Decimal               @db.Decimal(18, 8)
+  inputUnit           String
+  resultUnit          String
+  jurisdictionCountry String?
+  jurisdictionRegion  String?
+  factorYear          Int?
+  effectiveFrom       DateTime?
+  effectiveTo         DateTime?
+  status              FactorStatus          @default(DRAFT)
+  confidenceLevel     FactorConfidenceLevel @default(DEMO)
+  verified            Boolean               @default(false)
+  reviewedBy          String?
+  reviewedAt          DateTime?
+  reviewNotes         String?
+  approvalSource      String?
+  sourceId            String
+  sourcePage          String?
+  sourceSection       String?
+  sourceTable         String?
+  sourceRow           String?
+  sourceColumn        String?
+  citationText        String?
+  notes               String?
+  createdAt           DateTime              @default(now())
+  updatedAt           DateTime              @updatedAt
+
+  factor        Factor            @relation(fields: [factorId], references: [id], onDelete: Cascade)
+  source        FactorSource      @relation(fields: [sourceId], references: [id], onDelete: Restrict)
+  reviewLogs    FactorReviewLog[]
+  changeLogs    FactorChangeLog[]
+  oldChangeLogs FactorChangeLog[] @relation("FactorChangeOldVersion")
+  newChangeLogs FactorChangeLog[] @relation("FactorChangeNewVersion")
+
+  @@unique([factorId, version])
+  @@index([factorId])
+  @@index([inputUnit])
+  @@index([jurisdictionRegion])
+  @@index([factorYear])
+  @@index([status])
+  @@index([confidenceLevel])
+  @@index([verified])
+  @@index([factorId, version])
+}
+
+model FactorSource {
+  id                 String        @id @default(cuid())
+  sourceAuthority    String
+  sourceShortName    String?
+  sourceDocument     String
+  sourceVersion      String
+  sourceYear         Int
+  sourceUrl          String
+  sourcePage         String?
+  sourceTable        String?
+  page               String
+  tableReference     String
+  publishedDate      DateTime
+  country            String?
+  jurisdictionRegion String?
+  publisherType      PublisherType @default(UNKNOWN)
+  description        String?
+  notes              String
+  isOfficial         Boolean       @default(false)
+  isActive           Boolean       @default(true)
+  createdAt          DateTime      @default(now())
+  updatedAt          DateTime      @updatedAt
+
+  versions FactorVersion[]
+
+  @@index([sourceAuthority])
+  @@index([sourceShortName])
+  @@index([sourceYear])
+  @@index([publisherType])
+  @@index([isOfficial])
+  @@index([isActive])
+}
+
+model FactorReviewLog {
+  id              String       @id @default(cuid())
+  factorVersionId String
+  reviewedBy      String?
+  reviewStatus    ReviewStatus @default(PENDING)
+  reviewNotes     String?
+  reviewedAt      DateTime     @default(now())
+
+  factorVersion FactorVersion @relation(fields: [factorVersionId], references: [id], onDelete: Cascade)
+  reviewer      User?         @relation("FactorReviewReviewedBy", fields: [reviewedBy], references: [id], onDelete: SetNull)
+
+  @@index([factorVersionId])
+  @@index([reviewedBy])
+  @@index([reviewStatus])
+  @@index([reviewedAt])
+}
+
+model FactorChangeLog {
+  id                 String   @id @default(cuid())
+  factorId           String
+  factorVersionId    String?
+  oldFactorVersionId String?
+  newFactorVersionId String?
+  action             String
+  oldValue           Json?
+  newValue           Json?
+  reason             String?
+  changedBy          String?
+  createdAt          DateTime @default(now())
+
+  factor           Factor         @relation(fields: [factorId], references: [id], onDelete: Cascade)
+  factorVersion    FactorVersion? @relation(fields: [factorVersionId], references: [id], onDelete: SetNull)
+  oldFactorVersion FactorVersion? @relation("FactorChangeOldVersion", fields: [oldFactorVersionId], references: [id], onDelete: SetNull)
+  newFactorVersion FactorVersion? @relation("FactorChangeNewVersion", fields: [newFactorVersionId], references: [id], onDelete: SetNull)
+  changedByUser    User?          @relation("FactorChangeChangedBy", fields: [changedBy], references: [id], onDelete: SetNull)
+
+  @@index([factorId])
+  @@index([factorVersionId])
+  @@index([oldFactorVersionId])
+  @@index([newFactorVersionId])
+  @@index([action])
+  @@index([changedBy])
+  @@index([createdAt])
 }
 
 model ConversionFactor {
-  id                String          @id @default(cuid())
-  organizationId    String?
-  name              String
-  type              FactorType
-  activityType      ActivityType?
-  jurisdiction      String?
-  region            String?
-  country           String?
-  unit              String
-  factorValue       Decimal         @db.Decimal(18, 8)
-  resultUnit        String
-  sourceName        String?
-  sourceReference   String?
-  sourceAuthority   String?
-  sourceDocument    String?
-  sourceYear        Int?
-  sourceUrl         String?
-  methodology       String?
-  confidenceLevel   String?
-  verified          Boolean         @default(false)
-  notes             String?
-  effectiveFrom     DateTime?
-  effectiveTo       DateTime?
-  isDefault         Boolean         @default(false)
-  isSystemDefault   Boolean         @default(false)
-  createdAt         DateTime        @default(now())
-  updatedAt         DateTime        @updatedAt
+  id              String        @id @default(cuid())
+  organizationId  String?
+  name            String
+  type            FactorType
+  activityType    ActivityType?
+  jurisdiction    String?
+  region          String?
+  country         String?
+  unit            String
+  factorValue     Decimal       @db.Decimal(18, 8)
+  resultUnit      String
+  sourceName      String?
+  sourceReference String?
+  sourceAuthority String?
+  sourceDocument  String?
+  sourceYear      Int?
+  sourceUrl       String?
+  methodology     String?
+  confidenceLevel String?
+  verified        Boolean       @default(false)
+  notes           String?
+  effectiveFrom   DateTime?
+  effectiveTo     DateTime?
+  isDefault       Boolean       @default(false)
+  isSystemDefault Boolean       @default(false)
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
 
-  organization      Organization?   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  metricResults     MetricResult[]
+  organization  Organization?  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  metricResults MetricResult[]
 
   @@index([organizationId])
   @@index([type])
@@ -320,55 +524,57 @@ model ConversionFactor {
 }
 
 model MetricResult {
-  id                String            @id @default(cuid())
-  organizationId    String
-  facilityId        String?
-  activityDataId    String?
-  factorId          String?
-  metricType        MetricType
-  value             Decimal           @db.Decimal(18, 6)
-  unit              String
-  calculationDate   DateTime          @default(now())
-  periodStart       DateTime?
-  periodEnd         DateTime?
-  detailsJson       Json?
-  createdAt         DateTime          @default(now())
-  updatedAt         DateTime          @updatedAt
+  id              String     @id @default(cuid())
+  organizationId  String
+  facilityId      String?
+  activityDataId  String?
+  factorId        String?
+  factorVersionId String?
+  metricType      MetricType
+  value           Decimal    @db.Decimal(18, 6)
+  unit            String
+  calculationDate DateTime   @default(now())
+  periodStart     DateTime?
+  periodEnd       DateTime?
+  detailsJson     Json?
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
 
-  organization      Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  facility          Facility?         @relation(fields: [facilityId], references: [id], onDelete: SetNull)
-  activityData      ActivityData?     @relation(fields: [activityDataId], references: [id], onDelete: SetNull)
-  factor            ConversionFactor? @relation(fields: [factorId], references: [id], onDelete: SetNull)
+  organization Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  facility     Facility?         @relation(fields: [facilityId], references: [id], onDelete: SetNull)
+  activityData ActivityData?     @relation(fields: [activityDataId], references: [id], onDelete: SetNull)
+  factor       ConversionFactor? @relation(fields: [factorId], references: [id], onDelete: SetNull)
 
   @@index([organizationId])
   @@index([facilityId])
   @@index([activityDataId])
   @@index([factorId])
+  @@index([factorVersionId])
   @@index([metricType])
   @@index([periodStart, periodEnd])
 }
 
 model Report {
-  id                String          @id @default(cuid())
-  organizationId    String
-  facilityId        String?
-  title             String
-  reportingYear     Int?
-  periodStart       DateTime?
-  periodEnd         DateTime?
-  status            ReportStatus    @default(DRAFT)
-  summary           String?
-  contentMarkdown   String?
-  generatedPdfUrl   String?
-  createdById       String?
-  createdAt         DateTime        @default(now())
-  updatedAt         DateTime        @updatedAt
+  id              String       @id @default(cuid())
+  organizationId  String
+  facilityId      String?
+  title           String
+  reportingYear   Int?
+  periodStart     DateTime?
+  periodEnd       DateTime?
+  status          ReportStatus @default(DRAFT)
+  summary         String?
+  contentMarkdown String?
+  generatedPdfUrl String?
+  createdById     String?
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
 
-  organization      Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  facility          Facility?       @relation(fields: [facilityId], references: [id], onDelete: SetNull)
-  createdBy         User?           @relation("ReportCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
-  documents         Document[]
-  aiJobs            AIJob[]
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  facility     Facility?    @relation(fields: [facilityId], references: [id], onDelete: SetNull)
+  createdBy    User?        @relation("ReportCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  documents    Document[]
+  aiJobs       AIJob[]
 
   @@index([organizationId])
   @@index([facilityId])
@@ -376,32 +582,32 @@ model Report {
 }
 
 model Document {
-  id                String          @id @default(cuid())
-  organizationId    String
-  facilityId        String?
-  reportId          String?
-  uploadedById      String?
-  fileName          String
-  fileUrl           String
-  mimeType          String?
-  fileSize          Int?
-  fileHash          String?
-  importedAt        DateTime?
-  importBatchId     String?
-  type              DocumentType    @default(OTHER)
-  status            DocumentStatus  @default(UPLOADED)
-  extractedText     String?
-  extractedJson     Json?
-  createdAt         DateTime        @default(now())
-  updatedAt         DateTime        @updatedAt
+  id             String         @id @default(cuid())
+  organizationId String
+  facilityId     String?
+  reportId       String?
+  uploadedById   String?
+  fileName       String
+  fileUrl        String
+  mimeType       String?
+  fileSize       Int?
+  fileHash       String?
+  importedAt     DateTime?
+  importBatchId  String?
+  type           DocumentType   @default(OTHER)
+  status         DocumentStatus @default(UPLOADED)
+  extractedText  String?
+  extractedJson  Json?
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
 
-  organization      Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  facility          Facility?       @relation(fields: [facilityId], references: [id], onDelete: SetNull)
-  report            Report?         @relation(fields: [reportId], references: [id], onDelete: SetNull)
-  uploadedBy        User?           @relation("DocumentUploadedBy", fields: [uploadedById], references: [id], onDelete: SetNull)
-  activityData      ActivityData[]
-  aiJobs            AIJob[]
-  extractions        DocumentExtraction[]
+  organization Organization         @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  facility     Facility?            @relation(fields: [facilityId], references: [id], onDelete: SetNull)
+  report       Report?              @relation(fields: [reportId], references: [id], onDelete: SetNull)
+  uploadedBy   User?                @relation("DocumentUploadedBy", fields: [uploadedById], references: [id], onDelete: SetNull)
+  activityData ActivityData[]
+  aiJobs       AIJob[]
+  extractions  DocumentExtraction[]
 
   @@index([organizationId])
   @@index([organizationId, fileHash])
@@ -411,22 +617,22 @@ model Document {
 }
 
 model DocumentExtraction {
-  id                String          @id @default(cuid())
-  organizationId    String
-  documentId        String
-  status            DocumentStatus
-  extractedJson     Json
-  extractedRows     Json
-  sourceRowCount    Int             @default(0)
-  extractedRowCount Int             @default(0)
-  possibleMissingRows Boolean       @default(false)
-  warning           String?
-  extractedAt       DateTime        @default(now())
-  createdAt         DateTime        @default(now())
-  updatedAt         DateTime        @updatedAt
+  id                  String         @id @default(cuid())
+  organizationId      String
+  documentId          String
+  status              DocumentStatus
+  extractedJson       Json
+  extractedRows       Json
+  sourceRowCount      Int            @default(0)
+  extractedRowCount   Int            @default(0)
+  possibleMissingRows Boolean        @default(false)
+  warning             String?
+  extractedAt         DateTime       @default(now())
+  createdAt           DateTime       @default(now())
+  updatedAt           DateTime       @updatedAt
 
-  organization      Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  document          Document        @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  document     Document     @relation(fields: [documentId], references: [id], onDelete: Cascade)
 
   @@unique([documentId])
   @@index([organizationId])
@@ -435,27 +641,27 @@ model DocumentExtraction {
 }
 
 model AIJob {
-  id                String          @id @default(cuid())
-  organizationId    String
-  reportId          String?
-  documentId        String?
-  createdById       String?
-  jobType           AIJobType
-  status            AIJobStatus     @default(PENDING)
-  prompt            String?
-  inputJson         Json?
-  outputText        String?
-  outputJson        Json?
-  errorMessage      String?
-  startedAt         DateTime?
-  completedAt       DateTime?
-  createdAt         DateTime        @default(now())
-  updatedAt         DateTime        @updatedAt
+  id             String      @id @default(cuid())
+  organizationId String
+  reportId       String?
+  documentId     String?
+  createdById    String?
+  jobType        AIJobType
+  status         AIJobStatus @default(PENDING)
+  prompt         String?
+  inputJson      Json?
+  outputText     String?
+  outputJson     Json?
+  errorMessage   String?
+  startedAt      DateTime?
+  completedAt    DateTime?
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
 
-  organization      Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  report            Report?         @relation(fields: [reportId], references: [id], onDelete: SetNull)
-  document          Document?       @relation(fields: [documentId], references: [id], onDelete: SetNull)
-  createdBy         User?           @relation("AIJobCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  report       Report?      @relation(fields: [reportId], references: [id], onDelete: SetNull)
+  document     Document?    @relation(fields: [documentId], references: [id], onDelete: SetNull)
+  createdBy    User?        @relation("AIJobCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
 
   @@index([organizationId])
   @@index([reportId])
@@ -465,22 +671,22 @@ model AIJob {
 }
 
 model AuditLog {
-  id                String          @id @default(cuid())
-  organizationId    String?
-  userId            String?
-  action            String
-  entityType        String
-  entityId          String?
-  description       String?
-  oldValue          Json?
-  newValue          Json?
-  page              String?
-  ipAddress         String?
-  userAgent         String?
-  createdAt         DateTime        @default(now())
+  id             String   @id @default(cuid())
+  organizationId String?
+  userId         String?
+  action         String
+  entityType     String
+  entityId       String?
+  description    String?
+  oldValue       Json?
+  newValue       Json?
+  page           String?
+  ipAddress      String?
+  userAgent      String?
+  createdAt      DateTime @default(now())
 
-  organization      Organization?   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  user              User?           @relation("AuditLogUser", fields: [userId], references: [id], onDelete: SetNull)
+  organization Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User?         @relation("AuditLogUser", fields: [userId], references: [id], onDelete: SetNull)
 
   @@index([organizationId])
   @@index([userId])
@@ -491,19 +697,19 @@ model AuditLog {
 }
 
 model Feedback {
-  id              String          @id @default(cuid())
-  type            FeedbackType
-  intent          String          @db.Text
-  message         String          @db.Text
-  email           String?
-  page            String?
-  url             String?
-  organizationId  String
-  userAgent       String?
-  status          FeedbackStatus  @default(NEW)
-  createdAt       DateTime        @default(now())
+  id             String         @id @default(cuid())
+  type           FeedbackType
+  intent         String         @db.Text
+  message        String         @db.Text
+  email          String?
+  page           String?
+  url            String?
+  organizationId String
+  userAgent      String?
+  status         FeedbackStatus @default(NEW)
+  createdAt      DateTime       @default(now())
 
-  organization    Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
   @@index([organizationId])
   @@index([status])
@@ -523,8 +729,8 @@ model UserActivityEvent {
   userAgent      String?
   createdAt      DateTime @default(now())
 
-  organization   Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  user           User?         @relation("UserActivityEventUser", fields: [userId], references: [id], onDelete: SetNull)
+  organization Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User?         @relation("UserActivityEventUser", fields: [userId], references: [id], onDelete: SetNull)
 
   @@index([organizationId])
   @@index([userId])

@@ -1,47 +1,63 @@
-// src/factors/factors.controller.ts
-import {
-  Controller,
-  Get,
-  Post,
-  Patch,
-  Delete,
-  Param,
-  Body,
-  Req,
-} from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, Query, UseGuards } from '@nestjs/common';
 import { FactorsService } from './factors.service';
-import { CreateFactorDto } from './dto/create-factor.dto';
-import { UpdateFactorDto } from './dto/update-conversion-factor.dto';
+import { JwtAuthGuard } from '../auth/jwt-auth.guard';
+import { CurrentUser } from '../common/decorators/current-user.decorator';
+import { AuthenticatedUser } from '../auth/auth.service';
+import { Roles } from '../auth/decorators/roles.decorator';
+import { RolesGuard } from '../auth/guards/roles.guard';
+import { UserRole } from '@prisma/client';
+import { ConversionFactorsService } from './conversion-factors.service';
+import { CreateFactorVersionDto } from './dto/create-factor-version.dto';
 
+@UseGuards(JwtAuthGuard)
 @Controller('factors')
 export class FactorsController {
-  constructor(private readonly factorsService: FactorsService) {}
+  constructor(
+    private readonly factorsService: FactorsService,
+    private readonly conversionFactorsService: ConversionFactorsService,
+  ) {}
 
-  // @Get()
-  // findAll() {
-  //   return this.factorsService.findAll();
-  // }
+  @Get()
+  findAll(@Query() query: { includeArchived?: string }) {
+    return this.factorsService.findAll(query);
+  }
 
-  // @Post()
-  // create(@Body() dto: CreateFactorDto, @Req() req: any) {
-  //   // TODO: enforce role === ADMIN or REPORTING
-  //   const userId = req.user?.id ?? null; // after auth middleware
-  //   return this.factorsService.create(dto, userId);
-  // }
 
-  // @Patch(':id')
-  // update(
-  //   @Param('id') id: string,
-  //   @Body() dto: UpdateFactorDto,
-  //   @Req() req: any,
-  // ) {
-  //   const userId = req.user?.id ?? null;
-  //   return this.factorsService.update(id, dto, userId);
-  // }
+  @Get(':id/versions')
+  findVersions(
+    @Param('id') id: string,
+    @Query() query: { includeArchived?: string },
+  ) {
+    return this.conversionFactorsService.getFactorVersions(
+      id,
+      query.includeArchived !== 'false',
+    );
+  }
 
-  // @Delete(':id')
-  // remove(@Param('id') id: string) {
-  //   // TODO: restrict to ADMIN
-  //   return this.factorsService.remove(id);
-  // }
+  @Post(':id/versions')
+  @Roles(UserRole.ADMIN)
+  @UseGuards(RolesGuard)
+  createVersion(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Body() dto: CreateFactorVersionDto & { reason?: string },
+  ) {
+    const { reason, ...data } = dto;
+    return this.conversionFactorsService.createNewFactorVersion(
+      id,
+      data,
+      reason,
+      user.id,
+    );
+  }
+
+  @Get(':id/history')
+  findHistory(@Param('id') id: string) {
+    return this.conversionFactorsService.getFactorHistory(id);
+  }
+
+  @Get(':id')
+  findOne(@Param('id') id: string) {
+    return this.factorsService.findOne(id);
+  }
 }

@@ -1,23 +1,14 @@
-// api/src/factors/factors.module.ts
 import { Module } from '@nestjs/common';
 import { FactorsController } from './factors.controller';
 import { FactorsService } from './factors.service';
-import { PrismaService } from '../prisma/prisma.service';
-import { PRISMA } from '../tokens';
-import { FACTORS_SERVICE } from './factors.tokens';
+import { PrismaModule } from '../prisma/prisma.module';
+import { ConversionFactorsService } from './conversion-factors.service';
+import { RolesGuard } from '../auth/guards/roles.guard';
 
 @Module({
+  imports: [PrismaModule],
   controllers: [FactorsController],
-  providers: [
-    // real Prisma service (bound to PRISMA token so DI works in FactorsService)
-    { provide: PRISMA, useClass: PrismaService },
-
-    // real FactorsService instance
-    FactorsService,
-
-    // alias: FACTORS_SERVICE → the same FactorsService instance
-    { provide: FACTORS_SERVICE, useExisting: FactorsService },
-  ],
-  exports: [FACTORS_SERVICE],
+  providers: [FactorsService, ConversionFactorsService, RolesGuard],
+  exports: [FactorsService],
 })
 export class FactorsModule {}

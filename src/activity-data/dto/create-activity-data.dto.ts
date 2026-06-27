@@ -44,6 +44,18 @@ export class CreateActivityDataDto {
   dateEstimated?: boolean;
 
   @IsOptional()
+  @IsString()
+  jurisdictionCountry?: string;
+
+  @IsOptional()
+  @IsString()
+  jurisdictionRegion?: string;
+
+  @IsOptional()
+  @IsNumber()
+  recordYear?: number;
+
+  @IsOptional()
   @IsDateString()
   periodStart?: string;
 
@@ -77,6 +89,16 @@ export class CreateActivityDataDto {
   @IsOptional()
   @IsString()
   sourceDocumentId?: string;
+
+  @IsOptional()
+  sourcePage?: string | number;
+
+  @IsOptional()
+  sourceRow?: string | number;
+
+  @IsOptional()
+  @IsString()
+  sourceTextSnippet?: string;
 
   @IsOptional()
   @IsString()
