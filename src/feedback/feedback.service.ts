@@ -21,6 +21,7 @@ export class FeedbackService {
     const created = await this.prisma.feedback.create({
       data: {
         organizationId,
+        userId: userId ?? null,
         type: dto.type,
         intent: dto.intent.trim(),
         message: dto.message.trim(),
@@ -78,6 +79,60 @@ export class FeedbackService {
     };
   }
 
+  async findAllAdmin(query: FeedbackQueryDto) {
+    const page = query.page ?? 1;
+    const pageSize = query.pageSize ?? 20;
+    const skip = (page - 1) * pageSize;
+
+    const where: Prisma.FeedbackWhereInput = {
+      ...(query.status ? { status: query.status } : {}),
+    };
+
+    const [items, total] = await this.prisma.$transaction([
+      this.prisma.feedback.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take: pageSize,
+        include: {
+          user: {
+            select: {
+              id: true,
+              email: true,
+              firstName: true,
+              lastName: true,
+            },
+          },
+          organization: {
+            select: {
+              id: true,
+              name: true,
+            },
+          },
+        },
+      }),
+      this.prisma.feedback.count({ where }),
+    ]);
+
+    return {
+      items: items.map((item) => ({
+        ...item,
+        appVersion: null,
+        user: item.user
+          ? {
+              id: item.user.id,
+              email: item.user.email,
+              name: [item.user.firstName, item.user.lastName].filter(Boolean).join(' ') || null,
+            }
+          : null,
+      })),
+      page,
+      pageSize,
+      total,
+      totalPages: Math.ceil(total / pageSize),
+    };
+  }
+
   async updateStatus(
     organizationId: string,
     id: string,
@@ -95,5 +150,39 @@ export class FeedbackService {
     return this.prisma.feedback.findFirst({
       where: { id, organizationId },
     });
+  }
+
+  async updateStatusAdmin(id: string, status: FeedbackStatus) {
+    try {
+      return await this.prisma.feedback.update({
+        where: { id },
+        data: { status },
+        include: {
+          user: {
+            select: {
+              id: true,
+              email: true,
+              firstName: true,
+              lastName: true,
+            },
+          },
+          organization: {
+            select: {
+              id: true,
+              name: true,
+            },
+          },
+        },
+      });
+    } catch (error) {
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === 'P2025'
+      ) {
+        throw new NotFoundException(`Feedback ${id} not found.`);
+      }
+
+      throw error;
+    }
   }
 }

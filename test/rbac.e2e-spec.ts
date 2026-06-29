@@ -40,7 +40,7 @@ describe('Role-based access control (e2e)', () => {
       .set(authHeader(admin.accessToken))
       .expect(200);
     await request(app.getHttpServer())
-      .get('/api/activity-events')
+      .get('/api/admin/activity')
       .set(authHeader(admin.accessToken))
       .expect(200);
     await request(app.getHttpServer())
@@ -60,7 +60,7 @@ describe('Role-based access control (e2e)', () => {
       .set(authHeader(user.accessToken))
       .expect(403);
     await request(app.getHttpServer())
-      .get('/api/activity-events')
+      .get('/api/admin/activity')
       .set(authHeader(user.accessToken))
       .expect(403);
     await request(app.getHttpServer())
@@ -97,7 +97,7 @@ describe('Role-based access control (e2e)', () => {
 
   it('returns 401 when authentication is missing', async () => {
     await request(app.getHttpServer()).get('/api/feedback').expect(401);
-    await request(app.getHttpServer()).get('/api/activity-events').expect(401);
+    await request(app.getHttpServer()).get('/api/admin/activity').expect(401);
     await request(app.getHttpServer()).get('/api/audit-logs').expect(401);
   });
 });

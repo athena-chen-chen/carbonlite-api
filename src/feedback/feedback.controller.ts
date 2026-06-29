@@ -55,3 +55,26 @@ export class FeedbackController {
     return this.feedbackService.updateStatus(user.organizationId, id, dto.status);
   }
 }
+
+@UseGuards(JwtAuthGuard)
+@Controller('admin/feedback')
+export class AdminFeedbackController {
+  constructor(private readonly feedbackService: FeedbackService) {}
+
+  @Get()
+  @Roles(UserRole.ADMIN)
+  @UseGuards(RolesGuard)
+  findAllAdmin(@Query() query: FeedbackQueryDto) {
+    return this.feedbackService.findAllAdmin(query);
+  }
+
+  @Patch(':id/status')
+  @Roles(UserRole.ADMIN)
+  @UseGuards(RolesGuard)
+  updateStatusAdmin(
+    @Param('id') id: string,
+    @Body() dto: UpdateFeedbackStatusDto,
+  ) {
+    return this.feedbackService.updateStatusAdmin(id, dto.status);
+  }
+}

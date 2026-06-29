@@ -29,9 +29,21 @@ export class ActivityEventQueryDto {
 
   @IsOptional()
   @IsString()
+  activityType?: string;
+
+  @IsOptional()
+  @IsString()
   pagePath?: string;
 
   @IsOptional()
   @IsString()
   user?: string;
+
+  @IsOptional()
+  @IsString()
+  organization?: string;
+
+  @IsOptional()
+  @IsString()
+  organizationId?: string;
 }

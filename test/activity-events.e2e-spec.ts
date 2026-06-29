@@ -37,7 +37,9 @@ describe('User activity events (e2e)', () => {
       .field('type', 'SPREADSHEET')
       .attach(
         'file',
-        Buffer.from('activityType,recordDate,quantity,unit\nDIESEL,2026-05-31,10,liters\n'),
+        Buffer.from(
+          `activityType,recordDate,quantity,unit,notes\nDIESEL,2026-05-31,10,liters,${name}\n`,
+        ),
         {
           filename: name,
           contentType: 'text/csv',
@@ -187,5 +189,199 @@ describe('User activity events (e2e)', () => {
     });
     expect(JSON.stringify(response.body.items[0].metadata)).toContain('recordsIncluded');
     expect(JSON.stringify(response.body.items[0].metadata)).not.toMatch(/token|invoice text/i);
+  });
+
+  it('lets users list only their own activity events', async () => {
+    const userA = await createTestUser(app, {
+      organizationName: `${testRunId} Own Activity Org A`,
+      email: `own-a-${testRunId}@carbonlite-e2e.test`,
+    });
+    const userB = await createTestUser(app, {
+      organizationName: `${testRunId} Own Activity Org B`,
+      email: `own-b-${testRunId}@carbonlite-e2e.test`,
+    });
+
+    await prisma.userActivityEvent.createMany({
+      data: [
+        {
+          organizationId: userA.user.organizationId,
+          userId: userA.user.id,
+          eventName: 'DOCUMENT_UPLOADED',
+          page: '/upload',
+        },
+        {
+          organizationId: userB.user.organizationId,
+          userId: userB.user.id,
+          eventName: 'REPORT_GENERATED',
+          page: '/reports',
+        },
+      ],
+    });
+
+    const response = await request(app.getHttpServer())
+      .get('/api/activity-events')
+      .set(authHeader(userA.accessToken))
+      .expect(200);
+
+    expect(response.body.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          userId: userA.user.id,
+          eventName: 'DOCUMENT_UPLOADED',
+        }),
+      ]),
+    );
+    expect(response.body.items).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          userId: userB.user.id,
+          eventName: 'REPORT_GENERATED',
+        }),
+      ]),
+    );
+  });
+
+  it('lets admins list and filter activity across users and organizations', async () => {
+    const admin = await createTestUser(app, {
+      organizationName: `${testRunId} Admin Activity Org`,
+      email: `activity-admin-${testRunId}@carbonlite-e2e.test`,
+    });
+    const userA = await createTestUser(app, {
+      organizationName: `${testRunId} Activity Filter Org A`,
+      email: `activity-filter-a-${testRunId}@carbonlite-e2e.test`,
+    });
+    const userB = await createTestUser(app, {
+      organizationName: `${testRunId} Activity Filter Org B`,
+      email: `activity-filter-b-${testRunId}@carbonlite-e2e.test`,
+    });
+    await prisma.user.update({
+      where: { id: admin.user.id },
+      data: { role: 'ADMIN' },
+    });
+
+    await prisma.userActivityEvent.createMany({
+      data: [
+        {
+          organizationId: userA.user.organizationId,
+          userId: userA.user.id,
+          eventName: 'FEEDBACK_SUBMITTED',
+          page: '/feedback',
+          entityType: 'Feedback',
+          entityId: 'feedback-a',
+        },
+        {
+          organizationId: userB.user.organizationId,
+          userId: userB.user.id,
+          eventName: 'DOCUMENT_DELETED',
+          page: '/upload',
+          entityType: 'Document',
+          entityId: 'doc-b',
+        },
+      ],
+    });
+
+    const response = await request(app.getHttpServer())
+      .get(`/api/admin/activity?activityType=DOCUMENT_DELETED&organization=${encodeURIComponent(userB.user.organizationName)}`)
+      .set(authHeader(admin.accessToken))
+      .expect(200);
+
+    expect(response.body.items).toHaveLength(1);
+    expect(response.body.items[0]).toMatchObject({
+      userId: userB.user.id,
+      userEmail: userB.user.email,
+      organizationId: userB.user.organizationId,
+      organizationName: userB.user.organizationName,
+      activityType: 'DOCUMENT_DELETED',
+      entityType: 'Document',
+      entityId: 'doc-b',
+    });
+  });
+
+  it('does not allow normal users to access admin activity', async () => {
+    const user = await createTestUser(app, {
+      organizationName: `${testRunId} Non Admin Activity Org`,
+      email: `non-admin-activity-${testRunId}@carbonlite-e2e.test`,
+    });
+
+    await request(app.getHttpServer())
+      .get('/api/admin/activity')
+      .set(authHeader(user.accessToken))
+      .expect(403);
+  });
+
+  it('lets admins view active users for a selected period', async () => {
+    const admin = await createTestUser(app, {
+      organizationName: `${testRunId} Active Admin Org`,
+      email: `active-admin-${testRunId}@carbonlite-e2e.test`,
+    });
+    const activeUser = await createTestUser(app, {
+      organizationName: `${testRunId} Active User Org`,
+      email: `active-user-${testRunId}@carbonlite-e2e.test`,
+    });
+    const oldUser = await createTestUser(app, {
+      organizationName: `${testRunId} Old User Org`,
+      email: `old-user-${testRunId}@carbonlite-e2e.test`,
+    });
+    await prisma.user.update({
+      where: { id: admin.user.id },
+      data: { role: 'ADMIN' },
+    });
+    await prisma.user.update({
+      where: { id: activeUser.user.id },
+      data: { firstName: 'Active', lastName: 'Pilot' },
+    });
+
+    await prisma.userActivityEvent.createMany({
+      data: [
+        {
+          organizationId: activeUser.user.organizationId,
+          userId: activeUser.user.id,
+          eventName: 'DOCUMENT_UPLOADED',
+          createdAt: new Date('2026-06-10T12:00:00.000Z'),
+        },
+        {
+          organizationId: activeUser.user.organizationId,
+          userId: activeUser.user.id,
+          eventName: 'REPORT_GENERATED',
+          createdAt: new Date('2026-06-12T12:00:00.000Z'),
+        },
+        {
+          organizationId: oldUser.user.organizationId,
+          userId: oldUser.user.id,
+          eventName: 'FEEDBACK_SUBMITTED',
+          createdAt: new Date('2026-05-12T12:00:00.000Z'),
+        },
+      ],
+    });
+
+    const response = await request(app.getHttpServer())
+      .get(
+        `/api/admin/activity/active-users?dateFrom=2026-06-10&dateTo=2026-06-13&organizationId=${activeUser.user.organizationId}`,
+      )
+      .set(authHeader(admin.accessToken))
+      .expect(200);
+
+    expect(response.body.items).toEqual([
+      expect.objectContaining({
+        userId: activeUser.user.id,
+        name: 'Active Pilot',
+        email: activeUser.user.email,
+        organizationName: activeUser.user.organizationName,
+        activityCount: 2,
+        mostRecentActivityType: 'REPORT_GENERATED',
+      }),
+    ]);
+  });
+
+  it('does not allow normal users to access admin active users', async () => {
+    const user = await createTestUser(app, {
+      organizationName: `${testRunId} Active Non Admin Org`,
+      email: `active-non-admin-${testRunId}@carbonlite-e2e.test`,
+    });
+
+    await request(app.getHttpServer())
+      .get('/api/admin/activity/active-users')
+      .set(authHeader(user.accessToken))
+      .expect(403);
   });
 });

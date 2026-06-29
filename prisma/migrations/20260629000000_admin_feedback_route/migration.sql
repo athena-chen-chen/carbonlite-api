@@ -1,0 +1,23 @@
+ALTER TYPE "FeedbackStatus" ADD VALUE IF NOT EXISTS 'PLANNED';
+ALTER TYPE "FeedbackStatus" ADD VALUE IF NOT EXISTS 'RESOLVED';
+ALTER TYPE "FeedbackStatus" ADD VALUE IF NOT EXISTS 'DISMISSED';
+
+ALTER TABLE "Feedback"
+  ADD COLUMN IF NOT EXISTS "userId" TEXT,
+  ADD COLUMN IF NOT EXISTS "updatedAt" TIMESTAMP(3);
+
+UPDATE "Feedback"
+SET "updatedAt" = "createdAt"
+WHERE "updatedAt" IS NULL;
+
+ALTER TABLE "Feedback"
+  ALTER COLUMN "updatedAt" SET NOT NULL;
+
+CREATE INDEX IF NOT EXISTS "Feedback_userId_idx" ON "Feedback"("userId");
+
+ALTER TABLE "Feedback"
+  ADD CONSTRAINT "Feedback_userId_fkey"
+  FOREIGN KEY ("userId")
+  REFERENCES "User"("id")
+  ON DELETE SET NULL
+  ON UPDATE CASCADE;

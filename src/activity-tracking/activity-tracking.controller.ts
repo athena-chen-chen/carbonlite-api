@@ -34,22 +34,45 @@ export class ActivityTrackingController {
   }
 
   @Get()
-  @Roles(UserRole.ADMIN)
-  @UseGuards(RolesGuard)
   findAll(
     @CurrentUser() user: AuthenticatedUser,
     @Query() query: ActivityEventQueryDto,
   ) {
-    return this.activityTracking.findAll(user.organizationId, query);
+    return this.activityTracking.findOwn(user.id, query);
+  }
+
+  @Get('summary')
+  summary(
+    @CurrentUser() user: AuthenticatedUser,
+    @Query() query: ActivityEventQueryDto,
+  ) {
+    return this.activityTracking.getOwnSummary(user.id, query);
+  }
+}
+
+@UseGuards(JwtAuthGuard)
+@Controller('admin/activity')
+export class AdminActivityTrackingController {
+  constructor(private readonly activityTracking: ActivityTrackingService) {}
+
+  @Get()
+  @Roles(UserRole.ADMIN)
+  @UseGuards(RolesGuard)
+  findAll(@Query() query: ActivityEventQueryDto) {
+    return this.activityTracking.findAllAdmin(query);
   }
 
   @Get('summary')
   @Roles(UserRole.ADMIN)
   @UseGuards(RolesGuard)
-  summary(
-    @CurrentUser() user: AuthenticatedUser,
-    @Query() query: ActivityEventQueryDto,
-  ) {
-    return this.activityTracking.getSummary(user.organizationId, query);
+  summary(@Query() query: ActivityEventQueryDto) {
+    return this.activityTracking.getAdminSummary(query);
+  }
+
+  @Get('active-users')
+  @Roles(UserRole.ADMIN)
+  @UseGuards(RolesGuard)
+  activeUsers(@Query() query: ActivityEventQueryDto) {
+    return this.activityTracking.getAdminActiveUsers(query);
   }
 }
