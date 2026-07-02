@@ -375,6 +375,8 @@ model FactorVersion {
   effectiveTo         DateTime?
   status              FactorStatus          @default(DRAFT)
   confidenceLevel     FactorConfidenceLevel @default(DEMO)
+  methodology         String?
+  verificationStatus  String?
   verified            Boolean               @default(false)
   reviewedBy          String?
   reviewedAt          DateTime?
@@ -507,6 +509,7 @@ model ConversionFactor {
   sourceUrl       String?
   methodology     String?
   confidenceLevel String?
+  verificationStatus String?
   verified        Boolean       @default(false)
   notes           String?
   effectiveFrom   DateTime?

@@ -56,6 +56,14 @@ export class CreateFactorVersionDto {
 
   @IsOptional()
   @IsString()
+  methodology?: string;
+
+  @IsOptional()
+  @IsString()
+  verificationStatus?: string;
+
+  @IsOptional()
+  @IsString()
   sourceId?: string;
 
   @IsOptional()

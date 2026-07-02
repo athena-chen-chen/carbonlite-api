@@ -1,5 +1,6 @@
 import { Prisma } from '@prisma/client';
 import { CalculationQualityService } from './calculation-quality.service';
+import { normalizeJurisdictionRegion } from './metrics.utils';
 
 describe('CalculationQualityService', () => {
   const service = new CalculationQualityService(null as never);
@@ -124,15 +125,16 @@ describe('CalculationQualityService', () => {
     });
   });
 
-  it('calculates electricity using the selected factor value', () => {
-    const electricityFactor = 0.5;
+  it('does not calculate electricity without a province', () => {
     const result = service.evaluate({
-      organization,
+      organization: { ...organization, provinceState: null },
       records: [
         record({
           activityType: 'ELECTRICITY',
           quantity: new Prisma.Decimal(1000),
           unit: 'kWh',
+          jurisdictionRegion: null,
+          jurisdictionCountry: 'Canada',
         }),
       ],
       factors: [
@@ -140,19 +142,16 @@ describe('CalculationQualityService', () => {
           id: 'electricity-factor',
           activityType: 'ELECTRICITY',
           unit: 'kWh',
-          factorValue: new Prisma.Decimal(electricityFactor),
+          factorValue: new Prisma.Decimal(0.5),
         }),
       ],
     });
 
-    expect(result.totalEstimatedEmissionsKgCO2e).toBe(
-      1000 * electricityFactor,
-    );
+    expect(result.totalEstimatedEmissionsKgCO2e).toBe(0);
     expect(result.calculationDetails[0]).toMatchObject({
-      status: 'CALCULATED',
-      factorId: 'electricity-factor',
-      factorValue: electricityFactor,
-      calculatedEmissionsKgCO2e: 500,
+      status: 'MISSING_JURISDICTION',
+      matchingMessage:
+        'Electricity factors are province-specific. Please provide a province or facility location.',
     });
   });
 
@@ -179,7 +178,7 @@ describe('CalculationQualityService', () => {
           id: 'alberta-factor',
           activityType: 'ELECTRICITY',
           unit: 'kWh',
-          jurisdiction: 'Alberta, Canada',
+          jurisdiction: 'Alberta',
           sourceYear: 2025,
           factorValue: new Prisma.Decimal(0.5),
         }),
@@ -209,6 +208,7 @@ describe('CalculationQualityService', () => {
           id: 'electricity-2024',
           activityType: 'ELECTRICITY',
           unit: 'kWh',
+          jurisdiction: 'Alberta',
           sourceYear: 2024,
           factorValue: new Prisma.Decimal(0.6),
         }),
@@ -216,6 +216,7 @@ describe('CalculationQualityService', () => {
           id: 'electricity-2025',
           activityType: 'ELECTRICITY',
           unit: 'kWh',
+          jurisdiction: 'Alberta',
           sourceYear: 2025,
           factorValue: new Prisma.Decimal(0.5),
         }),
@@ -359,14 +360,14 @@ describe('CalculationQualityService', () => {
     expect(result.totalEstimatedEmissionsKgCO2e).toBe(500);
     expect(result.calculationDetails[0]).toMatchObject({
       factorVersionId: 'factor-version-ab-2025',
-      matchedBy: 'exact province and year',
+      matchedBy: 'SYSTEM_EXACT_REGION_YEAR',
       matchingStatus: 'MATCHED',
       factorDisplayName: 'Electricity - Alberta',
       sourceAuthority: 'Environment and Climate Change Canada',
       sourceDocument: 'Emission Factors and Reference Values',
       factorSourcePage: '12',
       factorSourceTable: 'Table 3',
-      calculationFormula: '1000 × 0.5 = 500 kgCO2e',
+      calculationFormula: '1000 kwh × 0.5 kgCO2e/kWh = 500 kgCO2e',
       sourceFileName: 'electricity-bill.pdf',
       sourcePage: '2',
       sourceRow: '5',
@@ -381,7 +382,7 @@ describe('CalculationQualityService', () => {
     });
     expect(result.matchedActivityEmissions[0]).toMatchObject({
       factorVersionId: 'factor-version-ab-2025',
-      calculationFormula: '1000 × 0.5 = 500 kgCO2e',
+      calculationFormula: '1000 kwh × 0.5 kgCO2e/kWh = 500 kgCO2e',
       sourceFileName: 'electricity-bill.pdf',
       sourcePage: '2',
     });
@@ -406,7 +407,19 @@ describe('CalculationQualityService', () => {
     expect(result.totalEstimatedEmissionsKgCO2e).toBe(0);
     expect(result.calculationDetails[0]).toMatchObject({
       status: 'MISSING_FACTOR',
+      matchingMessage:
+        'No electricity factor found for British Columbia, 2025. Electricity factors must be jurisdiction-specific.',
     });
+  });
+
+  it('normalizes Canadian province names', () => {
+    expect(normalizeJurisdictionRegion('AB')).toBe('Alberta');
+    expect(normalizeJurisdictionRegion('Alta.')).toBe('Alberta');
+    expect(normalizeJurisdictionRegion('BC')).toBe('British Columbia');
+    expect(normalizeJurisdictionRegion('B.C.')).toBe('British Columbia');
+    expect(normalizeJurisdictionRegion('ON')).toBe('Ontario');
+    expect(normalizeJurisdictionRegion('Ont.')).toBe('Ontario');
+    expect(normalizeJurisdictionRegion(null)).toBeNull();
   });
 
   it('uses nearest prior year factor with warning', () => {
@@ -429,7 +442,7 @@ describe('CalculationQualityService', () => {
     expect(result.totalEstimatedEmissionsKgCO2e).toBe(500);
     expect(result.calculationDetails[0]).toMatchObject({
       matchingStatus: 'MATCHED_PRIOR_YEAR',
-      matchedBy: 'nearest prior year',
+      matchedBy: 'PRIOR_YEAR',
       factorYear: 2025,
       recordYear: 2026,
     });
@@ -465,7 +478,7 @@ describe('CalculationQualityService', () => {
     expect(result.totalEstimatedEmissionsKgCO2e).toBe(2680);
     expect(result.calculationDetails[0]).toMatchObject({
       factorVersionId: 'diesel-canada-2025',
-      matchedBy: 'country-level fallback',
+      matchedBy: 'SYSTEM_COUNTRY_YEAR',
     });
   });
 
@@ -511,11 +524,11 @@ describe('CalculationQualityService', () => {
     expect(result.totalEstimatedEmissionsKgCO2e).toBe(0);
     expect(result.calculationDetails[0]).toMatchObject({
       status: 'INVALID_UNIT',
-      reason: 'A valid activity unit is required.',
+      reason: 'Unit could not be normalized or matched to a supported factor unit.',
     });
   });
 
-  it('returns missing-factor output when no factor matches', () => {
+  it('treats water as a tracked-only metric by default', () => {
     const result = service.evaluate({
       organization,
       records: [
@@ -530,17 +543,10 @@ describe('CalculationQualityService', () => {
 
     expect(result.totalEstimatedEmissionsKgCO2e).toBe(0);
     expect(result.recordsCalculated).toBe(0);
-    expect(result.missingFactorCount).toBe(1);
-    expect(result.missingFactors).toEqual([
-      {
-        activityDataId: 'activity-1',
-        activityType: 'WATER',
-        unit: 'm3',
-        availableUnitsForActivityType: [],
-      },
-    ]);
+    expect(result.missingFactorCount).toBe(0);
+    expect(result.missingFactors).toEqual([]);
     expect(result.calculationDetails[0]).toMatchObject({
-      status: 'MISSING_FACTOR',
+      status: 'TRACKED_ONLY',
       factorId: null,
       calculatedEmissionsKgCO2e: null,
     });
@@ -559,7 +565,7 @@ describe('CalculationQualityService', () => {
     expect(result.skippedReasons.invalidUnit).toBe(1);
     expect(result.calculationDetails[0]).toMatchObject({
       status: 'INVALID_UNIT',
-      reason: 'A valid activity unit is required.',
+      reason: 'Unit could not be normalized or matched to a supported factor unit.',
       factorId: null,
       calculatedEmissionsKgCO2e: null,
     });

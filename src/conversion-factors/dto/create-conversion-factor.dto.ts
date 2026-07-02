@@ -89,6 +89,10 @@ export class CreateConversionFactorDto {
   confidenceLevel?: string;
 
   @IsOptional()
+  @IsString()
+  verificationStatus?: string;
+
+  @IsOptional()
   @IsBoolean()
   verified?: boolean;
 

@@ -309,6 +309,98 @@ describe('User activity events (e2e)', () => {
       .expect(403);
   });
 
+  it('lets admins hide test accounts without crashing activity list or summary', async () => {
+    const admin = await createTestUser(app, {
+      organizationName: `${testRunId} Hide Admin Org`,
+      email: `hide-admin-${testRunId}@carbonlite-e2e.test`,
+    });
+    const realUser = await createTestUser(app, {
+      organizationName: `Production Customer ${testRunId}`,
+      email: `pilot-${testRunId}@carbonlite-e2e.com`,
+    });
+    const testUser = await createTestUser(app, {
+      organizationName: `${testRunId} Debug Customer`,
+      email: `trace-debug-${testRunId}@example.com`,
+    });
+    await prisma.user.update({
+      where: { id: admin.user.id },
+      data: { role: 'ADMIN' },
+    });
+
+    await prisma.userActivityEvent.createMany({
+      data: [
+        {
+          organizationId: realUser.user.organizationId,
+          userId: realUser.user.id,
+          eventName: 'DOCUMENT_UPLOADED',
+          page: '/upload',
+        },
+        {
+          organizationId: testUser.user.organizationId,
+          userId: testUser.user.id,
+          eventName: 'DOCUMENT_UPLOADED',
+          page: '/upload',
+        },
+        {
+          organizationId: null,
+          userId: null,
+          eventName: 'ANONYMOUS_HEALTH_CHECK',
+          page: '/health',
+        },
+      ],
+    });
+
+    const hiddenList = await request(app.getHttpServer())
+      .get('/api/admin/activity?hideTestAccounts=true&pageSize=100')
+      .set(authHeader(admin.accessToken))
+      .expect(200);
+
+    expect(hiddenList.body.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          userId: realUser.user.id,
+          userEmail: realUser.user.email,
+        }),
+        expect.objectContaining({
+          userId: null,
+          organizationId: null,
+          activityType: 'ANONYMOUS_HEALTH_CHECK',
+        }),
+      ]),
+    );
+    expect(hiddenList.body.items).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          userId: testUser.user.id,
+        }),
+      ]),
+    );
+
+    const visibleList = await request(app.getHttpServer())
+      .get('/api/admin/activity?pageSize=100')
+      .set(authHeader(admin.accessToken))
+      .expect(200);
+
+    expect(visibleList.body.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          userId: testUser.user.id,
+        }),
+      ]),
+    );
+
+    const hiddenSummary = await request(app.getHttpServer())
+      .get('/api/admin/activity/summary?hideTestAccounts=true')
+      .set(authHeader(admin.accessToken))
+      .expect(200);
+
+    expect(hiddenSummary.body.totalActivities).toBeGreaterThanOrEqual(2);
+    expect(hiddenSummary.body.activeUsers).toBeGreaterThanOrEqual(1);
+    expect(hiddenSummary.body.organizations).toBeGreaterThanOrEqual(1);
+    expect(hiddenSummary.body.today).toEqual(expect.any(Number));
+    expect(hiddenSummary.body.thisMonth).toEqual(expect.any(Number));
+  });
+
   it('lets admins view active users for a selected period', async () => {
     const admin = await createTestUser(app, {
       organizationName: `${testRunId} Active Admin Org`,

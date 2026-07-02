@@ -84,6 +84,7 @@ describe('ConversionFactorsService Factor Library adapter', () => {
           isSystemDefault: false,
           factorValue: new Prisma.Decimal(3.1),
           confidenceLevel: 'CUSTOM',
+          verified: true,
         }),
       ],
       governed: [governedVersion()],
@@ -99,11 +100,17 @@ describe('ConversionFactorsService Factor Library adapter', () => {
         organizationId: 'org-1',
       }),
     ).resolves.toMatchObject({
+      matched: true,
       factorValue: 3.1,
       inputUnit: 'liters',
       factorId: 'custom-diesel',
       confidenceLevel: 'CUSTOM',
       factorType: 'ORGANIZATION_CUSTOM',
+      status: 'MATCHED',
+      matchedBy: 'ORGANIZATION_CUSTOM_EXACT',
+      factor: {
+        status: 'VERIFIED',
+      },
     });
   });
 
@@ -142,11 +149,65 @@ describe('ConversionFactorsService Factor Library adapter', () => {
         organizationId: 'org-1',
       }),
     ).resolves.toMatchObject({
+      matched: true,
       factorValue: 0.53,
       factorVersionId: 'electricity-ab-2025',
       factorType: 'GOVERNED_LIBRARY',
-      status: 'VERIFIED',
+      status: 'MATCHED',
+      matchedBy: 'OFFICIAL_EXACT_REGION_YEAR',
       confidenceLevel: 'OFFICIAL_GOVERNMENT',
+      factor: {
+        status: 'VERIFIED',
+      },
+    });
+  });
+
+  it('does not fall back across provinces for electricity', async () => {
+    const adapter = service({
+      legacy: [],
+      governed: [
+        governedVersion({
+          id: 'electricity-ab-2025',
+          factorValue: new Prisma.Decimal(0.53),
+          inputUnit: 'kWh',
+          jurisdictionRegion: 'Alberta',
+          factor: { activityType: 'ELECTRICITY', displayName: 'Electricity - Alberta', isActive: true },
+        }),
+      ],
+    });
+
+    await expect(
+      adapter.getApplicableFactor({
+        activityType: 'ELECTRICITY',
+        inputUnit: 'kWh',
+        jurisdictionCountry: 'Canada',
+        jurisdictionRegion: 'BC',
+        factorYear: 2025,
+        organizationId: 'org-1',
+      }),
+    ).resolves.toMatchObject({
+      matched: false,
+      status: 'NO_MATCH',
+      message: 'No electricity factor found for British Columbia. Electricity factors should not fall back across provinces.',
+    });
+  });
+
+  it('requires province for electricity matching', async () => {
+    const adapter = service({ legacy: [legacyFactor({ activityType: 'ELECTRICITY', unit: 'kWh' })], governed: [] });
+
+    await expect(
+      adapter.getApplicableFactor({
+        activityType: 'ELECTRICITY',
+        inputUnit: 'kWh',
+        jurisdictionCountry: 'Canada',
+        jurisdictionRegion: null,
+        factorYear: 2025,
+        organizationId: 'org-1',
+      }),
+    ).resolves.toMatchObject({
+      matched: false,
+      status: 'MISSING_JURISDICTION',
+      message: 'Electricity factors are province-specific. Please provide a province or facility location.',
     });
   });
 
@@ -165,7 +226,11 @@ describe('ConversionFactorsService Factor Library adapter', () => {
         factorYear: 2025,
         organizationId: 'org-1',
       }),
-    ).resolves.toBeNull();
+    ).resolves.toMatchObject({
+      matched: false,
+      status: 'NO_MATCH',
+      matchedBy: 'NO_MATCH',
+    });
   });
 
   it('does not mark demo factors as official', async () => {
@@ -183,7 +248,10 @@ describe('ConversionFactorsService Factor Library adapter', () => {
       organizationId: 'org-1',
     });
 
-    expect(match).toBeNull();
+    expect(match).toMatchObject({
+      matched: false,
+      status: 'NO_MATCH',
+    });
   });
 
   it('falls back to legacy system defaults while reports still use current calculation path', async () => {
@@ -199,9 +267,11 @@ describe('ConversionFactorsService Factor Library adapter', () => {
         organizationId: 'org-1',
       }),
     ).resolves.toMatchObject({
+      matched: true,
       factorValue: 2.68,
       factorType: 'LEGACY_SYSTEM_DEFAULT',
-      status: 'DRAFT',
+      status: 'MATCHED_SYSTEM_DEFAULT',
+      matchedBy: 'SYSTEM_COUNTRY_YEAR',
       confidenceLevel: 'DEMO',
     });
   });
@@ -538,6 +608,9 @@ describe('ConversionFactorsService factor governance lifecycle', () => {
         factorYear: 2025,
         organizationId: 'org-1',
       }),
-    ).resolves.toBeNull();
+    ).resolves.toMatchObject({
+      matched: false,
+      status: 'NO_MATCH',
+    });
   });
 });

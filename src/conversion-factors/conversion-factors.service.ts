@@ -13,20 +13,29 @@ import { CreateFactorVersionDto } from './dto/create-factor-version.dto';
 import { UpdateFactorVersionDraftDto } from './dto/update-factor-version-draft.dto';
 import { AuditLogService } from '../audit-log/audit-log.service';
 import { ActivityTrackingService } from '../activity-tracking/activity-tracking.service';
-import { normalizeUnit } from '../metrics/metrics.utils';
+import {
+  normalizeJurisdictionCountry,
+  normalizeJurisdictionRegion,
+  normalizeUnit,
+} from '../metrics/metrics.utils';
 
 type ApplicableFactorInput = {
   activityType: string;
+  quantity?: number | null;
   inputUnit: string;
+  unit?: string | null;
   jurisdictionCountry?: string | null;
   jurisdictionRegion?: string | null;
   factorYear?: number | null;
+  recordYear?: number | null;
   recordDate?: Date | string | null;
   allowDemoFactors?: boolean | null;
+  allowPlaceholderFactors?: boolean | null;
+  allowSystemFactors?: boolean | null;
   organizationId: string;
 };
 
-type ApplicableFactor = {
+type FactorMatchResult = {
   factorValue: number;
   inputUnit: string;
   resultUnit: string;
@@ -40,6 +49,35 @@ type ApplicableFactor = {
   status?: string;
   confidenceLevel?: string;
   factorType: 'ORGANIZATION_CUSTOM' | 'GOVERNED_LIBRARY' | 'LEGACY_SYSTEM_DEFAULT';
+  jurisdictionCountry?: string | null;
+  jurisdictionRegion?: string | null;
+  factorYear?: number | null;
+};
+
+type ApplicableFactor = Partial<FactorMatchResult> & {
+  matched: boolean;
+  factor: FactorMatchResult | null;
+  status:
+    | 'MATCHED'
+    | 'MATCHED_COUNTRY_LEVEL'
+    | 'MATCHED_SYSTEM_DEFAULT'
+    | 'MATCHED_PRIOR_YEAR'
+    | 'NO_MATCH'
+    | 'INVALID_UNIT'
+    | 'MISSING_JURISDICTION'
+    | 'TRACKED_ONLY';
+  matchedBy:
+    | 'ORGANIZATION_CUSTOM_EXACT'
+    | 'OFFICIAL_EXACT_REGION_YEAR'
+    | 'OFFICIAL_COUNTRY_YEAR'
+    | 'SYSTEM_EXACT_REGION_YEAR'
+    | 'SYSTEM_COUNTRY_YEAR'
+    | 'PRIOR_YEAR'
+    | 'TRACKED_ONLY'
+    | 'NO_MATCH'
+    | 'INVALID_UNIT';
+  message: string;
+  warnings: string[];
 };
 
 type FactorReviewInput = {
@@ -305,6 +343,8 @@ export class ConversionFactorsService {
         effectiveTo: parseOptionalDate(data.effectiveTo) ?? previous?.effectiveTo ?? null,
         status: 'DRAFT',
         confidenceLevel: data.confidenceLevel ?? previous?.confidenceLevel ?? 'DEMO',
+        methodology: data.methodology ?? previous?.methodology ?? null,
+        verificationStatus: data.verificationStatus ?? previous?.verificationStatus ?? null,
         verified: false,
         sourceId,
         sourcePage: data.sourcePage ?? previous?.sourcePage ?? null,
@@ -359,6 +399,8 @@ export class ConversionFactorsService {
         ...(dto.effectiveFrom !== undefined ? { effectiveFrom: parseOptionalDate(dto.effectiveFrom) } : {}),
         ...(dto.effectiveTo !== undefined ? { effectiveTo: parseOptionalDate(dto.effectiveTo) } : {}),
         ...(dto.confidenceLevel !== undefined ? { confidenceLevel: dto.confidenceLevel } : {}),
+        ...(dto.methodology !== undefined ? { methodology: dto.methodology || null } : {}),
+        ...(dto.verificationStatus !== undefined ? { verificationStatus: dto.verificationStatus || null } : {}),
         ...(dto.sourceId !== undefined ? { sourceId: dto.sourceId } : {}),
         ...(dto.sourcePage !== undefined ? { sourcePage: dto.sourcePage || null } : {}),
         ...(dto.sourceTable !== undefined ? { sourceTable: dto.sourceTable || null } : {}),
@@ -386,10 +428,40 @@ export class ConversionFactorsService {
     return this.toFactorVersionDto(updated);
   }
 
-  async getApplicableFactor(input: ApplicableFactorInput): Promise<ApplicableFactor | null> {
+  async getApplicableFactor(input: ApplicableFactorInput): Promise<ApplicableFactor> {
     const activityType = input.activityType as ActivityType;
-    const normalizedInputUnit = normalizeUnit(input.inputUnit);
-    const recordYear = input.factorYear ?? inferYear(input.recordDate);
+    const normalizedInputUnit = normalizeUnit(input.inputUnit || input.unit || '');
+    const recordYear = input.recordYear ?? input.factorYear ?? inferYear(input.recordDate);
+    const country = normalizeJurisdictionCountry(input.jurisdictionCountry) ?? 'Canada';
+    const region = normalizeJurisdictionRegion(input.jurisdictionRegion);
+    const allowPlaceholderFactors = Boolean(input.allowPlaceholderFactors ?? input.allowDemoFactors);
+    const allowSystemFactors = input.allowSystemFactors !== false;
+
+    if (!normalizedInputUnit || isNumericUnit(normalizedInputUnit)) {
+      return noApplicableFactor({
+        status: 'INVALID_UNIT',
+        matchedBy: 'INVALID_UNIT',
+        message: `Unit '${input.inputUnit || input.unit || ''}' could not be matched to a supported unit for ${formatActivityType(String(activityType))}.`,
+      });
+    }
+
+    if (isTrackedOnlyActivity(String(activityType))) {
+      return noApplicableFactor({
+        status: 'TRACKED_ONLY',
+        matchedBy: 'TRACKED_ONLY',
+        message:
+          'Water usage is tracked for operational insight. Emissions are optional and require a reviewed water emissions factor.',
+      });
+    }
+
+    if (activityType === 'ELECTRICITY' && !region) {
+      return noApplicableFactor({
+        status: 'MISSING_JURISDICTION',
+        matchedBy: 'NO_MATCH',
+        message:
+          'Electricity factors are province-specific. Please provide a province or facility location.',
+      });
+    }
 
     const legacyFactors = await this.prisma.conversionFactor.findMany({
       where: {
@@ -409,11 +481,16 @@ export class ConversionFactorsService {
       (factor) => normalizeUnit(factor.unit) === normalizedInputUnit,
     );
     const organizationCustom = legacyMatches.find(
-      (factor) => factor.organizationId === input.organizationId,
+      (factor) =>
+        factor.organizationId === input.organizationId &&
+        factor.verified &&
+        factorYearMatches(factor.sourceYear, recordYear) &&
+        countryMatches(factor.country, country) &&
+        regionCompatibleForActivity(String(activityType), factor.region || factor.jurisdiction, region),
     );
 
     if (organizationCustom) {
-      return {
+      return matchedApplicableFactor({
         factorValue: Number(organizationCustom.factorValue),
         inputUnit: organizationCustom.unit,
         resultUnit: organizationCustom.resultUnit,
@@ -426,7 +503,14 @@ export class ConversionFactorsService {
         status: organizationCustom.verified ? 'VERIFIED' : 'DRAFT',
         confidenceLevel: organizationCustom.confidenceLevel ?? 'CUSTOM',
         factorType: 'ORGANIZATION_CUSTOM',
-      };
+        jurisdictionCountry: normalizeJurisdictionCountry(organizationCustom.country) ?? country,
+        jurisdictionRegion: normalizeJurisdictionRegion(organizationCustom.region || organizationCustom.jurisdiction),
+        factorYear: organizationCustom.sourceYear,
+      }, {
+        status: 'MATCHED',
+        matchedBy: 'ORGANIZATION_CUSTOM_EXACT',
+        message: `Matched organization custom verified factor for ${formatActivityType(String(activityType))} / ${normalizedInputUnit}.`,
+      });
     }
 
     const governedVersions = await this.prisma.factorVersion.findMany({
@@ -450,37 +534,78 @@ export class ConversionFactorsService {
       ],
     });
 
-    const governedMatch = governedVersions
+    const governedCandidates = governedVersions
       .filter((version) => !['DEPRECATED', 'ARCHIVED'].includes(version.status))
       .filter((version) => version.source?.isActive !== false)
-      .filter((version) => ['VERIFIED', 'OFFICIAL'].includes(version.status) || (input.allowDemoFactors && version.confidenceLevel === 'DEMO'))
+      .filter((version) =>
+        ['VERIFIED', 'OFFICIAL'].includes(version.status) ||
+        (allowPlaceholderFactors && version.confidenceLevel === 'DEMO'),
+      )
       .filter((version) => normalizeUnit(version.inputUnit) === normalizedInputUnit)
-      .filter((version) => jurisdictionCountryMatches(version.jurisdictionCountry, input.jurisdictionCountry))
-      .filter((version) => jurisdictionRegionMatches(version.jurisdictionRegion, input.jurisdictionRegion))
-      .filter((version) => !version.factorYear || !recordYear || version.factorYear <= recordYear)
-      .sort(compareFactorVersions(recordYear))[0];
+      .filter((version) => countryMatches(version.jurisdictionCountry, country));
 
-    if (governedMatch) {
-      return {
-        factorValue: Number(governedMatch.factorValue),
-        inputUnit: governedMatch.inputUnit,
-        resultUnit: governedMatch.resultUnit,
-        factorId: governedMatch.factorId,
-        factorVersionId: governedMatch.id,
-        displayName: governedMatch.factor.displayName,
-        sourceAuthority: governedMatch.source?.sourceAuthority ?? null,
-        sourceDocument: governedMatch.source?.sourceDocument ?? null,
-        sourceYear: governedMatch.source?.sourceYear ?? governedMatch.factorYear,
-        sourceUrl: governedMatch.source?.sourceUrl ?? null,
-        status: governedMatch.status,
-        confidenceLevel: governedMatch.confidenceLevel,
-        factorType: 'GOVERNED_LIBRARY',
-      };
+    const exactRegionYear = governedCandidates
+      .filter((version) => version.factorYear === recordYear)
+      .filter((version) => regionMatchesExactly(version.jurisdictionRegion, region))
+      .sort(compareFactorVersions(recordYear))[0];
+    if (exactRegionYear) {
+      return matchedGovernedVersion(exactRegionYear, {
+        status: exactRegionYear.factor.isSystem ? 'MATCHED_SYSTEM_DEFAULT' : 'MATCHED',
+        matchedBy: exactRegionYear.factor.isSystem ? 'SYSTEM_EXACT_REGION_YEAR' : 'OFFICIAL_EXACT_REGION_YEAR',
+        message:
+          activityType === 'ELECTRICITY'
+            ? `Matched ${region} electricity factor for ${recordYear}.`
+            : `Matched ${region} ${recordYear} factor for ${formatActivityType(String(activityType))}.`,
+      });
     }
 
-    const legacySystemDefault = legacyMatches.find((factor) => factor.isSystemDefault);
+    const countryYear = governedCandidates
+      .filter((version) => version.factorYear === recordYear)
+      .filter((version) => isCountryLevel(version.jurisdictionRegion, version.jurisdictionCountry))
+      .sort(compareFactorVersions(recordYear))[0];
+    if (countryYear && allowsCountryLevelFallback(String(activityType))) {
+      return matchedGovernedVersion(countryYear, {
+        status: countryYear.factor.isSystem ? 'MATCHED_SYSTEM_DEFAULT' : 'MATCHED_COUNTRY_LEVEL',
+        matchedBy: countryYear.factor.isSystem ? 'SYSTEM_COUNTRY_YEAR' : 'OFFICIAL_COUNTRY_YEAR',
+        message: `Matched Canada-level factor for ${formatActivityType(String(activityType))} because no province-specific factor was required or available.`,
+      });
+    }
+
+    const priorYear = governedCandidates
+      .filter((version) => typeof version.factorYear === 'number' && Number(version.factorYear) < Number(recordYear))
+      .filter((version) =>
+        regionMatchesExactly(version.jurisdictionRegion, region) ||
+        (allowsCountryLevelFallback(String(activityType)) &&
+          isCountryLevel(version.jurisdictionRegion, version.jurisdictionCountry)),
+      )
+      .sort((a, b) => Number(b.factorYear ?? 0) - Number(a.factorYear ?? 0) || compareFactorVersions(recordYear)(a, b))[0];
+    if (priorYear) {
+      return matchedGovernedVersion(priorYear, {
+        status: 'MATCHED_PRIOR_YEAR',
+        matchedBy: 'PRIOR_YEAR',
+        message: `Using nearest prior-year factor because no factor was found for the ${recordYear} record year.`,
+        warnings: ['Using nearest prior-year factor because no factor was found for the record year.'],
+      });
+    }
+
+    const legacySystemDefault = allowSystemFactors
+      ? legacyMatches.find((factor) => {
+          if (!factor.isSystemDefault) return false;
+          if (factor.sourceYear && recordYear && factor.sourceYear !== recordYear) return false;
+          if (activityType === 'ELECTRICITY') {
+            return regionMatchesExactly(factor.region || factor.jurisdiction, region);
+          }
+
+          return allowsCountryLevelFallback(String(activityType));
+        })
+      : null;
     if (legacySystemDefault) {
-      return {
+      const factorRegion = normalizeJurisdictionRegion(
+        legacySystemDefault.region || legacySystemDefault.jurisdiction,
+      );
+      const isCountryFallback = !factorRegion || factorRegion === 'Canada';
+
+      return matchedApplicableFactor({
         factorValue: Number(legacySystemDefault.factorValue),
         inputUnit: legacySystemDefault.unit,
         resultUnit: legacySystemDefault.resultUnit,
@@ -493,10 +618,32 @@ export class ConversionFactorsService {
         status: legacySystemDefault.verified ? 'VERIFIED' : 'DRAFT',
         confidenceLevel: legacySystemDefault.confidenceLevel ?? 'DEMO',
         factorType: 'LEGACY_SYSTEM_DEFAULT',
-      };
+        jurisdictionCountry: normalizeJurisdictionCountry(legacySystemDefault.country) ?? country,
+        jurisdictionRegion: factorRegion,
+        factorYear: legacySystemDefault.sourceYear,
+      }, {
+        status: isCountryFallback ? 'MATCHED_SYSTEM_DEFAULT' : 'MATCHED_SYSTEM_DEFAULT',
+        matchedBy: isCountryFallback ? 'SYSTEM_COUNTRY_YEAR' : 'SYSTEM_EXACT_REGION_YEAR',
+        message:
+          activityType === 'ELECTRICITY'
+            ? `Matched ${region} electricity system factor.`
+            : `Matched Canada-level factor for ${formatActivityType(String(activityType))} because no province-specific factor was required or available.`,
+      });
     }
 
-    return null;
+    if (activityType === 'ELECTRICITY') {
+      return noApplicableFactor({
+        status: 'NO_MATCH',
+        matchedBy: 'NO_MATCH',
+        message: `No electricity factor found for ${region}. Electricity factors should not fall back across provinces.`,
+      });
+    }
+
+    return noApplicableFactor({
+      status: 'NO_MATCH',
+      matchedBy: 'NO_MATCH',
+      message: `No conversion factor found for ${formatActivityType(String(activityType))} / ${normalizedInputUnit}.`,
+    });
   }
 
   async create(organizationId: string, dto: CreateConversionFactorDto, userId?: string) {
@@ -525,6 +672,7 @@ export class ConversionFactorsService {
         sourceUrl: dto.sourceUrl ?? null,
         methodology: dto.methodology ?? null,
         confidenceLevel: dto.confidenceLevel ?? null,
+        verificationStatus: dto.verificationStatus ?? null,
         verified: dto.verified ?? false,
         notes: dto.notes ?? null,
         effectiveFrom: dto.effectiveFrom ? new Date(dto.effectiveFrom) : null,
@@ -708,6 +856,9 @@ export class ConversionFactorsService {
         ...(dto.confidenceLevel !== undefined
           ? { confidenceLevel: dto.confidenceLevel || null }
           : {}),
+        ...(dto.verificationStatus !== undefined
+          ? { verificationStatus: dto.verificationStatus || null }
+          : {}),
         ...(dto.verified !== undefined ? { verified: dto.verified } : {}),
         ...(dto.notes !== undefined ? { notes: dto.notes || null } : {}),
         ...(dto.effectiveFrom !== undefined
@@ -864,12 +1015,16 @@ export class ConversionFactorsService {
     return `${prefix}${next}`;
   }
 
-  private toFactorVersionDto(version?: (NonNullable<FactorVersionWithGovernance> & { factor?: { displayName?: string } }) | null, fallbackName?: string) {
+  private toFactorVersionDto(
+    version?: (NonNullable<FactorVersionWithGovernance> & { factor?: { displayName?: string; isSystem?: boolean } }) | null,
+    fallbackName?: string,
+  ) {
     if (!version) return null;
     return {
       id: version.id,
       factorId: version.factorId,
       displayName: version.factor?.displayName ?? fallbackName,
+      isSystem: version.factor?.isSystem ?? null,
       version: version.version,
       factorValue: Number(version.factorValue),
       inputUnit: version.inputUnit,
@@ -881,6 +1036,8 @@ export class ConversionFactorsService {
       effectiveTo: version.effectiveTo,
       status: version.status,
       confidenceLevel: version.confidenceLevel,
+      methodology: version.methodology,
+      verificationStatus: version.verificationStatus,
       verified: version.verified,
       reviewedBy: version.reviewedBy,
       reviewedAt: version.reviewedAt,
@@ -901,6 +1058,10 @@ export class ConversionFactorsService {
             sourceDocument: version.source.sourceDocument,
             sourceYear: version.source.sourceYear,
             sourceUrl: version.source.sourceUrl,
+            sourceVersion: version.source.sourceVersion,
+            publishedDate: version.source.publishedDate,
+            page: version.source.page,
+            tableReference: version.source.tableReference,
             isOfficial: version.source.isOfficial,
             isActive: version.source.isActive,
             publisherType: version.source.publisherType,
@@ -1129,23 +1290,136 @@ function normalizeText(value?: string | null) {
   return String(value ?? '').trim().toLowerCase().replace(/\s+/g, ' ');
 }
 
-function jurisdictionCountryMatches(factorCountry?: string | null, requestedCountry?: string | null) {
-  const factor = normalizeText(factorCountry);
-  const requested = normalizeText(requestedCountry);
-  return !factor || !requested || factor === requested;
-}
-
-function jurisdictionRegionMatches(factorRegion?: string | null, requestedRegion?: string | null) {
-  const factor = normalizeText(factorRegion);
-  const requested = normalizeText(requestedRegion);
-  if (!factor || !requested) return true;
-  return factor === requested || requested.includes(factor) || factor.includes(requested);
-}
-
 function inferYear(value?: Date | string | null) {
   if (!value) return null;
   const date = value instanceof Date ? value : new Date(value);
   return Number.isNaN(date.getTime()) ? null : date.getUTCFullYear();
+}
+
+function isNumericUnit(unit?: string | null) {
+  const normalized = String(unit ?? '').trim();
+  return normalized !== '' && Number.isFinite(Number(normalized));
+}
+
+function isTrackedOnlyActivity(activityType?: string | null) {
+  return ['WATER', 'WASTE', 'WASTE_VOLUME'].includes(String(activityType ?? '').toUpperCase());
+}
+
+function allowsCountryLevelFallback(activityType?: string | null) {
+  return ['DIESEL', 'GASOLINE', 'NATURAL_GAS', 'HOTEL', 'PROPANE'].includes(
+    String(activityType ?? '').toUpperCase(),
+  );
+}
+
+function factorYearMatches(factorYear?: number | null, recordYear?: number | null) {
+  return !factorYear || !recordYear || factorYear === recordYear;
+}
+
+function countryMatches(factorCountry?: string | null, recordCountry?: string | null) {
+  const factor = normalizeJurisdictionCountry(factorCountry);
+  const record = normalizeJurisdictionCountry(recordCountry);
+  return !factor || !record || factor === record;
+}
+
+function regionMatchesExactly(factorRegion?: string | null, recordRegion?: string | null) {
+  const factor = normalizeJurisdictionRegion(factorRegion);
+  const record = normalizeJurisdictionRegion(recordRegion);
+  if (!factor || !record) return false;
+  return factor === record;
+}
+
+function regionCompatibleForActivity(
+  activityType: string,
+  factorRegion?: string | null,
+  recordRegion?: string | null,
+) {
+  if (activityType === 'ELECTRICITY') {
+    return regionMatchesExactly(factorRegion, recordRegion);
+  }
+
+  const normalizedFactorRegion = normalizeJurisdictionRegion(factorRegion);
+  return (
+    !normalizedFactorRegion ||
+    normalizedFactorRegion === 'Canada' ||
+    regionMatchesExactly(factorRegion, recordRegion)
+  );
+}
+
+function isCountryLevel(factorRegion?: string | null, factorCountry?: string | null) {
+  const region = normalizeJurisdictionRegion(factorRegion);
+  const country = normalizeJurisdictionCountry(factorCountry);
+  return !region || region === 'Canada' || (!!country && region === country);
+}
+
+function matchedApplicableFactor(
+  factor: FactorMatchResult,
+  explanation: Pick<ApplicableFactor, 'status' | 'matchedBy' | 'message'> & {
+    warnings?: string[];
+  },
+): ApplicableFactor {
+  return {
+    matched: true,
+    factor,
+    ...factor,
+    status: explanation.status,
+    matchedBy: explanation.matchedBy,
+    message: explanation.message,
+    warnings: explanation.warnings ?? [],
+  };
+}
+
+function matchedGovernedVersion(
+  version: Prisma.FactorVersionGetPayload<{ include: { factor: true; source: true } }>,
+  explanation: Pick<ApplicableFactor, 'status' | 'matchedBy' | 'message'> & {
+    warnings?: string[];
+  },
+): ApplicableFactor {
+  return matchedApplicableFactor(
+    {
+      factorValue: Number(version.factorValue),
+      inputUnit: version.inputUnit,
+      resultUnit: version.resultUnit,
+      factorId: version.factorId,
+      factorVersionId: version.id,
+      displayName: version.factor.displayName,
+      sourceAuthority: version.source?.sourceAuthority ?? null,
+      sourceDocument: version.source?.sourceDocument ?? null,
+      sourceYear: version.source?.sourceYear ?? version.factorYear,
+      sourceUrl: version.source?.sourceUrl ?? null,
+      status: version.status,
+      confidenceLevel: version.confidenceLevel,
+      factorType: 'GOVERNED_LIBRARY',
+      jurisdictionCountry: normalizeJurisdictionCountry(version.jurisdictionCountry),
+      jurisdictionRegion: normalizeJurisdictionRegion(version.jurisdictionRegion),
+      factorYear: version.factorYear,
+    },
+    explanation,
+  );
+}
+
+function noApplicableFactor(input: {
+  status: ApplicableFactor['status'];
+  matchedBy: ApplicableFactor['matchedBy'];
+  message: string;
+  warnings?: string[];
+}): ApplicableFactor {
+  return {
+    matched: false,
+    factor: null,
+    status: input.status,
+    matchedBy: input.matchedBy,
+    message: input.message,
+    warnings: input.warnings ?? [],
+  };
+}
+
+function formatActivityType(activityType?: string | null) {
+  return String(activityType ?? 'activity')
+    .toLowerCase()
+    .split('_')
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ');
 }
 
 function compareFactorVersions(requestedYear?: number | null) {

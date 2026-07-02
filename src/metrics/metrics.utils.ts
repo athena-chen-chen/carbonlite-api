@@ -55,6 +55,51 @@ export function normalizeUnit(unit: string): string {
   return aliases[normalized] ?? normalized;
 }
 
+export function normalizeJurisdictionRegion(region?: string | null): string | null {
+  const raw = String(region ?? '').split(',')[0];
+  const normalized = raw
+    .trim()
+    .toLowerCase()
+    .replace(/\./g, '')
+    .replace(/\(generic\)/g, '')
+    .replace(/\s+/g, ' ');
+
+  if (!normalized) return null;
+
+  const aliases: Record<string, string> = {
+    ab: 'Alberta',
+    alta: 'Alberta',
+    alberta: 'Alberta',
+    bc: 'British Columbia',
+    'b c': 'British Columbia',
+    'british columbia': 'British Columbia',
+    on: 'Ontario',
+    ont: 'Ontario',
+    ontario: 'Ontario',
+    canada: 'Canada',
+    'canada generic': 'Canada',
+    'canada-level': 'Canada',
+    'province required': 'Province Required',
+  };
+
+  return aliases[normalized] ?? titleCase(normalized);
+}
+
+export function normalizeJurisdictionCountry(country?: string | null): string | null {
+  const normalized = String(country ?? '').trim().toLowerCase().replace(/\s+/g, ' ');
+  if (!normalized) return null;
+  if (['ca', 'can', 'canada'].includes(normalized)) return 'Canada';
+  return titleCase(normalized);
+}
+
+function titleCase(value: string) {
+  return value
+    .split(' ')
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ');
+}
+
 export function matchBestFactor(input: MatchFactorInput): ConversionFactor | null {
   const { activityType, unit, factors, metricType, organizationId } = input;
   const normalizedInputUnit = normalizeUnit(unit);

@@ -2,6 +2,54 @@ import { PrismaClient } from '@prisma/client';
 
 const prisma = new PrismaClient();
 
+const systemFactorMetadata = {
+  default: {
+    jurisdiction: 'Canada (Generic)',
+    sourceAuthority: 'CarbonLite System Defaults',
+    sourceDocument: 'CarbonLite MVP Default Factors v1.0',
+    sourceYear: 2025,
+    sourceUrl: 'https://carbonlite.ai/methodology/default-factors',
+    confidenceLevel: 'Medium (Engineering Estimate)',
+    verificationStatus: 'Internal Review Required',
+    verified: false,
+    methodology:
+      'Used for pilot validation. Intended for demonstration workflows only. Replace with official ECCC or provincial emission factors before production reporting.',
+    notes: 'Default system factor included with CarbonLite MVP. Not intended for regulatory reporting.',
+  },
+  electricity: {
+    jurisdiction: 'Province Required',
+    sourceAuthority: 'CarbonLite System Defaults',
+    sourceDocument: 'CarbonLite MVP Default Factors v1.0',
+    sourceYear: 2025,
+    sourceUrl: 'https://carbonlite.ai/methodology/default-factors',
+    confidenceLevel: 'Low (Placeholder)',
+    verificationStatus: 'Internal Review Required',
+    verified: false,
+    methodology:
+      'Electricity emission factors vary by province. Replace with official provincial electricity factors before production use.',
+    notes: 'Placeholder electricity factor for pilot testing only.',
+  },
+  water: {
+    jurisdiction: 'Canada (Generic)',
+    sourceAuthority: 'CarbonLite Pilot Methodology',
+    sourceDocument: 'Water Emissions Placeholder Factor',
+    sourceYear: 2025,
+    sourceUrl: 'https://carbonlite.ai/methodology/water-emissions',
+    confidenceLevel: 'Pilot Estimate',
+    verificationStatus: 'Internal Review Required',
+    verified: false,
+    methodology:
+      'Estimated indirect emissions associated with municipal water treatment and distribution. Used for pilot workflow validation only.',
+    notes: 'Tracked metric with optional estimated emissions. Not intended for regulatory reporting.',
+  },
+} as const;
+
+function getSystemFactorMetadata(activityType: string) {
+  if (activityType === 'ELECTRICITY') return systemFactorMetadata.electricity;
+  if (activityType === 'WATER') return systemFactorMetadata.water;
+  return systemFactorMetadata.default;
+}
+
 async function main() {
   console.log('🌱 Seeding database...');
 
@@ -122,6 +170,7 @@ async function main() {
   ] as const;
 
   for (const factor of defaultFactors) {
+    const metadata = getSystemFactorMetadata(factor.activityType);
     const existingFactor = await prisma.conversionFactor.findFirst({
       where: {
         isSystemDefault: true,
@@ -132,47 +181,47 @@ async function main() {
     });
 
     const governanceData = {
-      jurisdiction: 'jurisdiction' in factor ? factor.jurisdiction : 'Canada',
-      sourceAuthority: 'Demo / Placeholder',
-      sourceDocument: 'Pilot default factor library',
-      sourceYear: 'sourceYear' in factor ? factor.sourceYear : null,
-      sourceName: 'Demo / Placeholder',
-      sourceReference: 'Pilot default factor library',
-      verified: false,
-      notes:
-        'notes' in factor
-          ? factor.notes
-          : 'Pilot workflow factor. Verify the applicable authority, jurisdiction, and reporting year before final reporting.',
+      jurisdiction: metadata.jurisdiction,
+      country: 'Canada',
+      sourceAuthority: metadata.sourceAuthority,
+      sourceDocument: metadata.sourceDocument,
+      sourceYear: metadata.sourceYear,
+      sourceUrl: metadata.sourceUrl,
+      sourceName: metadata.sourceAuthority,
+      sourceReference: metadata.sourceDocument,
+      methodology: metadata.methodology,
+      confidenceLevel: metadata.confidenceLevel,
+      verificationStatus: metadata.verificationStatus,
+      verified: metadata.verified,
+      notes: metadata.notes,
     };
 
-    if (factor.activityType !== 'WATER') {
-      if (existingFactor) {
-        await prisma.conversionFactor.update({
-          where: { id: existingFactor.id },
-          data: {
-            name: factor.name,
-            ...governanceData,
-          },
-        });
-      } else {
-        await prisma.conversionFactor.create({
-          data: {
-            organizationId: null,
-            name: factor.name,
-            type: 'EMISSION',
-            activityType: factor.activityType,
-            unit: factor.unit,
-            factorValue: factor.factorValue,
-            resultUnit: 'kgCO2e',
-            isDefault: true,
-            isSystemDefault: true,
-            ...governanceData,
-          },
-        });
-      }
+    if (existingFactor) {
+      await prisma.conversionFactor.update({
+        where: { id: existingFactor.id },
+        data: {
+          name: factor.name,
+          ...governanceData,
+        },
+      });
+    } else {
+      await prisma.conversionFactor.create({
+        data: {
+          organizationId: null,
+          name: factor.name,
+          type: 'EMISSION',
+          activityType: factor.activityType,
+          unit: factor.unit,
+          factorValue: factor.factorValue,
+          resultUnit: 'kgCO2e',
+          isDefault: true,
+          isSystemDefault: true,
+          ...governanceData,
+        },
+      });
     }
 
-    const sourceId = `demo-source-${factor.activityType}-${factor.unit}-${'sourceYear' in factor ? factor.sourceYear ?? 'na' : 'na'}`
+    const sourceId = `system-source-${factor.activityType}-${factor.unit}-${metadata.sourceYear}`
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, '-');
     const factorId = `demo-factor-${factor.activityType}`.toLowerCase().replace(/[^a-z0-9]+/g, '-');
@@ -184,18 +233,18 @@ async function main() {
       where: { id: sourceId },
       update: {
         sourceAuthority: governanceData.sourceAuthority,
-        sourceShortName: 'Demo',
+        sourceShortName: 'CarbonLite',
         sourceDocument: governanceData.sourceDocument,
-        sourceVersion: 'pilot-demo',
-        sourceYear: governanceData.sourceYear ?? 0,
-        sourceUrl: '',
+        sourceVersion: 'v1.0',
+        sourceYear: metadata.sourceYear,
+        sourceUrl: metadata.sourceUrl,
         page: '',
         tableReference: '',
-        publishedDate: new Date(),
+        publishedDate: new Date('2025-01-01T00:00:00.000Z'),
         country: 'Canada',
-        jurisdictionRegion: 'jurisdiction' in factor ? factor.jurisdiction : 'Canada',
-        publisherType: 'UNKNOWN',
-        description: 'CarbonLite pilot demo source used for workflow validation.',
+        jurisdictionRegion: metadata.jurisdiction,
+        publisherType: 'CUSTOM',
+        description: 'CarbonLite MVP system factor metadata for pilot workflow validation.',
         notes: governanceData.notes,
         isOfficial: false,
         isActive: true,
@@ -203,18 +252,18 @@ async function main() {
       create: {
         id: sourceId,
         sourceAuthority: governanceData.sourceAuthority,
-        sourceShortName: 'Demo',
+        sourceShortName: 'CarbonLite',
         sourceDocument: governanceData.sourceDocument,
-        sourceVersion: 'pilot-demo',
-        sourceYear: governanceData.sourceYear ?? 0,
-        sourceUrl: '',
+        sourceVersion: 'v1.0',
+        sourceYear: metadata.sourceYear,
+        sourceUrl: metadata.sourceUrl,
         page: '',
         tableReference: '',
-        publishedDate: new Date(),
+        publishedDate: new Date('2025-01-01T00:00:00.000Z'),
         country: 'Canada',
-        jurisdictionRegion: 'jurisdiction' in factor ? factor.jurisdiction : 'Canada',
-        publisherType: 'UNKNOWN',
-        description: 'CarbonLite pilot demo source used for workflow validation.',
+        jurisdictionRegion: metadata.jurisdiction,
+        publisherType: 'CUSTOM',
+        description: 'CarbonLite MVP system factor metadata for pilot workflow validation.',
         notes: governanceData.notes,
         isOfficial: false,
         isActive: true,
@@ -253,12 +302,16 @@ async function main() {
       update: {
         factorValue: factor.factorValue,
         inputUnit: factor.unit,
-        resultUnit: factor.activityType === 'WATER' ? 'tracked' : 'kgCO2e',
-        jurisdictionCountry: 'country' in factor ? factor.country ?? null : 'Canada',
-        jurisdictionRegion: 'jurisdiction' in factor ? factor.jurisdiction : 'Canada',
-        factorYear: 'sourceYear' in factor ? factor.sourceYear ?? null : null,
+        resultUnit: 'kgCO2e',
+        jurisdictionCountry: 'Canada',
+        jurisdictionRegion: metadata.jurisdiction,
+        factorYear: metadata.sourceYear,
         status: 'DRAFT',
         confidenceLevel: 'DEMO',
+        methodology: metadata.methodology,
+        verificationStatus: metadata.verificationStatus,
+        verified: metadata.verified,
+        reviewNotes: 'Internal review required before production use.',
         sourceId,
         notes: governanceData.notes,
       },
@@ -267,12 +320,16 @@ async function main() {
         version,
         factorValue: factor.factorValue,
         inputUnit: factor.unit,
-        resultUnit: factor.activityType === 'WATER' ? 'tracked' : 'kgCO2e',
-        jurisdictionCountry: 'country' in factor ? factor.country ?? null : 'Canada',
-        jurisdictionRegion: 'jurisdiction' in factor ? factor.jurisdiction : 'Canada',
-        factorYear: 'sourceYear' in factor ? factor.sourceYear ?? null : null,
+        resultUnit: 'kgCO2e',
+        jurisdictionCountry: 'Canada',
+        jurisdictionRegion: metadata.jurisdiction,
+        factorYear: metadata.sourceYear,
         status: 'DRAFT',
         confidenceLevel: 'DEMO',
+        methodology: metadata.methodology,
+        verificationStatus: metadata.verificationStatus,
+        verified: metadata.verified,
+        reviewNotes: 'Internal review required before production use.',
         sourceId,
         notes: governanceData.notes,
       },
