@@ -151,7 +151,7 @@ describe('CalculationQualityService', () => {
     expect(result.calculationDetails[0]).toMatchObject({
       status: 'MISSING_JURISDICTION',
       matchingMessage:
-        'Electricity factors are province-specific. Please provide a province or facility location.',
+        'Electricity emissions require a province-specific factor. Please select the province where the electricity was used.',
     });
   });
 
@@ -412,6 +412,105 @@ describe('CalculationQualityService', () => {
     });
   });
 
+  it('uses facility jurisdiction before organization default for BC electricity', () => {
+    const result = service.evaluate({
+      organization: { ...organization, provinceState: 'Alberta' },
+      records: [
+        record({
+          activityType: 'ELECTRICITY',
+          quantity: new Prisma.Decimal(1000),
+          unit: 'kWh',
+          jurisdictionRegion: null,
+          jurisdictionCountry: null,
+          facilityId: 'facility-bc',
+          facility: {
+            id: 'facility-bc',
+            name: 'Vancouver Office',
+            country: 'Canada',
+            provinceState: 'BC',
+          },
+        }),
+      ],
+      factors: [],
+      governedFactors: [
+        governedFactor({
+          id: 'factor-version-bc-2025',
+          factorValue: new Prisma.Decimal(0.02),
+          jurisdictionRegion: 'British Columbia',
+          factor: {
+            id: 'factor-electricity-bc',
+            activityType: 'ELECTRICITY',
+            displayName: 'Electricity - British Columbia',
+            category: 'ELECTRICITY',
+            scope: 'Scope 2',
+            description: null,
+            isSystem: true,
+            isActive: true,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          },
+        }),
+        governedFactor({
+          id: 'factor-version-ab-2025',
+          factorValue: new Prisma.Decimal(0.5),
+          jurisdictionRegion: 'Alberta',
+        }),
+      ],
+    });
+
+    expect(result.totalEstimatedEmissionsKgCO2e).toBe(20);
+    expect(result.calculationDetails[0]).toMatchObject({
+      factorVersionId: 'factor-version-bc-2025',
+      jurisdictionRegion: 'British Columbia',
+      jurisdictionSource: 'facility',
+      facilityName: 'Vancouver Office',
+      matchedBy: 'SYSTEM_EXACT_REGION_YEAR',
+      matchingMessage:
+        'Matched British Columbia electricity factor for 2025 because the selected facility is located there.',
+    });
+  });
+
+  it('uses Canada-level fuel factor for BC records when province-specific fuel factor is absent', () => {
+    const result = service.evaluate({
+      organization,
+      records: [
+        record({
+          activityType: 'DIESEL',
+          quantity: new Prisma.Decimal(100),
+          unit: 'liters',
+          facilityId: 'facility-bc',
+          facility: {
+            id: 'facility-bc',
+            name: 'Vancouver Office',
+            country: 'Canada',
+            provinceState: 'British Columbia',
+          },
+        }),
+      ],
+      factors: [
+        factor({
+          id: 'diesel-canada',
+          jurisdiction: 'Canada (Generic)',
+          region: null,
+          country: 'Canada',
+          sourceYear: 2025,
+          factorValue: new Prisma.Decimal(2.68),
+        }),
+      ],
+    });
+
+    expect(result.totalEstimatedEmissionsKgCO2e).toBe(268);
+    expect(result.calculationDetails[0]).toMatchObject({
+      factorId: 'diesel-canada',
+      jurisdictionRegion: 'British Columbia',
+      jurisdictionSource: 'facility',
+      factorJurisdictionCountry: 'Canada',
+      matchedBy: 'SYSTEM_COUNTRY_YEAR',
+      matchingMessage:
+        'Used Canada-level default factor because no province-specific factor was available for Diesel. Jurisdiction came from the selected facility.',
+    });
+  });
+
   it('normalizes Canadian province names', () => {
     expect(normalizeJurisdictionRegion('AB')).toBe('Alberta');
     expect(normalizeJurisdictionRegion('Alta.')).toBe('Alberta');
@@ -633,5 +732,95 @@ describe('CalculationQualityService', () => {
       { activityType: 'DIESEL', total: 100, unit: 'L' },
       { activityType: 'NATURAL_GAS', total: 400, unit: 'm3' },
     ]);
+  });
+
+  it('filters calculation summaries by selected document ids', () => {
+    const result = service.evaluate({
+      organization,
+      records: [
+        record({
+          id: 'activity-doc-1',
+          sourceDocumentId: 'doc-1',
+          quantity: new Prisma.Decimal(100),
+        }),
+        record({
+          id: 'activity-doc-2',
+          documentId: 'doc-2',
+          quantity: new Prisma.Decimal(200),
+        }),
+      ],
+      factors: [factor()],
+      query: { selectedDocumentIds: 'doc-1' },
+    });
+
+    expect(result.totalRecordsFound).toBe(2);
+    expect(result.recordsInScope).toBe(1);
+    expect(result.totalRecordCount).toBe(1);
+    expect(result.calculatedRecordCount).toBe(1);
+    expect(result.skippedRecordCount).toBe(0);
+    expect(result.totalEstimatedEmissionsKgCO2e).toBe(268);
+    expect(result.calculationDetails).toHaveLength(1);
+    expect(result.calculationDetails[0]).toMatchObject({
+      activityDataId: 'activity-doc-1',
+      sourceDocumentId: 'doc-1',
+      status: 'CALCULATED',
+    });
+  });
+
+  it('accepts selected document ids as arrays and comma-separated values', () => {
+    const result = service.evaluate({
+      organization,
+      records: [
+        record({
+          id: 'activity-doc-1',
+          sourceDocumentId: 'doc-1',
+          quantity: new Prisma.Decimal(100),
+        }),
+        record({
+          id: 'activity-doc-2',
+          documentId: 'doc-2',
+          quantity: new Prisma.Decimal(200),
+        }),
+        record({
+          id: 'activity-doc-3',
+          sourceDocumentId: 'doc-3',
+          quantity: new Prisma.Decimal(300),
+        }),
+      ],
+      factors: [factor()],
+      query: { selectedDocumentIds: ['doc-1,doc-2'] },
+    });
+
+    expect(result.recordsInScope).toBe(2);
+    expect(result.totalRecordCount).toBe(2);
+    expect(result.totalEstimatedEmissionsKgCO2e).toBe(804);
+    expect(result.calculationDetails.map((detail) => detail.activityDataId)).toEqual([
+      'activity-doc-1',
+      'activity-doc-2',
+    ]);
+  });
+
+  it('accepts bracket selected document ids and returns an empty scoped summary when none match', () => {
+    const result = service.evaluate({
+      organization,
+      records: [
+        record({
+          id: 'activity-doc-1',
+          sourceDocumentId: 'doc-1',
+        }),
+      ],
+      factors: [factor()],
+      query: { 'selectedDocumentIds[]': ['missing-doc'] },
+    });
+
+    expect(result.totalRecordsFound).toBe(1);
+    expect(result.recordsInScope).toBe(0);
+    expect(result.totalRecordCount).toBe(0);
+    expect(result.recordsCalculated).toBe(0);
+    expect(result.skippedRecordCount).toBe(0);
+    expect(result.totalEstimatedEmissionsKgCO2e).toBe(0);
+    expect(result.calculationDetails).toEqual([]);
+    expect(result.records).toEqual([]);
+    expect(result.activities).toEqual([]);
   });
 });

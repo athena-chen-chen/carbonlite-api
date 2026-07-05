@@ -136,28 +136,40 @@ async function main() {
       activityType: 'ELECTRICITY',
       unit: 'kWh',
       factorValue: 0.53,
-      jurisdiction: 'Alberta, Canada',
+      jurisdiction: 'Alberta',
       sourceYear: 2025,
       category: 'ELECTRICITY',
       scope: 'Scope 2',
       notes:
         'Electricity factors vary by province and reporting year. Replace with a verified jurisdiction-specific factor before client or regulatory reporting.',
     },
-    { name: 'Air travel', activityType: 'AIR_TRAVEL', unit: 'km', factorValue: 0.115, category: 'TRANSPORT', scope: 'Scope 3' },
-    { name: 'Hotel stays', activityType: 'HOTEL', unit: 'nights', factorValue: 15, category: 'HOTEL', scope: 'Scope 3' },
-    { name: 'Shipping', activityType: 'SHIPPING', unit: 'ton-km', factorValue: 0.09, category: 'SHIPPING', scope: 'Scope 3' },
     {
       name: 'Electricity - British Columbia',
       activityType: 'ELECTRICITY',
       unit: 'kWh',
       factorValue: 0.02,
-      jurisdiction: 'British Columbia, Canada',
+      jurisdiction: 'British Columbia',
       sourceYear: 2025,
       category: 'ELECTRICITY',
       scope: 'Scope 2',
       notes:
         'Demo electricity factor for workflow testing. Replace with verified jurisdiction-specific factors before client or regulatory reporting.',
     },
+    {
+      name: 'Electricity - Ontario',
+      activityType: 'ELECTRICITY',
+      unit: 'kWh',
+      factorValue: 0.12,
+      jurisdiction: 'Ontario',
+      sourceYear: 2025,
+      category: 'ELECTRICITY',
+      scope: 'Scope 2',
+      notes:
+        'Demo electricity factor for workflow testing. Replace with verified jurisdiction-specific factors before client or regulatory reporting.',
+    },
+    { name: 'Air travel', activityType: 'AIR_TRAVEL', unit: 'km', factorValue: 0.115, category: 'TRANSPORT', scope: 'Scope 3' },
+    { name: 'Hotel stays', activityType: 'HOTEL', unit: 'nights', factorValue: 15, category: 'HOTEL', scope: 'Scope 3' },
+    { name: 'Shipping', activityType: 'SHIPPING', unit: 'ton-km', factorValue: 0.09, category: 'SHIPPING', scope: 'Scope 3' },
     {
       name: 'Water usage tracked only',
       activityType: 'WATER',
@@ -171,21 +183,30 @@ async function main() {
 
   for (const factor of defaultFactors) {
     const metadata = getSystemFactorMetadata(factor.activityType);
+    const factorJurisdiction = 'jurisdiction' in factor && factor.jurisdiction
+      ? factor.jurisdiction
+      : metadata.jurisdiction;
+    const factorRegionKey = factorJurisdiction
+      .toLowerCase()
+      .replace(/\(generic\)/g, 'generic')
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-|-$/g, '');
     const existingFactor = await prisma.conversionFactor.findFirst({
       where: {
         isSystemDefault: true,
         type: 'EMISSION',
         activityType: factor.activityType,
         unit: factor.unit,
+        jurisdiction: factorJurisdiction,
       },
     });
 
     const governanceData = {
-      jurisdiction: metadata.jurisdiction,
+      jurisdiction: factorJurisdiction,
       country: 'Canada',
       sourceAuthority: metadata.sourceAuthority,
       sourceDocument: metadata.sourceDocument,
-      sourceYear: metadata.sourceYear,
+      sourceYear: 'sourceYear' in factor && factor.sourceYear ? factor.sourceYear : metadata.sourceYear,
       sourceUrl: metadata.sourceUrl,
       sourceName: metadata.sourceAuthority,
       sourceReference: metadata.sourceDocument,
@@ -221,11 +242,11 @@ async function main() {
       });
     }
 
-    const sourceId = `system-source-${factor.activityType}-${factor.unit}-${metadata.sourceYear}`
+    const sourceId = `system-source-${factor.activityType}-${factor.unit}-${governanceData.sourceYear}-${factorRegionKey}`
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, '-');
-    const factorId = `demo-factor-${factor.activityType}`.toLowerCase().replace(/[^a-z0-9]+/g, '-');
-    const version = `demo-${'sourceYear' in factor && factor.sourceYear ? factor.sourceYear : 'v1'}-${factor.unit}`
+    const factorId = `demo-factor-${factor.activityType}-${factorRegionKey}`.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+    const version = `demo-${governanceData.sourceYear}-${factor.unit}-${factorRegionKey}`
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, '-');
 
@@ -236,13 +257,13 @@ async function main() {
         sourceShortName: 'CarbonLite',
         sourceDocument: governanceData.sourceDocument,
         sourceVersion: 'v1.0',
-        sourceYear: metadata.sourceYear,
+        sourceYear: governanceData.sourceYear,
         sourceUrl: metadata.sourceUrl,
         page: '',
         tableReference: '',
         publishedDate: new Date('2025-01-01T00:00:00.000Z'),
         country: 'Canada',
-        jurisdictionRegion: metadata.jurisdiction,
+        jurisdictionRegion: factorJurisdiction,
         publisherType: 'CUSTOM',
         description: 'CarbonLite MVP system factor metadata for pilot workflow validation.',
         notes: governanceData.notes,
@@ -255,13 +276,13 @@ async function main() {
         sourceShortName: 'CarbonLite',
         sourceDocument: governanceData.sourceDocument,
         sourceVersion: 'v1.0',
-        sourceYear: metadata.sourceYear,
+        sourceYear: governanceData.sourceYear,
         sourceUrl: metadata.sourceUrl,
         page: '',
         tableReference: '',
         publishedDate: new Date('2025-01-01T00:00:00.000Z'),
         country: 'Canada',
-        jurisdictionRegion: metadata.jurisdiction,
+        jurisdictionRegion: factorJurisdiction,
         publisherType: 'CUSTOM',
         description: 'CarbonLite MVP system factor metadata for pilot workflow validation.',
         notes: governanceData.notes,
@@ -304,8 +325,8 @@ async function main() {
         inputUnit: factor.unit,
         resultUnit: 'kgCO2e',
         jurisdictionCountry: 'Canada',
-        jurisdictionRegion: metadata.jurisdiction,
-        factorYear: metadata.sourceYear,
+        jurisdictionRegion: factorJurisdiction,
+        factorYear: governanceData.sourceYear,
         status: 'DRAFT',
         confidenceLevel: 'DEMO',
         methodology: metadata.methodology,
@@ -322,8 +343,8 @@ async function main() {
         inputUnit: factor.unit,
         resultUnit: 'kgCO2e',
         jurisdictionCountry: 'Canada',
-        jurisdictionRegion: metadata.jurisdiction,
-        factorYear: metadata.sourceYear,
+        jurisdictionRegion: factorJurisdiction,
+        factorYear: governanceData.sourceYear,
         status: 'DRAFT',
         confidenceLevel: 'DEMO',
         methodology: metadata.methodology,
@@ -335,6 +356,52 @@ async function main() {
       },
     });
   }
+
+  await prisma.conversionFactor.updateMany({
+    where: {
+      isSystemDefault: true,
+      activityType: 'ELECTRICITY',
+      unit: 'kWh',
+      jurisdiction: 'Province Required',
+    },
+    data: {
+      name: 'Electricity - Province Required',
+      country: 'Canada',
+      confidenceLevel: systemFactorMetadata.electricity.confidenceLevel,
+      verificationStatus: systemFactorMetadata.electricity.verificationStatus,
+      verified: false,
+      notes: systemFactorMetadata.electricity.notes,
+    },
+  });
+
+  await prisma.factor.updateMany({
+    where: {
+      id: 'demo-factor-electricity',
+      activityType: 'ELECTRICITY',
+    },
+    data: {
+      displayName: 'Electricity - Province Required',
+      description: systemFactorMetadata.electricity.notes,
+      isSystem: true,
+      isActive: true,
+    },
+  });
+
+  await prisma.factorVersion.updateMany({
+    where: {
+      factorId: 'demo-factor-electricity',
+      jurisdictionRegion: 'Province Required',
+    },
+    data: {
+      jurisdictionCountry: 'Canada',
+      jurisdictionRegion: 'Province Required',
+      status: 'DRAFT',
+      confidenceLevel: 'DEMO',
+      verificationStatus: systemFactorMetadata.electricity.verificationStatus,
+      verified: false,
+      notes: systemFactorMetadata.electricity.notes,
+    },
+  });
 
   console.log('✅ System conversion factors and Factor Library demo versions ready');
 

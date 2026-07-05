@@ -28,7 +28,15 @@ export type CalculationStatus =
 
 type ActivityWithDocument = ActivityData & {
   document: { id: string; fileName: string } | null;
+  facility?: {
+    id: string;
+    name: string;
+    country: string | null;
+    provinceState: string | null;
+  } | null;
 };
+
+type JurisdictionSource = 'record' | 'facility' | 'organization' | 'user' | 'unknown';
 
 type GovernedFactorVersion = FactorVersion & {
   factor: Factor;
@@ -67,6 +75,14 @@ export class CalculationQualityService {
         include: {
           document: {
             select: { id: true, fileName: true },
+          },
+          facility: {
+            select: {
+              id: true,
+              name: true,
+              country: true,
+              provinceState: true,
+            },
           },
         },
         orderBy: { recordDate: 'asc' },
@@ -117,21 +133,24 @@ export class CalculationQualityService {
     query?: CalculationSummaryQueryDto;
   }) {
     const query = input.query ?? {};
-    const selectedRecordIds = parseIds(query.selectedActivityRecordIds);
-    const selectedDocumentIds = parseIds(query.selectedDocumentIds);
+    const selectedRecordIds = parseIds(
+      query.selectedActivityRecordIds ?? query['selectedActivityRecordIds[]'],
+    );
+    const selectedDocumentIds = parseIds(
+      query.selectedDocumentIds ?? query['selectedDocumentIds[]'],
+    );
     const selectedRecordSet = new Set(selectedRecordIds);
     const selectedDocumentSet = new Set(selectedDocumentIds);
     const hasRecordScope = selectedRecordSet.size > 0;
     const hasDocumentScope = !hasRecordScope && selectedDocumentSet.size > 0;
     const calculationDetails = input.records.map((record) => {
       const recordYear = record.recordYear ?? record.recordDate.getUTCFullYear();
-      const jurisdictionCountry =
-        normalizeJurisdictionCountry(record.jurisdictionCountry) ||
-        normalizeJurisdictionCountry(input.organization.country) ||
-        'Canada';
-      const jurisdictionRegion =
-        normalizeJurisdictionRegion(record.jurisdictionRegion) ||
-        normalizeJurisdictionRegion(input.organization.provinceState);
+      const resolvedJurisdiction = resolveActivityJurisdiction(
+        record,
+        input.organization,
+      );
+      const jurisdictionCountry = resolvedJurisdiction.country ?? 'Canada';
+      const jurisdictionRegion = resolvedJurisdiction.province;
       const organizationJurisdiction = formatJurisdiction(
         jurisdictionRegion,
         jurisdictionCountry,
@@ -171,6 +190,8 @@ export class CalculationQualityService {
           recordYear,
           jurisdictionCountry,
           jurisdictionRegion,
+          jurisdictionSource: resolvedJurisdiction.source,
+          jurisdictionAssumed: resolvedJurisdiction.assumed,
           jurisdiction: organizationJurisdiction,
           status: 'MISSING_DATA',
           reason: 'Activity type is required.',
@@ -206,6 +227,8 @@ export class CalculationQualityService {
           recordYear,
           jurisdictionCountry,
           jurisdictionRegion,
+          jurisdictionSource: resolvedJurisdiction.source,
+          jurisdictionAssumed: resolvedJurisdiction.assumed,
           jurisdiction: organizationJurisdiction,
           status: 'TRACKED_ONLY',
           reason:
@@ -222,13 +245,15 @@ export class CalculationQualityService {
           recordYear,
           jurisdictionCountry,
           jurisdictionRegion,
+          jurisdictionSource: resolvedJurisdiction.source,
+          jurisdictionAssumed: resolvedJurisdiction.assumed,
           jurisdiction: organizationJurisdiction,
           status: 'MISSING_JURISDICTION',
           reason:
-            'Electricity factors are province-specific. Please provide a province or facility location.',
+            'Electricity emissions require a province-specific factor. Please select the province where the electricity was used.',
           matchedBy: 'NO_MATCH',
           matchingMessage:
-            'Electricity factors are province-specific. Please provide a province or facility location.',
+            'Electricity emissions require a province-specific factor. Please select the province where the electricity was used.',
         });
       }
 
@@ -240,6 +265,7 @@ export class CalculationQualityService {
         allowDemoFactors: input.organization.allowDemoFactorsForCalculations,
         jurisdictionCountry,
         jurisdictionRegion,
+        jurisdictionSource: resolvedJurisdiction.source,
         jurisdiction: organizationJurisdiction,
         reportingYear,
       });
@@ -254,6 +280,11 @@ export class CalculationQualityService {
 
         return this.detail(record, {
           reportingYear,
+          recordYear,
+          jurisdictionCountry,
+          jurisdictionRegion,
+          jurisdictionSource: resolvedJurisdiction.source,
+          jurisdictionAssumed: resolvedJurisdiction.assumed,
           jurisdiction: organizationJurisdiction,
           status: 'MISSING_FACTOR',
           reason: noMatchMessage,
@@ -283,17 +314,20 @@ export class CalculationQualityService {
         recordYear,
         jurisdictionCountry,
         jurisdictionRegion,
+        jurisdictionSource: resolvedJurisdiction.source,
+        jurisdictionAssumed: resolvedJurisdiction.assumed,
       });
     });
 
     const inScopeDetails = calculationDetails.filter(
       (detail) => detail.status !== 'OUTSIDE_SCOPE',
     );
+    const outputDetails = inScopeDetails;
     const calculatedDetails = inScopeDetails.filter(
       (detail) => detail.status === 'CALCULATED',
     );
     const missingFactors = inScopeDetails
-      .filter((detail) => ['MISSING_FACTOR', 'MISSING_JURISDICTION'].includes(detail.status))
+      .filter((detail) => detail.status === 'MISSING_FACTOR')
       .map((detail) => ({
         activityDataId: detail.activityDataId,
         activityType: detail.activityType,
@@ -307,7 +341,7 @@ export class CalculationQualityService {
     const trackedOnlyCount = inScopeDetails.filter(
       (detail) => detail.status === 'TRACKED_ONLY',
     ).length;
-    const skippedRecords = calculationDetails.length - calculatedDetails.length;
+    const skippedRecords = outputDetails.length - calculatedDetails.length;
     const totalEstimatedEmissionsKgCO2e = round(
       calculatedDetails.reduce(
         (total, detail) => total + (detail.calculatedEmissionsKgCO2e ?? 0),
@@ -329,9 +363,9 @@ export class CalculationQualityService {
       missingFactorRecords: missingFactors.length,
       invalidRecordCount,
       dataQualityCoverage:
-        calculationDetails.length > 0
+        outputDetails.length > 0
           ? round(
-              (calculatedDetails.length / calculationDetails.length) * 100,
+              (calculatedDetails.length / outputDetails.length) * 100,
             )
           : 0,
       skippedReasons: {
@@ -360,8 +394,8 @@ export class CalculationQualityService {
       dataQualitySummary: buildDataQualitySummary(inScopeDetails),
       usageTotals,
       missingFactors,
-      calculationDetails,
-      records: calculationDetails.map((detail) => ({
+      calculationDetails: outputDetails,
+      records: outputDetails.map((detail) => ({
         activityRecordId: detail.activityDataId,
         activityType: detail.activityType,
         quantity: detail.activityQuantity,
@@ -370,8 +404,13 @@ export class CalculationQualityService {
         normalizedUnit: detail.normalizedUnit,
         recordDate: detail.recordDate,
         recordYear: detail.recordYear,
-        facilityName: null,
+        facilityId: detail.facilityId,
+        facilityName: detail.facilityName,
         jurisdiction: detail.jurisdiction,
+        jurisdictionCountry: detail.jurisdictionCountry,
+        jurisdictionRegion: detail.jurisdictionRegion,
+        jurisdictionSource: detail.jurisdictionSource,
+        jurisdictionAssumed: detail.jurisdictionAssumed,
         calculationStatus: detail.explanationStatus,
         calculatedEmissions: detail.calculatedEmissionsKgCO2e,
         resultUnit: detail.factorResultUnit ?? 'kgCO2e',
@@ -436,6 +475,12 @@ export class CalculationQualityService {
         recordDate: detail.recordDate,
         quantity: detail.activityQuantity,
         unit: detail.activityUnit,
+        facilityId: detail.facilityId,
+        facilityName: detail.facilityName,
+        jurisdictionCountry: detail.jurisdictionCountry,
+        jurisdictionRegion: detail.jurisdictionRegion,
+        jurisdictionSource: detail.jurisdictionSource,
+        jurisdictionAssumed: detail.jurisdictionAssumed,
         sourceType: detail.sourceType,
         sourceReference: detail.sourceReference,
         notes: detail.notes,
@@ -454,6 +499,11 @@ export class CalculationQualityService {
         },
       ],
       totalsByFacility: [],
+      totalEmissions: totalEstimatedEmissionsKgCO2e,
+      emissionsUnit: 'kgCO2e',
+      calculatedRecordCount: calculatedDetails.length,
+      skippedRecordCount: skippedRecords,
+      totalRecordCount: outputDetails.length,
     };
   }
 
@@ -488,6 +538,7 @@ export class CalculationQualityService {
     allowDemoFactors?: boolean | null;
     jurisdictionCountry?: string | null;
     jurisdictionRegion?: string | null;
+    jurisdictionSource?: JurisdictionSource;
     jurisdiction: string;
     reportingYear: number;
   }): FactorMatch | null {
@@ -506,7 +557,7 @@ export class CalculationQualityService {
         factor.organizationId === input.organizationId &&
         factor.verified &&
         countryMatches(factor.country, input.jurisdictionCountry) &&
-        regionCompatibleForActivity(activityType, factor.region || factor.jurisdiction, input.jurisdictionRegion),
+        regionMatchesExactly(factor.region || factor.jurisdiction, input.jurisdictionRegion),
     );
     if (custom) {
       return {
@@ -514,7 +565,7 @@ export class CalculationQualityService {
         priority: 'ORGANIZATION_CUSTOM',
         matchingStatus: 'MATCHED',
         matchedBy: 'ORGANIZATION_CUSTOM_EXACT',
-        message: `Matched organization custom verified factor for ${formatActivityType(activityType)} / ${normalizedInputUnit}.`,
+        message: `Matched organization custom verified factor for ${formatActivityType(activityType)} / ${normalizedInputUnit} in ${input.jurisdictionRegion}.`,
       };
     }
 
@@ -543,8 +594,8 @@ export class CalculationQualityService {
           : 'OFFICIAL_EXACT_REGION_YEAR',
         message:
           activityType === 'ELECTRICITY'
-            ? `Matched ${input.jurisdictionRegion} electricity factor for ${input.reportingYear}.`
-            : `Matched ${input.jurisdictionRegion || input.jurisdictionCountry || 'jurisdiction'} ${input.reportingYear} factor.`,
+            ? `Matched ${input.jurisdictionRegion} electricity factor for ${input.reportingYear}${formatJurisdictionSourcePhrase(input.jurisdictionSource)}.`
+            : `Matched ${input.jurisdictionRegion || input.jurisdictionCountry || 'jurisdiction'} ${input.reportingYear} factor${formatJurisdictionSourcePhrase(input.jurisdictionSource)}.`,
       };
     }
 
@@ -559,7 +610,7 @@ export class CalculationQualityService {
         priority: countryYear.confidenceLevel === 'DEMO' ? 'DEMO_ALLOWED' : 'GOVERNED_COUNTRY_YEAR',
         matchingStatus: 'MATCHED',
         matchedBy: countryYear.factor.isSystem ? 'SYSTEM_COUNTRY_YEAR' : 'OFFICIAL_COUNTRY_YEAR',
-        message: `Matched Canada-level factor for ${formatActivityType(activityType)} because no province-specific factor was required or available.`,
+        message: `Used Canada-level default factor because no province-specific factor was available for ${formatActivityType(activityType)}.${formatJurisdictionBasisSentence(input.jurisdictionSource)}`,
       };
     }
 
@@ -582,43 +633,80 @@ export class CalculationQualityService {
       };
     }
 
-    const verifiedSystem = legacyCandidates.find(
+    const verifiedSystemExact = legacyCandidates.find(
       (factor) =>
         factor.isSystemDefault &&
         factor.verified &&
         countryMatches(factor.country, input.jurisdictionCountry) &&
-        regionCompatibleForActivity(activityType, factor.region || factor.jurisdiction, input.jurisdictionRegion),
+        regionMatchesExactly(factor.region || factor.jurisdiction, input.jurisdictionRegion),
     );
-    if (verifiedSystem) {
+    if (verifiedSystemExact) {
       return {
-        factor: verifiedSystem,
+        factor: verifiedSystemExact,
         priority: 'VERIFIED_SYSTEM',
         matchingStatus: 'MATCHED',
-        matchedBy: 'legacy verified system factor',
-        message: `Matched legacy verified system factor for ${input.reportingYear}.`,
+        matchedBy: 'SYSTEM_EXACT_REGION_YEAR',
+        message:
+          activityType === 'ELECTRICITY'
+            ? `Matched ${input.jurisdictionRegion} electricity factor for ${input.reportingYear}${formatJurisdictionSourcePhrase(input.jurisdictionSource)}.`
+            : `Matched ${input.jurisdictionRegion} system factor for ${formatActivityType(activityType)}.`,
       };
     }
 
-    const systemDefault = legacyCandidates.find((factor) => {
+    const verifiedSystemCountry = legacyCandidates.find(
+      (factor) =>
+        factor.isSystemDefault &&
+        factor.verified &&
+        countryMatches(factor.country, input.jurisdictionCountry) &&
+        isCountryLevel(factor.region || factor.jurisdiction, factor.country),
+    );
+    if (verifiedSystemCountry && allowsCountryLevelFallback(activityType)) {
+      return {
+        factor: verifiedSystemCountry,
+        priority: 'VERIFIED_SYSTEM',
+        matchingStatus: 'MATCHED',
+        matchedBy: 'SYSTEM_COUNTRY_YEAR',
+        message: `Used Canada-level default factor because no province-specific factor was available for ${formatActivityType(activityType)}.${formatJurisdictionBasisSentence(input.jurisdictionSource)}`,
+      };
+    }
+
+    const systemDefaultExact = legacyCandidates.find((factor) => {
       if (!factor.isSystemDefault) return false;
       if (activityType === 'ELECTRICITY') {
+        if (!input.allowDemoFactors && isPlaceholderFactor(factor)) return false;
         return regionMatchesExactly(factor.region || factor.jurisdiction, input.jurisdictionRegion);
       }
 
-      return allowsCountryLevelFallback(activityType);
+      return regionMatchesExactly(factor.region || factor.jurisdiction, input.jurisdictionRegion);
     });
-    if (systemDefault) {
+    if (systemDefaultExact) {
       return {
-        factor: systemDefault,
-        priority: systemDefault.confidenceLevel?.toUpperCase().includes('PLACEHOLDER')
+        factor: systemDefaultExact,
+        priority: systemDefaultExact.confidenceLevel?.toUpperCase().includes('PLACEHOLDER')
           ? 'DEMO_ALLOWED'
           : 'VERIFIED_SYSTEM',
         matchingStatus: 'MATCHED',
-        matchedBy: 'SYSTEM_DEFAULT',
+        matchedBy: 'SYSTEM_EXACT_REGION_YEAR',
         message:
           activityType === 'ELECTRICITY'
-            ? `Matched ${input.jurisdictionRegion} electricity system factor.`
-            : `Matched Canada-level factor for ${formatActivityType(activityType)} because no province-specific factor was required or available.`,
+            ? `Matched ${input.jurisdictionRegion} electricity system factor${formatJurisdictionSourcePhrase(input.jurisdictionSource)}.`
+            : `Matched ${input.jurisdictionRegion} system factor for ${formatActivityType(activityType)}.`,
+      };
+    }
+
+    const systemDefaultCountry = legacyCandidates.find((factor) => {
+      if (!factor.isSystemDefault) return false;
+      return isCountryLevel(factor.region || factor.jurisdiction, factor.country);
+    });
+    if (systemDefaultCountry && allowsCountryLevelFallback(activityType)) {
+      return {
+        factor: systemDefaultCountry,
+        priority: systemDefaultCountry.confidenceLevel?.toUpperCase().includes('PLACEHOLDER')
+          ? 'DEMO_ALLOWED'
+          : 'VERIFIED_SYSTEM',
+        matchingStatus: 'MATCHED',
+        matchedBy: 'SYSTEM_COUNTRY_YEAR',
+        message: `Used Canada-level default factor because no province-specific factor was available for ${formatActivityType(activityType)}.${formatJurisdictionBasisSentence(input.jurisdictionSource)}`,
       };
     }
 
@@ -678,6 +766,8 @@ export class CalculationQualityService {
       recordYear?: number;
       jurisdictionCountry?: string | null;
       jurisdictionRegion?: string | null;
+      jurisdictionSource?: JurisdictionSource;
+      jurisdictionAssumed?: boolean;
       availableUnitsForActivityType?: string[];
     },
   ) {
@@ -703,6 +793,10 @@ export class CalculationQualityService {
       jurisdiction: result.jurisdiction || 'Not specified',
       jurisdictionCountry: result.jurisdictionCountry ?? null,
       jurisdictionRegion: result.jurisdictionRegion ?? null,
+      jurisdictionSource: result.jurisdictionSource ?? 'unknown',
+      jurisdictionAssumed: Boolean(result.jurisdictionAssumed),
+      facilityId: record.facilityId,
+      facilityName: record.facility?.name ?? null,
       activityQuantity: Number(record.quantity),
       activityUnit: record.unit,
       quantityUnit: record.unit,
@@ -765,11 +859,87 @@ export class CalculationQualityService {
   }
 }
 
-function parseIds(value?: string) {
-  return (value ?? '')
-    .split(',')
+function isPlaceholderFactor(factor: ConversionFactor) {
+  return (
+    !factor.verified ||
+    String(factor.confidenceLevel ?? '').toUpperCase().includes('PLACEHOLDER') ||
+    String(factor.verificationStatus ?? '').toUpperCase().includes('INTERNAL REVIEW')
+  );
+}
+
+export function resolveActivityJurisdiction(
+  record: Pick<
+    ActivityWithDocument,
+    'jurisdictionCountry' | 'jurisdictionRegion' | 'facility'
+  >,
+  organization: Pick<Organization, 'country' | 'provinceState'>,
+): {
+  country: string | null;
+  province: string | null;
+  source: JurisdictionSource;
+  assumed: boolean;
+} {
+  const recordCountry = normalizeJurisdictionCountry(record.jurisdictionCountry);
+  const recordProvince = normalizeJurisdictionRegion(record.jurisdictionRegion);
+  if (recordCountry || recordProvince) {
+    return {
+      country: recordCountry ?? 'Canada',
+      province: recordProvince,
+      source: 'record',
+      assumed: false,
+    };
+  }
+
+  const facilityCountry = normalizeJurisdictionCountry(record.facility?.country);
+  const facilityProvince = normalizeJurisdictionRegion(record.facility?.provinceState);
+  if (facilityCountry || facilityProvince) {
+    return {
+      country: facilityCountry ?? 'Canada',
+      province: facilityProvince,
+      source: 'facility',
+      assumed: false,
+    };
+  }
+
+  const organizationCountry = normalizeJurisdictionCountry(organization.country);
+  const organizationProvince = normalizeJurisdictionRegion(organization.provinceState);
+  if (organizationCountry || organizationProvince) {
+    return {
+      country: organizationCountry ?? 'Canada',
+      province: organizationProvince,
+      source: 'organization',
+      assumed: true,
+    };
+  }
+
+  return {
+    country: 'Canada',
+    province: null,
+    source: 'unknown',
+    assumed: false,
+  };
+}
+
+function parseIds(value?: string | string[]) {
+  const values = Array.isArray(value) ? value : [value ?? ''];
+  return values
+    .flatMap((item) => item.split(','))
     .map((item) => item.trim())
     .filter(Boolean);
+}
+
+function formatJurisdictionSourcePhrase(source?: JurisdictionSource) {
+  if (source === 'record') return ' from the activity record jurisdiction';
+  if (source === 'facility') return ' because the selected facility is located there';
+  if (source === 'organization') return ' from the organization default jurisdiction';
+  return '';
+}
+
+function formatJurisdictionBasisSentence(source?: JurisdictionSource) {
+  if (source === 'record') return ' Jurisdiction came from the activity record.';
+  if (source === 'facility') return ' Jurisdiction came from the selected facility.';
+  if (source === 'organization') return ' Jurisdiction came from the organization default.';
+  return '';
 }
 
 function countryMatches(factorCountry?: string | null, recordCountry?: string | null) {

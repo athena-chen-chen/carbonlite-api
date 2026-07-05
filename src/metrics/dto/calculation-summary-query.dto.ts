@@ -1,4 +1,6 @@
-import { IsOptional, IsString } from 'class-validator';
+import { Allow, IsOptional, IsString } from 'class-validator';
+
+export type IdQueryParam = string | string[];
 
 export class CalculationSummaryQueryDto {
   @IsOptional()
@@ -10,10 +12,18 @@ export class CalculationSummaryQueryDto {
   periodEnd?: string;
 
   @IsOptional()
-  @IsString()
-  selectedActivityRecordIds?: string;
+  @Allow()
+  selectedActivityRecordIds?: IdQueryParam;
 
   @IsOptional()
-  @IsString()
-  selectedDocumentIds?: string;
+  @Allow()
+  selectedDocumentIds?: IdQueryParam;
+
+  @IsOptional()
+  @Allow()
+  'selectedActivityRecordIds[]'?: IdQueryParam;
+
+  @IsOptional()
+  @Allow()
+  'selectedDocumentIds[]'?: IdQueryParam;
 }

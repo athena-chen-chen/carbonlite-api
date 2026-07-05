@@ -15,6 +15,10 @@ import { ActivityType } from '@prisma/client';
 import { AuditLogService } from '../audit-log/audit-log.service';
 import { ActivityTrackingService } from '../activity-tracking/activity-tracking.service';
 import {
+  normalizeJurisdictionCountry,
+  normalizeJurisdictionRegion,
+} from '../metrics/metrics.utils';
+import {
   addAppBreadcrumb,
   captureAppError,
   markAppErrorCaptured,
@@ -27,6 +31,8 @@ type ParsedActivityRaw = {
   recordDate: string;
   quantity: number;
   unit: string;
+  jurisdictionCountry?: string | null;
+  jurisdictionRegion?: string | null;
   sourceReference?: string | null;
   notes?: string | null;
 };
@@ -41,6 +47,8 @@ type ParsedActivityWithConfidence = {
   recordDate: ConfidenceField<string>;
   quantity: ConfidenceField<number>;
   unit: ConfidenceField<string>;
+  jurisdictionCountry: ConfidenceField<string>;
+  jurisdictionRegion: ConfidenceField<string>;
   sourceReference: ConfidenceField<string>;
   notes: ConfidenceField<string>;
 };
@@ -175,7 +183,7 @@ export class DocumentExtractionService {
                   'You extract operational activity data from invoices, utility bills, receipts, and similar business documents. ' +
                   'Return only the requested structured data. ' +
                   'If a value is missing, return null where allowed. ' +
-                  'Supported activityType values: ELECTRICITY, NATURAL_GAS, DIESEL, GASOLINE, AIR_TRAVEL,STEAM, WATER, WASTE, BUSINESS_TRAVEL, FREIGHT, CUSTOM. ' +
+                  'Supported activityType values: ELECTRICITY, NATURAL_GAS, DIESEL, GASOLINE, AIR_TRAVEL, STEAM, WATER, WASTE, HOTEL, SHIPPING, CUSTOM. ' +
                   'Prefer the most explicit quantity and unit shown in the document.',
               },
             ],
@@ -202,6 +210,16 @@ For CSV or tabular data:
   - Date → recordDate
   - Quantity → quantity
   - Unit → unit
+  - Province, Jurisdiction, Jurisdiction Region, Region, State, State/Province, Facility Province → jurisdictionRegion
+  - Country → jurisdictionCountry
+
+Normalize activity types:
+- Hotel, Hotels, Hotel Stay, Accommodation, Lodging → HOTEL
+- Electricity → ELECTRICITY
+- Diesel → DIESEL
+- Gasoline → GASOLINE
+- Natural Gas → NATURAL_GAS
+- Water → WATER
 
 Return all rows as activities array.
 ` +
@@ -242,14 +260,20 @@ Return all rows as activities array.
                           'STEAM',
                           'WATER',
                           'WASTE',
-                          'BUSINESS_TRAVEL',
-                          'FREIGHT',
+                          'HOTEL',
+                          'SHIPPING',
                           'CUSTOM',
                         ],
                       },
                       recordDate: { type: 'string' },
                       quantity: { type: 'number' },
                       unit: { type: 'string' },
+                      jurisdictionCountry: {
+                        anyOf: [{ type: 'string' }, { type: 'null' }],
+                      },
+                      jurisdictionRegion: {
+                        anyOf: [{ type: 'string' }, { type: 'null' }],
+                      },
                       sourceReference: {
                         anyOf: [{ type: 'string' }, { type: 'null' }],
                       },
@@ -262,6 +286,8 @@ Return all rows as activities array.
                       'recordDate',
                       'quantity',
                       'unit',
+                      'jurisdictionCountry',
+                      'jurisdictionRegion',
                       'sourceReference',
                       'notes',
                     ],
@@ -643,6 +669,8 @@ Return all rows as activities array.
             documentId,
             activityType: normalized.activityType as any,
             recordDate: new Date(normalized.recordDate),
+            jurisdictionCountry: normalized.jurisdictionCountry ?? null,
+            jurisdictionRegion: normalized.jurisdictionRegion ?? null,
             quantity: normalized.quantity,
             unit: normalized.unit,
             sourceType: 'DOCUMENT_AI' as any,
@@ -791,6 +819,14 @@ Return all rows as activities array.
         value: activity.unit ?? null,
         confidence: this.getUnitConfidence(activity.unit),
       },
+      jurisdictionCountry: {
+        value: activity.jurisdictionCountry ?? null,
+        confidence: activity.jurisdictionCountry ? 'high' : 'low',
+      },
+      jurisdictionRegion: {
+        value: activity.jurisdictionRegion ?? null,
+        confidence: activity.jurisdictionRegion ? 'high' : 'low',
+      },
       sourceReference: {
         value: activity.sourceReference ?? null,
         confidence: activity.sourceReference ? 'high' : 'low',
@@ -803,13 +839,59 @@ Return all rows as activities array.
   }
 
   private normalizeActivityForImport(activity: any): ParsedActivityRaw {
+    const normalizedActivityType = this.normalizeActivityType(
+      this.readAliasedField(activity, [
+        'activityType',
+        'Activity Type',
+        'activity type',
+        'ActivityType',
+        'category',
+        'Category',
+      ]),
+    );
+    const normalizedCountry = normalizeJurisdictionCountry(
+      this.readAliasedField(activity, ['jurisdictionCountry', 'country', 'Country']),
+    );
+    const normalizedRegion = normalizeJurisdictionRegion(
+      this.readAliasedField(activity, [
+        'jurisdictionRegion',
+        'Jurisdiction Region',
+        'jurisdiction',
+        'Jurisdiction',
+        'province',
+        'Province',
+        'region',
+        'Region',
+        'state',
+        'State',
+        'State/Province',
+        'stateProvince',
+        'facilityProvince',
+        'Facility Province',
+      ]),
+    );
     const normalized: ParsedActivityRaw = {
-      activityType: this.unwrapField(activity.activityType),
-      recordDate: this.unwrapField(activity.recordDate),
-      quantity: this.unwrapField(activity.quantity),
-      unit: this.unwrapField(activity.unit),
-      sourceReference: this.unwrapField(activity.sourceReference),
-      notes: this.unwrapField(activity.notes),
+      activityType: normalizedActivityType,
+      recordDate: this.readAliasedField(activity, [
+        'recordDate',
+        'Record Date',
+        'date',
+        'Date',
+      ]),
+      quantity: Number(
+        this.readAliasedField(activity, ['quantity', 'Quantity', 'usage', 'Usage']),
+      ),
+      unit: this.readAliasedField(activity, ['unit', 'Unit', 'units', 'Units']),
+      jurisdictionCountry: normalizedCountry,
+      jurisdictionRegion: normalizedRegion,
+      sourceReference: this.readAliasedField(activity, [
+        'sourceReference',
+        'Source Reference',
+        'source reference',
+        'reference',
+        'Reference',
+      ]),
+      notes: this.readAliasedField(activity, ['notes', 'Notes']),
     };
 
     if (!normalized.activityType) {
@@ -848,6 +930,17 @@ Return all rows as activities array.
     return value;
   }
 
+  private readAliasedField(activity: any, keys: string[]): any {
+    for (const key of keys) {
+      const value = this.unwrapField(activity?.[key]);
+      if (value !== undefined && value !== null && String(value).trim() !== '') {
+        return value;
+      }
+    }
+
+    return null;
+  }
+
   private isValidDate(value: string | null | undefined): boolean {
     if (!value) return false;
     const date = new Date(value);
@@ -879,24 +972,50 @@ Return all rows as activities array.
     return 'medium';
   }
   private normalizeActivityType(rawType?: string | null) {
-  const value = String(rawType ?? '').trim().toUpperCase();
+  const original = String(rawType ?? '').trim();
+  const value = original
+    .toUpperCase()
+    .replace(/&/g, ' AND ')
+    .replace(/[^A-Z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
 
   const map: Record<string, string> = {
     BUSINESS_TRAVEL: 'AIR_TRAVEL',
+    BUSINESS_TRIP: 'AIR_TRAVEL',
     FLIGHT: 'AIR_TRAVEL',
+    AIR: 'AIR_TRAVEL',
+    AIR_TRAVEL: 'AIR_TRAVEL',
     AIRFARE: 'AIR_TRAVEL',
     AIR_TICKET: 'AIR_TRAVEL',
 
     FUEL: 'DIESEL',
     DIESEL_FUEL: 'DIESEL',
+    DIESEL: 'DIESEL',
+    GASOLINE: 'GASOLINE',
+    PETROL: 'GASOLINE',
 
     POWER: 'ELECTRICITY',
     UTILITY_ELECTRICITY: 'ELECTRICITY',
+    ELECTRICITY: 'ELECTRICITY',
+    ELECTRIC: 'ELECTRICITY',
 
     GAS: 'NATURAL_GAS',
+    NATURAL_GAS: 'NATURAL_GAS',
     NATURALGAS: 'NATURAL_GAS',
+    WATER: 'WATER',
+    WASTE: 'WASTE',
+    HOTEL: 'HOTEL',
+    HOTELS: 'HOTEL',
+    HOTEL_STAY: 'HOTEL',
+    HOTEL_STAYS: 'HOTEL',
+    ACCOMMODATION: 'HOTEL',
+    LODGING: 'HOTEL',
+    SHIPPING: 'SHIPPING',
+    FREIGHT: 'SHIPPING',
+    STEAM: 'STEAM',
+    CUSTOM: 'CUSTOM',
   };
 
-  return map[value] ?? value;
+  return map[value] ?? (Object.values(ActivityType).includes(value as ActivityType) ? value : 'CUSTOM');
 }
 }
