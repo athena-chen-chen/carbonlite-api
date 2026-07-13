@@ -4,6 +4,7 @@ uploads
 .env
 .env.*
 !.env.example
+!.env.local.example
 *.log
 .DS_Store
 coverage

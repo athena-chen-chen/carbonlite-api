@@ -1,7 +1,6 @@
 // src/fuel-records/fuel-records.service.ts
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { CreateFuelRecordDto } from './dto/create-fuel-record.dto';
 
 @Injectable()
 export class FuelRecordsService {

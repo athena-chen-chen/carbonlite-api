@@ -470,6 +470,70 @@ describe('CalculationQualityService', () => {
     });
   });
 
+  it('infers Alberta electricity jurisdiction from utility source metadata', () => {
+    const result = service.evaluate({
+      organization: { ...organization, provinceState: null, country: null },
+      records: [
+        record({
+          activityType: 'ELECTRICITY',
+          quantity: new Prisma.Decimal(4280),
+          unit: 'kWh',
+          recordDate: new Date('2024-01-31T00:00:00.000Z'),
+          jurisdictionRegion: null,
+          jurisdictionCountry: null,
+          sourceReference: 'ENMAX',
+          sourceFileName: 'enmax_bill_exact_copy.pdf',
+        }),
+      ],
+      factors: [],
+      governedFactors: [
+        governedFactor({
+          id: 'factor-version-ab-demo-2025',
+          factorValue: new Prisma.Decimal(0.53),
+          factorYear: 2025,
+          status: 'DRAFT',
+          confidenceLevel: 'DEMO',
+        }),
+      ],
+    });
+
+    expect(result.totalEstimatedEmissionsKgCO2e).toBe(2268.4);
+    expect(result.calculationDetails[0]).toMatchObject({
+      status: 'CALCULATED',
+      jurisdictionRegion: 'Alberta',
+      jurisdictionSource: 'source',
+      jurisdictionAssumed: true,
+      matchingStatus: 'MATCHED_NEAREST_YEAR',
+      matchedBy: 'NEAREST_YEAR',
+      factorPriority: 'DEMO_ALLOWED',
+    });
+  });
+
+  it('converts MWh electricity activity to kWh before applying kWh factors', () => {
+    const result = service.evaluate({
+      organization,
+      records: [
+        record({
+          activityType: 'ELECTRICITY',
+          quantity: new Prisma.Decimal(1),
+          unit: 'MWh',
+          recordDate: new Date('2025-06-30T00:00:00.000Z'),
+          jurisdictionRegion: 'Alberta',
+          jurisdictionCountry: 'Canada',
+        }),
+      ],
+      factors: [],
+      governedFactors: [governedFactor()],
+    });
+
+    expect(result.totalEstimatedEmissionsKgCO2e).toBe(500);
+    expect(result.calculationDetails[0]).toMatchObject({
+      status: 'CALCULATED',
+      calculationFormula: '1000 kwh × 0.5 kgCO2e/kWh = 500 kgCO2e',
+    });
+    expect(result.usageTotals.electricity).toBe(1000);
+  });
+
   it('uses Canada-level fuel factor for BC records when province-specific fuel factor is absent', () => {
     const result = service.evaluate({
       organization,
@@ -518,6 +582,8 @@ describe('CalculationQualityService', () => {
     expect(normalizeJurisdictionRegion('B.C.')).toBe('British Columbia');
     expect(normalizeJurisdictionRegion('ON')).toBe('Ontario');
     expect(normalizeJurisdictionRegion('Ont.')).toBe('Ontario');
+    expect(normalizeJurisdictionRegion('QC')).toBe('Quebec');
+    expect(normalizeJurisdictionRegion('SK')).toBe('Saskatchewan');
     expect(normalizeJurisdictionRegion(null)).toBeNull();
   });
 

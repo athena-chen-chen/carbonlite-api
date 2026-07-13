@@ -1,7 +1,6 @@
 // src/fuel-records/fuel-records.controller.ts
-import { Controller, Get, Post, Body, Req } from '@nestjs/common';
+import { Controller } from '@nestjs/common';
 import { FuelRecordsService } from './fuel-records.service';
-import { CreateFuelRecordDto } from './dto/create-fuel-record.dto';
 
 @Controller('fuel-records')
 export class FuelRecordsController {

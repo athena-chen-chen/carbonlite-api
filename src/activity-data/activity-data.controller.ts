@@ -17,6 +17,7 @@ import { UpdateActivityDataDto } from './dto/update-activity-data.dto';
 import { ActivityDataQueryDto } from './dto/activity-data-query.dto';
 import { BulkImportActivityDataDto } from './dto/bulk-import-activity-data.dto';
 import { BulkDeleteActivityDataDto } from './dto/bulk-delete-activity-data.dto';
+import { JsonActivityDataPreviewDto } from './dto/json-activity-data-preview.dto';
 import { AuthenticatedUser } from '../auth/auth.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
@@ -40,6 +41,14 @@ export class ActivityDataController {
     @Body() dto: BulkImportActivityDataDto,
   ) {
     return this.activityDataService.bulkImport(user.organizationId, dto, user.id);
+  }
+
+  @Post('json-preview')
+  previewJsonImport(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() dto: JsonActivityDataPreviewDto,
+  ) {
+    return this.activityDataService.previewJsonImport(user.organizationId, dto);
   }
 
   @Post('bulk-delete')

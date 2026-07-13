@@ -6,7 +6,6 @@ import {
   Factor,
   FactorSource,
   Organization,
-  Prisma,
 } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CalculationSummaryQueryDto } from './dto/calculation-summary-query.dto';
@@ -36,7 +35,13 @@ type ActivityWithDocument = ActivityData & {
   } | null;
 };
 
-type JurisdictionSource = 'record' | 'facility' | 'organization' | 'user' | 'unknown';
+type JurisdictionSource =
+  | 'record'
+  | 'facility'
+  | 'organization'
+  | 'source'
+  | 'user'
+  | 'unknown';
 
 type GovernedFactorVersion = FactorVersion & {
   factor: Factor;
@@ -52,10 +57,12 @@ type FactorMatch = {
     | 'GOVERNED_EXACT_PROVINCE_YEAR'
     | 'GOVERNED_COUNTRY_YEAR'
     | 'GOVERNED_PRIOR_YEAR'
+    | 'GOVERNED_NEAREST_YEAR'
     | 'DEMO_ALLOWED';
-  matchingStatus: 'MATCHED' | 'MATCHED_PRIOR_YEAR';
+  matchingStatus: 'MATCHED' | 'MATCHED_PRIOR_YEAR' | 'MATCHED_NEAREST_YEAR';
   matchedBy: string;
   message: string;
+  quantityMultiplier?: number;
 };
 
 @Injectable()
@@ -298,7 +305,8 @@ export class CalculationQualityService {
       }
 
       const factorValue = match.factor ? Number(match.factor.factorValue) : Number(match.governedVersion?.factorValue);
-      const emissions = round(quantity * factorValue);
+      const calculationQuantity = round(quantity * (match.quantityMultiplier ?? 1));
+      const emissions = round(calculationQuantity * factorValue);
       return this.detail(record, {
         reportingYear,
         jurisdiction: organizationJurisdiction,
@@ -311,6 +319,7 @@ export class CalculationQualityService {
         matchingStatus: match.matchingStatus,
         matchedBy: match.matchedBy,
         matchingMessage: match.message,
+        calculationQuantity,
         recordYear,
         jurisdictionCountry,
         jurisdictionRegion,
@@ -547,7 +556,7 @@ export class CalculationQualityService {
 
     const legacyCandidates = input.factors.filter((factor) => {
       if (factor.activityType !== activityType) return false;
-      if (normalizeUnit(factor.unit) !== normalizedInputUnit) return false;
+      if (!unitsCompatible(input.record.unit, factor.unit)) return false;
       if (factor.sourceYear && factor.sourceYear !== input.reportingYear) return false;
       return Number.isFinite(Number(factor.factorValue));
     });
@@ -566,17 +575,19 @@ export class CalculationQualityService {
         matchingStatus: 'MATCHED',
         matchedBy: 'ORGANIZATION_CUSTOM_EXACT',
         message: `Matched organization custom verified factor for ${formatActivityType(activityType)} / ${normalizedInputUnit} in ${input.jurisdictionRegion}.`,
+        quantityMultiplier: unitConversionMultiplier(input.record.unit, custom.unit) ?? 1,
       };
     }
 
     const governedCandidates = input.governedFactors
       .filter((version) => version.factor.activityType === activityType)
-      .filter((version) => normalizeUnit(version.inputUnit) === normalizedInputUnit)
+      .filter((version) => unitsCompatible(input.record.unit, version.inputUnit))
       .filter((version) => Number.isFinite(Number(version.factorValue)))
       .filter((version) => version.source?.isActive !== false)
       .filter((version) =>
         ['VERIFIED', 'OFFICIAL'].includes(version.status) ||
-        (input.allowDemoFactors && version.confidenceLevel === 'DEMO'),
+        (input.allowDemoFactors && version.confidenceLevel === 'DEMO') ||
+        isPilotElectricitySystemFactor(activityType, version),
       );
 
     const exactProvinceYear = governedCandidates
@@ -596,6 +607,7 @@ export class CalculationQualityService {
           activityType === 'ELECTRICITY'
             ? `Matched ${input.jurisdictionRegion} electricity factor for ${input.reportingYear}${formatJurisdictionSourcePhrase(input.jurisdictionSource)}.`
             : `Matched ${input.jurisdictionRegion || input.jurisdictionCountry || 'jurisdiction'} ${input.reportingYear} factor${formatJurisdictionSourcePhrase(input.jurisdictionSource)}.`,
+        quantityMultiplier: unitConversionMultiplier(input.record.unit, exactProvinceYear.inputUnit) ?? 1,
       };
     }
 
@@ -611,6 +623,7 @@ export class CalculationQualityService {
         matchingStatus: 'MATCHED',
         matchedBy: countryYear.factor.isSystem ? 'SYSTEM_COUNTRY_YEAR' : 'OFFICIAL_COUNTRY_YEAR',
         message: `Used Canada-level default factor because no province-specific factor was available for ${formatActivityType(activityType)}.${formatJurisdictionBasisSentence(input.jurisdictionSource)}`,
+        quantityMultiplier: unitConversionMultiplier(input.record.unit, countryYear.inputUnit) ?? 1,
       };
     }
 
@@ -630,6 +643,34 @@ export class CalculationQualityService {
         matchingStatus: 'MATCHED_PRIOR_YEAR',
         matchedBy: 'PRIOR_YEAR',
         message: `Using nearest prior-year factor because no factor was found for the ${input.reportingYear} record year.`,
+        quantityMultiplier: unitConversionMultiplier(input.record.unit, priorYear.inputUnit) ?? 1,
+      };
+    }
+
+    const nearestYear = governedCandidates
+      .filter((version) =>
+        regionMatchesExactly(version.jurisdictionRegion, input.jurisdictionRegion) ||
+        (allowsCountryLevelFallback(activityType) &&
+          isCountryLevel(version.jurisdictionRegion, version.jurisdictionCountry) &&
+          countryMatches(version.jurisdictionCountry, input.jurisdictionCountry)),
+      )
+      .sort((a, b) => {
+        const distance =
+          Math.abs(Number(a.factorYear ?? 0) - input.reportingYear) -
+          Math.abs(Number(b.factorYear ?? 0) - input.reportingYear);
+        return distance || compareGovernedFactorVersions(a, b);
+      })[0];
+    if (nearestYear) {
+      return {
+        governedVersion: nearestYear,
+        priority:
+          nearestYear.confidenceLevel === 'DEMO'
+            ? 'DEMO_ALLOWED'
+            : 'GOVERNED_NEAREST_YEAR',
+        matchingStatus: 'MATCHED_NEAREST_YEAR',
+        matchedBy: 'NEAREST_YEAR',
+        message: `Using nearest available-year factor (${nearestYear.factorYear ?? 'unknown year'}) because no factor was found for the ${input.reportingYear} record year.`,
+        quantityMultiplier: unitConversionMultiplier(input.record.unit, nearestYear.inputUnit) ?? 1,
       };
     }
 
@@ -650,6 +691,7 @@ export class CalculationQualityService {
           activityType === 'ELECTRICITY'
             ? `Matched ${input.jurisdictionRegion} electricity factor for ${input.reportingYear}${formatJurisdictionSourcePhrase(input.jurisdictionSource)}.`
             : `Matched ${input.jurisdictionRegion} system factor for ${formatActivityType(activityType)}.`,
+        quantityMultiplier: unitConversionMultiplier(input.record.unit, verifiedSystemExact.unit) ?? 1,
       };
     }
 
@@ -667,6 +709,7 @@ export class CalculationQualityService {
         matchingStatus: 'MATCHED',
         matchedBy: 'SYSTEM_COUNTRY_YEAR',
         message: `Used Canada-level default factor because no province-specific factor was available for ${formatActivityType(activityType)}.${formatJurisdictionBasisSentence(input.jurisdictionSource)}`,
+        quantityMultiplier: unitConversionMultiplier(input.record.unit, verifiedSystemCountry.unit) ?? 1,
       };
     }
 
@@ -691,6 +734,7 @@ export class CalculationQualityService {
           activityType === 'ELECTRICITY'
             ? `Matched ${input.jurisdictionRegion} electricity system factor${formatJurisdictionSourcePhrase(input.jurisdictionSource)}.`
             : `Matched ${input.jurisdictionRegion} system factor for ${formatActivityType(activityType)}.`,
+        quantityMultiplier: unitConversionMultiplier(input.record.unit, systemDefaultExact.unit) ?? 1,
       };
     }
 
@@ -707,6 +751,7 @@ export class CalculationQualityService {
         matchingStatus: 'MATCHED',
         matchedBy: 'SYSTEM_COUNTRY_YEAR',
         message: `Used Canada-level default factor because no province-specific factor was available for ${formatActivityType(activityType)}.${formatJurisdictionBasisSentence(input.jurisdictionSource)}`,
+        quantityMultiplier: unitConversionMultiplier(input.record.unit, systemDefaultCountry.unit) ?? 1,
       };
     }
 
@@ -725,6 +770,7 @@ export class CalculationQualityService {
           matchingStatus: 'MATCHED',
           matchedBy: 'PLACEHOLDER',
           message: 'Using placeholder factor because organization setting allows demo factors for calculations.',
+          quantityMultiplier: unitConversionMultiplier(input.record.unit, demo.unit) ?? 1,
         };
       }
     }
@@ -768,6 +814,7 @@ export class CalculationQualityService {
       jurisdictionRegion?: string | null;
       jurisdictionSource?: JurisdictionSource;
       jurisdictionAssumed?: boolean;
+      calculationQuantity?: number;
       availableUnitsForActivityType?: string[];
     },
   ) {
@@ -776,9 +823,11 @@ export class CalculationQualityService {
     const normalizedUnit = normalizeUnit(record.unit);
     const factorValue = factor ? Number(factor.factorValue) : governedVersion ? Number(governedVersion.factorValue) : null;
     const emissions = result.emissions ?? null;
+    const calculationQuantity = result.calculationQuantity ?? Number(record.quantity);
+    const calculationUnit = normalizeUnit(factor?.unit ?? governedVersion?.inputUnit ?? record.unit);
     const calculationFormula =
       result.status === 'CALCULATED' && factorValue !== null && emissions !== null
-        ? `${formatCalculationNumber(Number(record.quantity))} ${normalizedUnit} × ${formatCalculationNumber(factorValue)} ${(factor?.resultUnit ?? governedVersion?.resultUnit ?? 'kgCO2e')}/${factor?.unit ?? governedVersion?.inputUnit ?? normalizedUnit} = ${formatCalculationNumber(emissions)} kgCO2e`
+        ? `${formatCalculationNumber(calculationQuantity)} ${calculationUnit} × ${formatCalculationNumber(factorValue)} ${(factor?.resultUnit ?? governedVersion?.resultUnit ?? 'kgCO2e')}/${factor?.unit ?? governedVersion?.inputUnit ?? normalizedUnit} = ${formatCalculationNumber(emissions)} kgCO2e`
         : null;
     const explanationStatus = mapExplanationStatus(result.status);
     const explanationMatchedBy = mapExplanationMatchedBy(result.matchedBy, result.status);
@@ -867,10 +916,85 @@ function isPlaceholderFactor(factor: ConversionFactor) {
   );
 }
 
+function isPilotElectricitySystemFactor(
+  activityType: string,
+  version: GovernedFactorVersion,
+) {
+  return (
+    activityType === 'ELECTRICITY' &&
+    version.factor.isSystem &&
+    version.factor.isActive &&
+    version.confidenceLevel === 'DEMO'
+  );
+}
+
+function unitsCompatible(fromUnit?: string | null, toUnit?: string | null) {
+  return (
+    normalizeUnit(String(fromUnit ?? '')) === normalizeUnit(String(toUnit ?? '')) ||
+    unitConversionMultiplier(fromUnit, toUnit) !== null
+  );
+}
+
+function unitConversionMultiplier(fromUnit?: string | null, toUnit?: string | null) {
+  const from = normalizeUnit(String(fromUnit ?? ''));
+  const to = normalizeUnit(String(toUnit ?? ''));
+  if (!from || !to) return null;
+  if (from === to) return 1;
+
+  const conversions: Record<string, number> = {
+    'mwh:kwh': 1000,
+    'kwh:mwh': 0.001,
+  };
+
+  return conversions[`${from}:${to}`] ?? null;
+}
+
+function inferProvinceFromSourceMetadata(
+  record: Pick<
+    ActivityWithDocument,
+    'sourceReference' | 'sourceFileName' | 'sourceTextSnippet' | 'notes'
+  >,
+) {
+  const text = [
+    record.sourceReference,
+    record.sourceFileName,
+    record.sourceTextSnippet,
+    record.notes,
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
+
+  if (!text) return null;
+
+  const provinceSignals: Array<[RegExp, string]> = [
+    [/\b(enmax|fortisalberta|fortis alberta|atco|epcor|calgary|edmonton|alberta|\bab\b)/i, 'Alberta'],
+    [/\b(bc hydro|fortisbc|fortis bc|vancouver|british columbia|\bbc\b)/i, 'British Columbia'],
+    [/\b(hydro one|toronto hydro|ottawa|ontario|\bon\b)/i, 'Ontario'],
+    [/\b(hydro-?qu[eé]bec|qu[eé]bec|\bqc\b)/i, 'Quebec'],
+    [/\b(saskpower|saskatchewan|\bsk\b)/i, 'Saskatchewan'],
+    [/\b(manitoba hydro|manitoba|\bmb\b)/i, 'Manitoba'],
+    [/\b(nova scotia power|nova scotia|\bns\b)/i, 'Nova Scotia'],
+    [/\b(nb power|new brunswick|\bnb\b)/i, 'New Brunswick'],
+  ];
+
+  for (const [pattern, province] of provinceSignals) {
+    if (pattern.test(text)) return province;
+  }
+
+  return null;
+}
+
 export function resolveActivityJurisdiction(
   record: Pick<
     ActivityWithDocument,
-    'jurisdictionCountry' | 'jurisdictionRegion' | 'facility'
+    | 'jurisdictionCountry'
+    | 'jurisdictionRegion'
+    | 'facility'
+    | 'sourceReference'
+    | 'sourceFileName'
+    | 'sourceTextSnippet'
+    | 'notes'
   >,
   organization: Pick<Organization, 'country' | 'provinceState'>,
 ): {
@@ -898,6 +1022,16 @@ export function resolveActivityJurisdiction(
       province: facilityProvince,
       source: 'facility',
       assumed: false,
+    };
+  }
+
+  const sourceProvince = inferProvinceFromSourceMetadata(record);
+  if (sourceProvince) {
+    return {
+      country: 'Canada',
+      province: sourceProvince,
+      source: 'source',
+      assumed: true,
     };
   }
 
@@ -932,6 +1066,7 @@ function formatJurisdictionSourcePhrase(source?: JurisdictionSource) {
   if (source === 'record') return ' from the activity record jurisdiction';
   if (source === 'facility') return ' because the selected facility is located there';
   if (source === 'organization') return ' from the organization default jurisdiction';
+  if (source === 'source') return ' inferred from source metadata';
   return '';
 }
 
@@ -939,6 +1074,7 @@ function formatJurisdictionBasisSentence(source?: JurisdictionSource) {
   if (source === 'record') return ' Jurisdiction came from the activity record.';
   if (source === 'facility') return ' Jurisdiction came from the selected facility.';
   if (source === 'organization') return ' Jurisdiction came from the organization default.';
+  if (source === 'source') return ' Jurisdiction was inferred from source metadata.';
   return '';
 }
 
@@ -953,23 +1089,6 @@ function regionMatchesExactly(factorRegion?: string | null, recordRegion?: strin
   const record = normalizeJurisdictionRegion(recordRegion);
   if (!factor || !record) return false;
   return factor === record;
-}
-
-function regionCompatibleForActivity(
-  activityType: string,
-  factorRegion?: string | null,
-  recordRegion?: string | null,
-) {
-  if (activityType === 'ELECTRICITY') {
-    return regionMatchesExactly(factorRegion, recordRegion);
-  }
-
-  const normalizedFactorRegion = normalizeJurisdictionRegion(factorRegion);
-  return (
-    !normalizedFactorRegion ||
-    normalizedFactorRegion === 'Canada' ||
-    regionMatchesExactly(factorRegion, recordRegion)
-  );
 }
 
 function isCountryLevel(factorRegion?: string | null, factorCountry?: string | null) {
@@ -1010,6 +1129,7 @@ function isUnsupportedActivityUnit(unit: string) {
     'liters',
     'm3',
     'kwh',
+    'mwh',
     'gj',
     'nights',
     'ton',
@@ -1073,6 +1193,7 @@ function mapExplanationMatchedBy(matchedBy?: string | null, status?: Calculation
   if (matchedBy === 'OFFICIAL_EXACT_REGION_YEAR' || matchedBy === 'SYSTEM_EXACT_REGION_YEAR') return 'EXACT';
   if (matchedBy === 'OFFICIAL_COUNTRY_YEAR' || matchedBy === 'SYSTEM_COUNTRY_YEAR') return 'COUNTRY_LEVEL';
   if (matchedBy === 'PRIOR_YEAR') return 'PRIOR_YEAR';
+  if (matchedBy === 'NEAREST_YEAR') return 'PRIOR_YEAR';
   if (status === 'CALCULATED') return 'EXACT';
   return 'NO_MATCH';
 }
@@ -1122,10 +1243,12 @@ function buildUsageTotals(details: Array<ReturnType<CalculationQualityService['d
     }
 
     if (
-      detail.activityType === 'ELECTRICITY' &&
-      normalizeUnit(detail.activityUnit) === 'kwh'
+      detail.activityType === 'ELECTRICITY'
     ) {
-      electricity = round(electricity + quantity);
+      const toKwh = unitConversionMultiplier(detail.activityUnit, 'kWh');
+      if (toKwh !== null) {
+        electricity = round(electricity + quantity * toKwh);
+      }
     }
   });
 

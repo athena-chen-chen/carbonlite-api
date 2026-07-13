@@ -1,0 +1,20 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: carbonlite-postgres
+    environment:
+      POSTGRES_USER: carbonlite
+      POSTGRES_PASSWORD: carbonlite
+      POSTGRES_DB: carbonlite_dev
+    ports:
+      - "5432:5432"
+    volumes:
+      - carbonlite_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U carbonlite -d carbonlite_dev"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  carbonlite_postgres_data:

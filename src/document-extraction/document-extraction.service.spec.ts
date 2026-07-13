@@ -26,6 +26,57 @@ describe('DocumentExtractionService import normalization', () => {
     });
   });
 
+  it('accepts JSON uploads as supported extraction files', () => {
+    expect(() =>
+      (service as any).validateSupportedFile({
+        id: 'doc-json',
+        organizationId: 'org-1',
+        fileName: 'carbonlite-activity-records.json',
+        mimeType: 'application/json',
+      }),
+    ).not.toThrow();
+  });
+
+  it('normalizes amount from structured JSON records', () => {
+    const normalized = normalize({
+      activityType: 'Electricity',
+      date: '2026-06-30',
+      amount: 1250,
+      unit: 'kWh',
+      province: 'AB',
+      sourceReference: 'upload.json',
+    });
+
+    expect(normalized).toMatchObject({
+      activityType: 'ELECTRICITY',
+      recordDate: '2026-06-30',
+      quantity: 1250,
+      unit: 'kWh',
+      jurisdictionRegion: 'Alberta',
+      sourceReference: 'upload.json',
+    });
+  });
+
+  it('builds JSON extraction preview rows without rejecting incomplete records', () => {
+    const previewRow = (service as any).normalizeActivityForExtraction(
+      {
+        activityType: 'Electricity',
+        amount: '1250',
+        unit: 'kWh',
+        province: 'AB',
+      },
+      'upload.json',
+    );
+
+    expect((service as any).addConfidence(previewRow)).toMatchObject({
+      activityType: { value: 'ELECTRICITY', confidence: 'high' },
+      recordDate: { value: null, confidence: 'low' },
+      quantity: { value: 1250, confidence: 'high' },
+      jurisdictionRegion: { value: 'Alberta', confidence: 'high' },
+      sourceReference: { value: 'upload.json', confidence: 'high' },
+    });
+  });
+
   it.each([
     ['Hotel', 'HOTEL'],
     ['Hotels', 'HOTEL'],

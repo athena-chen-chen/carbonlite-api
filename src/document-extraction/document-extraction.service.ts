@@ -18,6 +18,7 @@ import {
   normalizeJurisdictionCountry,
   normalizeJurisdictionRegion,
 } from '../metrics/metrics.utils';
+import { parseJsonActivityPayload } from '../activity-data/json-activity-records';
 import {
   addAppBreadcrumb,
   captureAppError,
@@ -166,6 +167,16 @@ export class DocumentExtractionService {
       const base64 = fileBuffer.toString('base64');
 
       let localText = '';
+
+      if (document.fileName.toLowerCase().endsWith('.json')) {
+        return this.extractStructuredJsonDocument({
+          organizationId,
+          userId,
+          documentId,
+          fileName: document.fileName,
+          fileBuffer,
+        });
+      }
 
       if (document.fileName.toLowerCase().endsWith('.csv')) {
         localText = fileBuffer.toString('utf-8');
@@ -525,6 +536,7 @@ Return all rows as activities array.
       '.png',
       '.jpg',
       '.jpeg',
+      '.json',
     ];
     const supportedMimeTypes = [
       'application/pdf',
@@ -534,6 +546,8 @@ Return all rows as activities array.
       'application/vnd.ms-excel',
       'image/png',
       'image/jpeg',
+      'application/json',
+      'text/json',
     ];
 
     const hasSupportedExtension = supportedExtensions.some((extension) =>
@@ -563,9 +577,158 @@ Return all rows as activities array.
         },
       });
       throw new BadRequestException(
-        'Unsupported file type. Please upload a PDF, CSV, XLSX, PNG, or JPG file.',
+        'Unsupported file type. Please upload a PDF, CSV, XLSX, PNG, JPG, or JSON file.',
       );
     }
+  }
+
+  private async extractStructuredJsonDocument(input: {
+    organizationId: string;
+    userId?: string;
+    documentId: string;
+    fileName: string;
+    fileBuffer: Buffer;
+  }) {
+    const records = parseJsonActivityPayload({
+      jsonContent: input.fileBuffer.toString('utf-8'),
+    });
+    const parsedActivities = records.map((record) =>
+      this.addConfidence(this.normalizeActivityForExtraction(record, input.fileName)),
+    );
+    const extractedRowCount = parsedActivities.length;
+    const status = extractedRowCount > 0 ? 'REVIEW_REQUIRED' : 'NO_DATA_FOUND';
+    const extractionResponse = {
+      documentId: input.documentId,
+      status,
+      parsedActivities,
+      sourceRowCount: records.length,
+      extractedRowCount,
+      possibleMissingRows: false,
+      warning: null,
+      extractedAt: new Date().toISOString(),
+    };
+
+    await this.prisma.document.update({
+      where: { id: input.documentId },
+      data: { status },
+    });
+
+    await this.saveExtractionResult({
+      organizationId: input.organizationId,
+      documentId: input.documentId,
+      status,
+      parsedActivities,
+      sourceRowCount: records.length,
+      extractedRowCount,
+      possibleMissingRows: false,
+      warning: null,
+    });
+
+    await this.auditLog.log({
+      organizationId: input.organizationId,
+      userId: input.userId,
+      action: 'EXTRACT_DOCUMENT',
+      entityType: 'Document',
+      entityId: input.documentId,
+      description:
+        status === 'NO_DATA_FOUND'
+          ? 'Extracted JSON document but no activity records were detected'
+          : 'Extracted JSON document',
+      newValue: {
+        status,
+        sourceRowCount: records.length,
+        extractedRowCount,
+        possibleMissingRows: false,
+      },
+    });
+
+    await this.trackExtractionEvent({
+      organizationId: input.organizationId,
+      userId: input.userId,
+      documentId: input.documentId,
+      eventName:
+        extractedRowCount > 0
+          ? 'DOCUMENT_EXTRACT_SUCCEEDED'
+          : 'DOCUMENT_EXTRACT_FAILED',
+      metadata: {
+        status,
+        sourceRowCount: records.length,
+        extractedRowCount,
+        possibleMissingRows: false,
+        reason: extractedRowCount > 0 ? undefined : 'NO_DATA_FOUND',
+        sourceFormat: 'JSON',
+      },
+    });
+
+    return extractionResponse;
+  }
+
+  private normalizeActivityForExtraction(
+    activity: Record<string, unknown>,
+    fallbackSourceReference: string,
+  ): ParsedActivityRaw {
+    const quantity = Number(
+      this.readAliasedField(activity, [
+        'quantity',
+        'Quantity',
+        'amount',
+        'Amount',
+        'usage',
+        'Usage',
+      ]),
+    );
+
+    return {
+      activityType: this.normalizeActivityType(
+        this.readAliasedField(activity, [
+          'activityType',
+          'Activity Type',
+          'activity type',
+          'ActivityType',
+          'category',
+          'Category',
+        ]),
+      ),
+      recordDate: this.readAliasedField(activity, [
+        'recordDate',
+        'Record Date',
+        'date',
+        'Date',
+        'startDate',
+        'Start Date',
+      ]),
+      quantity: Number.isFinite(quantity) ? quantity : NaN,
+      unit: this.readAliasedField(activity, ['unit', 'Unit', 'units', 'Units']),
+      jurisdictionCountry: normalizeJurisdictionCountry(
+        this.readAliasedField(activity, ['jurisdictionCountry', 'country', 'Country']),
+      ),
+      jurisdictionRegion: normalizeJurisdictionRegion(
+        this.readAliasedField(activity, [
+          'jurisdictionRegion',
+          'Jurisdiction Region',
+          'jurisdiction',
+          'Jurisdiction',
+          'province',
+          'Province',
+          'region',
+          'Region',
+          'state',
+          'State',
+          'State/Province',
+          'stateProvince',
+          'facilityProvince',
+          'Facility Province',
+        ]),
+      ),
+      sourceReference:
+        this.readAliasedField(activity, [
+          'sourceReference',
+          'Source Reference',
+          'sourceFile',
+          'sourceFileName',
+        ]) ?? fallbackSourceReference,
+      notes: this.readAliasedField(activity, ['notes', 'Notes']),
+    };
   }
 
   private isMissingFileError(error: unknown) {
@@ -879,7 +1042,14 @@ Return all rows as activities array.
         'Date',
       ]),
       quantity: Number(
-        this.readAliasedField(activity, ['quantity', 'Quantity', 'usage', 'Usage']),
+        this.readAliasedField(activity, [
+          'quantity',
+          'Quantity',
+          'amount',
+          'Amount',
+          'usage',
+          'Usage',
+        ]),
       ),
       unit: this.readAliasedField(activity, ['unit', 'Unit', 'units', 'Units']),
       jurisdictionCountry: normalizedCountry,

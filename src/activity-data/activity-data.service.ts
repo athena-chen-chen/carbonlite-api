@@ -9,8 +9,14 @@ import { CreateActivityDataDto } from './dto/create-activity-data.dto';
 import { UpdateActivityDataDto } from './dto/update-activity-data.dto';
 import { ActivityDataQueryDto } from './dto/activity-data-query.dto';
 import { BulkImportActivityDataDto } from './dto/bulk-import-activity-data.dto';
+import { JsonActivityDataPreviewDto } from './dto/json-activity-data-preview.dto';
 import { AuditLogService } from '../audit-log/audit-log.service';
 import { ActivityTrackingService } from '../activity-tracking/activity-tracking.service';
+import {
+  buildJsonActivityPreview,
+  parseJsonActivityPayload,
+  toJsonPreviewFactorCandidates,
+} from './json-activity-records';
 
 @Injectable()
 export class ActivityDataService {
@@ -133,6 +139,65 @@ export class ActivityDataService {
       count: result.count,
       message: `Imported ${result.count} activity data records.`,
     };
+  }
+
+  async previewJsonImport(organizationId: string, dto: JsonActivityDataPreviewDto) {
+    const records = parseJsonActivityPayload({
+      jsonContent: dto.jsonContent,
+      data: dto.data,
+    });
+    const activityTypes = [
+      ActivityType.ELECTRICITY,
+      ActivityType.NATURAL_GAS,
+      ActivityType.GASOLINE,
+      ActivityType.DIESEL,
+      ActivityType.AIR_TRAVEL,
+      ActivityType.HOTEL,
+      ActivityType.CUSTOM,
+    ];
+    const [legacyFactors, governedFactors] = await this.prisma.$transaction([
+      this.prisma.conversionFactor.findMany({
+        where: {
+          type: 'EMISSION',
+          activityType: { in: activityTypes },
+          OR: [{ organizationId }, { isSystemDefault: true }],
+        },
+        select: {
+          activityType: true,
+          unit: true,
+          jurisdiction: true,
+          region: true,
+          country: true,
+          sourceYear: true,
+        },
+      }),
+      this.prisma.factorVersion.findMany({
+        where: {
+          factor: {
+            activityType: { in: activityTypes },
+            isActive: true,
+          },
+          status: { notIn: ['DEPRECATED', 'ARCHIVED'] },
+        },
+        select: {
+          inputUnit: true,
+          jurisdictionRegion: true,
+          jurisdictionCountry: true,
+          factorYear: true,
+          factor: {
+            select: {
+              activityType: true,
+            },
+          },
+        },
+      }),
+    ]);
+
+    return buildJsonActivityPreview({
+      records,
+      sourceFileName: dto.sourceFileName,
+      factors: toJsonPreviewFactorCandidates({ legacyFactors, governedFactors }),
+    });
   }
 
   async findAll(organizationId: string, query: ActivityDataQueryDto) {

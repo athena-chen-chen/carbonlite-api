@@ -1,5 +1,5 @@
 // api/src/analytics/analytics.controller.ts
-import { Controller, Get } from '@nestjs/common';
+import { Controller } from '@nestjs/common';
 import { AnalyticsService } from './analytics.service';
 
 @Controller('analytics')

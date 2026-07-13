@@ -4,6 +4,8 @@
   "version": "0.0.0",
   "scripts": {
     "build": "nest build",
+    "lint": "eslint \"{src,test,prisma}/**/*.ts\"",
+    "lint:fix": "eslint \"{src,test,prisma}/**/*.ts\" --fix",
     "test:unit": "jest --config ./jest.unit.json --runInBand",
     "test:e2e": "jest --config ./test/jest-e2e.json --runInBand",
     "start": "node dist/main.js",
@@ -42,6 +44,7 @@
     "zod": "^4.1.9"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@nestjs/cli": "^11.0.17",
     "@nestjs/schematics": "^11.0.0",
     "@nestjs/testing": "^11.0.0",
@@ -52,12 +55,16 @@
     "@types/passport": "^1.0.17",
     "@types/passport-jwt": "^4.0.1",
     "@types/supertest": "^7.2.0",
+    "eslint": "^10.7.0",
+    "eslint-config-prettier": "^10.1.8",
+    "globals": "^17.7.0",
     "jest": "^30.4.2",
     "prisma": "^6.17.1",
     "supertest": "^7.2.2",
     "ts-jest": "^29.4.9",
     "ts-node": "10.9.1",
     "tsx": "^4.20.6",
-    "typescript": "^5.9.2"
+    "typescript": "^5.9.2",
+    "typescript-eslint": "^8.63.0"
   }
 }
