@@ -241,7 +241,7 @@ export class MetricsService {
     return this.calculationQuality.buildSummary(organizationId, {
       periodStart: query.periodStart,
       periodEnd: query.periodEnd,
-    });
+    }, { logPerformance: true });
   }
 
   private async findTargetActivityRecords(

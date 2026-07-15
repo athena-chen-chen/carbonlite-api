@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import {
   ActivityData,
   ConversionFactor,
@@ -14,6 +14,11 @@ import {
   normalizeJurisdictionRegion,
   normalizeUnit,
 } from './metrics.utils';
+import {
+  PerfTimer,
+  SLOW_REQUEST_THRESHOLD_MS,
+  timeAsync,
+} from '../common/monitoring/performance-logging';
 
 export type CalculationStatus =
   | 'CALCULATED'
@@ -65,34 +70,50 @@ type FactorMatch = {
   quantityMultiplier?: number;
 };
 
+type CalculationQualityTimings = {
+  factorMatchingCalculationDurationMs?: number;
+  responseMappingDurationMs?: number;
+};
+
 @Injectable()
 export class CalculationQualityService {
+  private readonly logger = new Logger(CalculationQualityService.name);
+
   constructor(private readonly prisma: PrismaService) {}
 
   async buildSummary(
     organizationId: string,
     query: CalculationSummaryQueryDto = {},
+    options: { logPerformance?: boolean } = {},
   ) {
+    const totalTimer = new PerfTimer();
+    let activityRecordQueryDurationMs = 0;
+
     const [organization, records, factors, governedFactors] = await Promise.all([
       this.prisma.organization.findUniqueOrThrow({
         where: { id: organizationId },
       }),
-      this.prisma.activityData.findMany({
-        where: { organizationId },
-        include: {
-          document: {
-            select: { id: true, fileName: true },
-          },
-          facility: {
-            select: {
-              id: true,
-              name: true,
-              country: true,
-              provinceState: true,
+      timeAsync(() =>
+        this.prisma.activityData.findMany({
+          where: { organizationId },
+          include: {
+            document: {
+              select: { id: true, fileName: true },
+            },
+            facility: {
+              select: {
+                id: true,
+                name: true,
+                country: true,
+                provinceState: true,
+              },
             },
           },
-        },
-        orderBy: { recordDate: 'asc' },
+          orderBy: { recordDate: 'asc' },
+        }),
+      ).then(({ result, durationMs }) => {
+        activityRecordQueryDurationMs = durationMs;
+        return result;
       }),
       this.prisma.conversionFactor.findMany({
         where: {
@@ -116,13 +137,33 @@ export class CalculationQualityService {
       }),
     ]);
 
-    return this.evaluate({
+    const timings: CalculationQualityTimings = {};
+    const summary = this.evaluate({
       organization,
       records,
       factors,
       governedFactors,
       query,
-    });
+    }, timings);
+
+    if (options.logPerformance) {
+      const totalDurationMs = totalTimer.elapsedMs();
+      const message = [
+        `metricsSummary total=${totalDurationMs}ms`,
+        `activityRecordQuery=${activityRecordQueryDurationMs}ms`,
+        `factorMatchingCalculation=${timings.factorMatchingCalculationDurationMs ?? 0}ms`,
+        `responseMapping=${timings.responseMappingDurationMs ?? 0}ms`,
+        `records=${records.length}`,
+      ].join(' ');
+
+      if (totalDurationMs > SLOW_REQUEST_THRESHOLD_MS) {
+        this.logger.warn(`SLOW ${message}`);
+      } else {
+        this.logger.log(message);
+      }
+    }
+
+    return summary;
   }
 
   evaluate(input: {
@@ -138,7 +179,7 @@ export class CalculationQualityService {
     factors: ConversionFactor[];
     governedFactors?: GovernedFactorVersion[];
     query?: CalculationSummaryQueryDto;
-  }) {
+  }, timings?: CalculationQualityTimings) {
     const query = input.query ?? {};
     const selectedRecordIds = parseIds(
       query.selectedActivityRecordIds ?? query['selectedActivityRecordIds[]'],
@@ -150,6 +191,7 @@ export class CalculationQualityService {
     const selectedDocumentSet = new Set(selectedDocumentIds);
     const hasRecordScope = selectedRecordSet.size > 0;
     const hasDocumentScope = !hasRecordScope && selectedDocumentSet.size > 0;
+    const calculationTimer = new PerfTimer();
     const calculationDetails = input.records.map((record) => {
       const recordYear = record.recordYear ?? record.recordDate.getUTCFullYear();
       const resolvedJurisdiction = resolveActivityJurisdiction(
@@ -327,7 +369,11 @@ export class CalculationQualityService {
         jurisdictionAssumed: resolvedJurisdiction.assumed,
       });
     });
+    if (timings) {
+      timings.factorMatchingCalculationDurationMs = calculationTimer.elapsedMs();
+    }
 
+    const mappingTimer = new PerfTimer();
     const inScopeDetails = calculationDetails.filter(
       (detail) => detail.status !== 'OUTSIDE_SCOPE',
     );
@@ -360,7 +406,7 @@ export class CalculationQualityService {
     const usageTotals = buildUsageTotals(inScopeDetails);
     const conversionFactorsUsed = uniqueFactors(calculatedDetails);
 
-    return {
+    const response = {
       totalEstimatedEmissionsKgCO2e,
       totalRecordsFound: input.records.length,
       recordsInScope: inScopeDetails.length,
@@ -514,6 +560,12 @@ export class CalculationQualityService {
       skippedRecordCount: skippedRecords,
       totalRecordCount: outputDetails.length,
     };
+
+    if (timings) {
+      timings.responseMappingDurationMs = mappingTimer.elapsedMs();
+    }
+
+    return response;
   }
 
   private isInScope(

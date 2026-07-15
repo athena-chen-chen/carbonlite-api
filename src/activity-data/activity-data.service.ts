@@ -2,6 +2,7 @@ import {
   Injectable,
   NotFoundException,
   BadRequestException,
+  Logger,
 } from '@nestjs/common';
 import { Prisma, RecordSourceType, ActivityType } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
@@ -17,9 +18,17 @@ import {
   parseJsonActivityPayload,
   toJsonPreviewFactorCandidates,
 } from './json-activity-records';
+import {
+  PerfTimer,
+  SLOW_REQUEST_THRESHOLD_MS,
+  timeAsync,
+  timeSync,
+} from '../common/monitoring/performance-logging';
 
 @Injectable()
 export class ActivityDataService {
+  private readonly logger = new Logger(ActivityDataService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly auditLog: AuditLogService,
@@ -85,14 +94,19 @@ export class ActivityDataService {
   }
 
   async bulkImport(organizationId: string, dto: BulkImportActivityDataDto, userId?: string) {
+    const totalTimer = new PerfTimer();
+
     if (!dto.items?.length) {
       throw new BadRequestException('No activity data items provided.');
     }
 
+    const validationTimer = new PerfTimer();
     for (const item of dto.items) {
       await this.validateRelations(organizationId, item);
     }
+    const validationDurationMs = validationTimer.elapsedMs();
 
+    const parseTimer = new PerfTimer();
     const rows = dto.items.map((item) => ({
       organizationId,
       facilityId: item.facilityId ?? null,
@@ -119,10 +133,14 @@ export class ActivityDataService {
       importBatchId: item.importBatchId ?? null,
       notes: item.notes ?? null,
     }));
+    const parseDurationMs = parseTimer.elapsedMs();
 
-    const result = await this.prisma.activityData.createMany({
-      data: rows,
-    });
+    const { result, durationMs: databaseInsertUpdateDurationMs } =
+      await timeAsync(() =>
+        this.prisma.activityData.createMany({
+          data: rows,
+        }),
+      );
 
     await this.activityTracking.track({
       organizationId,
@@ -135,6 +153,14 @@ export class ActivityDataService {
       },
     });
 
+    this.logImportPerformance('activityDataBulkImport', {
+      totalDurationMs: totalTimer.elapsedMs(),
+      parseDurationMs,
+      validationDurationMs,
+      databaseInsertUpdateDurationMs,
+      count: result.count,
+    });
+
     return {
       count: result.count,
       message: `Imported ${result.count} activity data records.`,
@@ -142,10 +168,13 @@ export class ActivityDataService {
   }
 
   async previewJsonImport(organizationId: string, dto: JsonActivityDataPreviewDto) {
-    const records = parseJsonActivityPayload({
-      jsonContent: dto.jsonContent,
-      data: dto.data,
-    });
+    const totalTimer = new PerfTimer();
+    const { result: records, durationMs: parseDurationMs } = timeSync(() =>
+      parseJsonActivityPayload({
+        jsonContent: dto.jsonContent,
+        data: dto.data,
+      }),
+    );
     const activityTypes = [
       ActivityType.ELECTRICITY,
       ActivityType.NATURAL_GAS,
@@ -155,49 +184,66 @@ export class ActivityDataService {
       ActivityType.HOTEL,
       ActivityType.CUSTOM,
     ];
-    const [legacyFactors, governedFactors] = await this.prisma.$transaction([
-      this.prisma.conversionFactor.findMany({
-        where: {
-          type: 'EMISSION',
-          activityType: { in: activityTypes },
-          OR: [{ organizationId }, { isSystemDefault: true }],
-        },
-        select: {
-          activityType: true,
-          unit: true,
-          jurisdiction: true,
-          region: true,
-          country: true,
-          sourceYear: true,
-        },
-      }),
-      this.prisma.factorVersion.findMany({
-        where: {
-          factor: {
-            activityType: { in: activityTypes },
-            isActive: true,
-          },
-          status: { notIn: ['DEPRECATED', 'ARCHIVED'] },
-        },
-        select: {
-          inputUnit: true,
-          jurisdictionRegion: true,
-          jurisdictionCountry: true,
-          factorYear: true,
-          factor: {
+    const { result: factorResults, durationMs: databaseReadDurationMs } =
+      await timeAsync(() =>
+        this.prisma.$transaction([
+          this.prisma.conversionFactor.findMany({
+            where: {
+              type: 'EMISSION',
+              activityType: { in: activityTypes },
+              OR: [{ organizationId }, { isSystemDefault: true }],
+            },
             select: {
               activityType: true,
+              unit: true,
+              jurisdiction: true,
+              region: true,
+              country: true,
+              sourceYear: true,
             },
-          },
-        },
-      }),
-    ]);
+          }),
+          this.prisma.factorVersion.findMany({
+            where: {
+              factor: {
+                activityType: { in: activityTypes },
+                isActive: true,
+              },
+              status: { notIn: ['DEPRECATED', 'ARCHIVED'] },
+            },
+            select: {
+              inputUnit: true,
+              jurisdictionRegion: true,
+              jurisdictionCountry: true,
+              factorYear: true,
+              factor: {
+                select: {
+                  activityType: true,
+                },
+              },
+            },
+          }),
+        ]),
+      );
+    const [legacyFactors, governedFactors] = factorResults;
 
-    return buildJsonActivityPreview({
-      records,
-      sourceFileName: dto.sourceFileName,
-      factors: toJsonPreviewFactorCandidates({ legacyFactors, governedFactors }),
+    const { result: preview, durationMs: validationDurationMs } = timeSync(() =>
+      buildJsonActivityPreview({
+        records,
+        sourceFileName: dto.sourceFileName,
+        factors: toJsonPreviewFactorCandidates({ legacyFactors, governedFactors }),
+      }),
+    );
+
+    this.logImportPerformance('activityDataJsonPreview', {
+      totalDurationMs: totalTimer.elapsedMs(),
+      parseDurationMs,
+      validationDurationMs,
+      databaseInsertUpdateDurationMs: 0,
+      databaseReadDurationMs,
+      count: records.length,
     });
+
+    return preview;
   }
 
   async findAll(organizationId: string, query: ActivityDataQueryDto) {
@@ -519,6 +565,38 @@ export class ActivityDataService {
         throw new BadRequestException(`Document ${dto.documentId} not found.`);
       }
     }
+  }
+
+  private logImportPerformance(
+    operation: string,
+    timings: {
+      totalDurationMs: number;
+      parseDurationMs: number;
+      validationDurationMs: number;
+      databaseInsertUpdateDurationMs: number;
+      databaseReadDurationMs?: number;
+      count: number;
+    },
+  ) {
+    const message = [
+      `${operation} total=${timings.totalDurationMs}ms`,
+      `parse=${timings.parseDurationMs}ms`,
+      `validation=${timings.validationDurationMs}ms`,
+      `databaseInsertUpdate=${timings.databaseInsertUpdateDurationMs}ms`,
+      timings.databaseReadDurationMs !== undefined
+        ? `databaseRead=${timings.databaseReadDurationMs}ms`
+        : null,
+      `records=${timings.count}`,
+    ]
+      .filter(Boolean)
+      .join(' ');
+
+    if (timings.totalDurationMs > SLOW_REQUEST_THRESHOLD_MS) {
+      this.logger.warn(`SLOW ${message}`);
+      return;
+    }
+
+    this.logger.log(message);
   }
 }
 

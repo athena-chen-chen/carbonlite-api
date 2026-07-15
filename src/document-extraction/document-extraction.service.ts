@@ -24,6 +24,12 @@ import {
   captureAppError,
   markAppErrorCaptured,
 } from '../common/monitoring/capture-app-error';
+import {
+  PerfTimer,
+  SLOW_REQUEST_THRESHOLD_MS,
+  timeAsync,
+  timeSync,
+} from '../common/monitoring/performance-logging';
 
 type ConfidenceLevel = 'high' | 'medium' | 'low';
 
@@ -782,74 +788,85 @@ Return all rows as activities array.
     userId?: string,
     importBatchId?: string,
   ) {
-    const document = await this.prisma.document.findFirst({
-      where: { id: documentId, organizationId },
-    });
+    const totalTimer = new PerfTimer();
 
-    if (!document) {
-      throw new NotFoundException('Document not found');
-    }
+    const { result: validationResult, durationMs: validationDurationMs } =
+      await timeAsync(async () => {
+        const document = await this.prisma.document.findFirst({
+          where: { id: documentId, organizationId },
+        });
 
-    const existingImport = await this.prisma.activityData.findFirst({
-      where: { organizationId, sourceDocumentId: documentId },
-      select: { id: true },
-    });
+        if (!document) {
+          throw new NotFoundException('Document not found');
+        }
 
-    if (document.importedAt || existingImport) {
-      throw new ConflictException('This document has already been imported.');
-    }
+        const existingImport = await this.prisma.activityData.findFirst({
+          where: { organizationId, sourceDocumentId: documentId },
+          select: { id: true },
+        });
 
-    const normalizedActivities = activities.map((activity) =>
-      this.normalizeActivityForImport(activity),
+        if (document.importedAt || existingImport) {
+          throw new ConflictException('This document has already been imported.');
+        }
+
+        return { document };
+      });
+    const { document } = validationResult;
+
+    const { result: normalizedActivities, durationMs: parseDurationMs } = timeSync(
+      () => activities.map((activity) => this.normalizeActivityForImport(activity)),
     );
     const stableImportBatchId =
       importBatchId?.trim() || `document-${documentId}`;
-    const createdIds = await this.prisma.$transaction(async (tx) => {
-      const ids: string[] = [];
-      const claimedDocument = await tx.document.updateMany({
-        where: {
-          id: documentId,
-          organizationId,
-          importedAt: null,
-        },
-        data: {
-          status: 'IMPORTED',
-          importedAt: new Date(),
-          importBatchId: stableImportBatchId,
-        },
-      });
+    const { result: createdIds, durationMs: databaseInsertUpdateDurationMs } =
+      await timeAsync(() =>
+        this.prisma.$transaction(async (tx) => {
+          const ids: string[] = [];
+          const claimedDocument = await tx.document.updateMany({
+            where: {
+              id: documentId,
+              organizationId,
+              importedAt: null,
+            },
+            data: {
+              status: 'IMPORTED',
+              importedAt: new Date(),
+              importBatchId: stableImportBatchId,
+            },
+          });
 
-      if (claimedDocument.count === 0) {
-        throw new ConflictException(
-          'This document has already been imported.',
-        );
-      }
+          if (claimedDocument.count === 0) {
+            throw new ConflictException(
+              'This document has already been imported.',
+            );
+          }
 
-      for (const normalized of normalizedActivities) {
-        const row = await tx.activityData.create({
-          data: {
-            organizationId,
-            documentId,
-            activityType: normalized.activityType as any,
-            recordDate: new Date(normalized.recordDate),
-            jurisdictionCountry: normalized.jurisdictionCountry ?? null,
-            jurisdictionRegion: normalized.jurisdictionRegion ?? null,
-            quantity: normalized.quantity,
-            unit: normalized.unit,
-            sourceType: 'DOCUMENT_AI' as any,
-            sourceReference: normalized.sourceReference ?? null,
-            sourceDocumentId: documentId,
-            sourceFileName: document.fileName,
-            importBatchId: stableImportBatchId,
-            notes: normalized.notes ?? null,
-          },
-        });
+          for (const normalized of normalizedActivities) {
+            const row = await tx.activityData.create({
+              data: {
+                organizationId,
+                documentId,
+                activityType: normalized.activityType as any,
+                recordDate: new Date(normalized.recordDate),
+                jurisdictionCountry: normalized.jurisdictionCountry ?? null,
+                jurisdictionRegion: normalized.jurisdictionRegion ?? null,
+                quantity: normalized.quantity,
+                unit: normalized.unit,
+                sourceType: 'DOCUMENT_AI' as any,
+                sourceReference: normalized.sourceReference ?? null,
+                sourceDocumentId: documentId,
+                sourceFileName: document.fileName,
+                importBatchId: stableImportBatchId,
+                notes: normalized.notes ?? null,
+              },
+            });
 
-        ids.push(row.id);
-      }
+            ids.push(row.id);
+          }
 
-      return ids;
-    });
+          return ids;
+        }),
+      );
 
     if (createdIds.length > 0) {
       await this.activityTracking.track({
@@ -865,6 +882,14 @@ Return all rows as activities array.
         },
       });
     }
+
+    this.logImportPerformance('documentExtractionConfirmImport', {
+      totalDurationMs: totalTimer.elapsedMs(),
+      parseDurationMs,
+      validationDurationMs,
+      databaseInsertUpdateDurationMs,
+      count: createdIds.length,
+    });
 
     return {
       count: createdIds.length,
@@ -959,6 +984,32 @@ Return all rows as activities array.
       entityId: input.documentId,
       metadata: input.metadata,
     });
+  }
+
+  private logImportPerformance(
+    operation: string,
+    timings: {
+      totalDurationMs: number;
+      parseDurationMs: number;
+      validationDurationMs: number;
+      databaseInsertUpdateDurationMs: number;
+      count: number;
+    },
+  ) {
+    const message = [
+      `${operation} total=${timings.totalDurationMs}ms`,
+      `parse=${timings.parseDurationMs}ms`,
+      `validation=${timings.validationDurationMs}ms`,
+      `databaseInsertUpdate=${timings.databaseInsertUpdateDurationMs}ms`,
+      `records=${timings.count}`,
+    ].join(' ');
+
+    if (timings.totalDurationMs > SLOW_REQUEST_THRESHOLD_MS) {
+      this.logger.warn(`SLOW ${message}`);
+      return;
+    }
+
+    this.logger.log(message);
   }
 
   private addConfidence(activity: ParsedActivityRaw): ParsedActivityWithConfidence {

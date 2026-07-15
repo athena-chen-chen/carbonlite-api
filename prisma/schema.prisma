@@ -338,6 +338,10 @@ model ActivityData {
   @@index([jurisdictionCountry])
   @@index([jurisdictionRegion])
   @@index([recordYear])
+  @@index([organizationId, recordDate])
+  @@index([organizationId, facilityId, recordDate])
+  @@index([organizationId, activityType, recordDate])
+  @@index([organizationId, sourceDocumentId])
 }
 
 model Factor {
@@ -359,6 +363,7 @@ model Factor {
   @@index([category])
   @@index([isSystem])
   @@index([isActive])
+  @@index([activityType, isActive])
 }
 
 model FactorVersion {
@@ -409,6 +414,8 @@ model FactorVersion {
   @@index([confidenceLevel])
   @@index([verified])
   @@index([factorId, version])
+  @@index([factorId, inputUnit, jurisdictionCountry, jurisdictionRegion, factorYear])
+  @@index([status, factorYear])
 }
 
 model FactorSource {
@@ -528,6 +535,10 @@ model ConversionFactor {
   @@index([jurisdiction])
   @@index([sourceYear])
   @@index([isSystemDefault])
+  @@index([type, activityType, organizationId])
+  @@index([type, activityType, isSystemDefault])
+  @@index([activityType, unit, country, region, sourceYear])
+  @@index([activityType, unit, country, jurisdiction, sourceYear])
 }
 
 model MetricResult {
@@ -586,6 +597,9 @@ model Report {
   @@index([organizationId])
   @@index([facilityId])
   @@index([status])
+  @@index([organizationId, reportingYear])
+  @@index([organizationId, periodStart, periodEnd])
+  @@index([organizationId, status, createdAt])
 }
 
 model Document {

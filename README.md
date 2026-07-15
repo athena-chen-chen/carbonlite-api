@@ -104,6 +104,39 @@ pnpm dev
 
 The API listens on `http://localhost:3333` by default.
 
+---
+
+## Backend Performance Logs
+
+The API logs lightweight timing information in local development. Request logs
+include method, URL, status code, and total duration, for example:
+
+```text
+GET /api/metrics/summary 200 143ms
+SLOW POST /api/activity-data/bulk-import 201 1284ms
+```
+
+Requests over `1000ms` are marked with `SLOW`. The logs do not include request
+bodies or uploaded file contents.
+
+Metrics summary logs break the endpoint into:
+
+- `total`: full summary endpoint duration
+- `activityRecordQuery`: activity record database query duration
+- `factorMatchingCalculation`: factor matching and emissions calculation duration
+- `responseMapping`: response shaping duration
+
+Import logs for JSON preview, bulk import, and confirmed document imports include
+`parse`, `validation`, `databaseInsertUpdate`, and `total` durations. JSON
+preview may also include `databaseRead` because it checks available factors but
+does not write activity records.
+
+If `/api/metrics/summary` is slow, first compare `activityRecordQuery` with
+`factorMatchingCalculation`. A slow query points to database size, filters, or
+indexes. Slow factor matching usually means the calculation is processing many
+records or factor candidates and should be narrowed by date/report scope before
+deeper optimization.
+
 ### Switching Between Neon And Local
 
 To use local Postgres:
