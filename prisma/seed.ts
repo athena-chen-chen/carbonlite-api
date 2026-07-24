@@ -22,12 +22,27 @@ const systemFactorMetadata = {
     sourceDocument: 'CarbonLite MVP Default Factors v1.0',
     sourceYear: 2025,
     sourceUrl: 'https://carbonlite.ai/methodology/default-factors',
-    confidenceLevel: 'Low (Placeholder)',
+    confidenceLevel: 'Low',
     verificationStatus: 'Internal Review Required',
     verified: false,
     methodology:
-      'Electricity emission factors vary by province. Replace with official provincial electricity factors before production use.',
-    notes: 'Placeholder electricity factor for pilot testing only.',
+      'Pilot-stage default electricity factor. Uses jurisdiction-specific electricity factor and latest available prior-year factor where no reporting-year factor exists. Replace with reviewed official factor before formal reporting.',
+    notes:
+      'Pilot-stage default electricity factor. Uses jurisdiction-specific electricity factor and latest available prior-year factor where no reporting-year factor exists. Replace with reviewed official factor before formal reporting.',
+  },
+  scope3: {
+    jurisdiction: 'Canada (Generic)',
+    sourceAuthority: 'CarbonLite System Defaults',
+    sourceDocument: 'CarbonLite MVP Default Factors v1.0',
+    sourceYear: 2025,
+    sourceUrl: 'https://carbonlite.ai/methodology/default-factors',
+    confidenceLevel: 'Low',
+    verificationStatus: 'Internal Review Required',
+    verified: false,
+    methodology:
+      'Pilot-stage Scope 3 estimate. Scope 3 calculations can vary by methodology, boundary, and factor source. Consultant review recommended before official reporting.',
+    notes:
+      'Pilot-stage Scope 3 estimate. Scope 3 calculations can vary by methodology, boundary, and factor source. Consultant review recommended before official reporting.',
   },
   water: {
     jurisdiction: 'Canada (Generic)',
@@ -42,11 +57,27 @@ const systemFactorMetadata = {
       'Estimated indirect emissions associated with municipal water treatment and distribution. Used for pilot workflow validation only.',
     notes: 'Tracked metric with optional estimated emissions. Not intended for regulatory reporting.',
   },
+  groundTransport: {
+    jurisdiction: 'Canada - National',
+    sourceAuthority: 'CarbonLite',
+    sourceDocument: 'CarbonLite Pilot Ground Transport Estimate 2025',
+    sourceYear: 2025,
+    sourceUrl: 'https://carbonlite.ai/methodology/ground-transport-emissions',
+    confidenceLevel: 'Pilot Estimate',
+    verificationStatus: 'Internal Review Required',
+    verified: false,
+    methodology:
+      'Estimated Scope 3 emissions for ground transport distance including taxi, rideshare, rental car, mileage, and local business travel. Used for pilot workflow validation only.',
+    notes:
+      'Pilot estimate for Scope 3 ground transport. Replace with a reviewed factor before formal reporting.',
+  },
 } as const;
 
 function getSystemFactorMetadata(activityType: string) {
   if (activityType === 'ELECTRICITY') return systemFactorMetadata.electricity;
   if (activityType === 'WATER') return systemFactorMetadata.water;
+  if (activityType === 'GROUND_TRANSPORT') return systemFactorMetadata.groundTransport;
+  if (['AIR_TRAVEL', 'HOTEL', 'SHIPPING'].includes(activityType)) return systemFactorMetadata.scope3;
   return systemFactorMetadata.default;
 }
 
@@ -169,6 +200,19 @@ async function main() {
     },
     { name: 'Air travel', activityType: 'AIR_TRAVEL', unit: 'km', factorValue: 0.115, category: 'TRANSPORT', scope: 'Scope 3' },
     { name: 'Hotel stays', activityType: 'HOTEL', unit: 'nights', factorValue: 15, category: 'HOTEL', scope: 'Scope 3' },
+    {
+      id: 'pilot-ground-transport-canada-2025',
+      name: 'Ground Transport - Canada - 2025',
+      activityType: 'GROUND_TRANSPORT',
+      unit: 'km',
+      factorValue: 0.2,
+      jurisdiction: 'Canada - National',
+      sourceYear: 2025,
+      category: 'TRANSPORT',
+      scope: 'Scope 3',
+      notes:
+        'Pilot estimate for taxi, rideshare, rental car, mileage, and local business travel distance. Internal review required before formal reporting.',
+    },
     { name: 'Shipping', activityType: 'SHIPPING', unit: 'ton-km', factorValue: 0.09, category: 'SHIPPING', scope: 'Scope 3' },
     {
       name: 'Water usage tracked only',
@@ -228,6 +272,7 @@ async function main() {
     } else {
       await prisma.conversionFactor.create({
         data: {
+          id: 'id' in factor ? factor.id : undefined,
           organizationId: null,
           name: factor.name,
           type: 'EMISSION',

@@ -4,7 +4,7 @@ import {
   BadRequestException,
   Logger,
 } from '@nestjs/common';
-import { Prisma, RecordSourceType, ActivityType } from '@prisma/client';
+import { Prisma, RecordSourceType, ActivityType, ReportStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateActivityDataDto } from './dto/create-activity-data.dto';
 import { UpdateActivityDataDto } from './dto/update-activity-data.dto';
@@ -24,6 +24,13 @@ import {
   timeAsync,
   timeSync,
 } from '../common/monitoring/performance-logging';
+import {
+  getDateOnlyYear,
+  parseDateOnlyRangeEndUtc,
+  parseDateOnlyUtc,
+} from '../common/date-only';
+import { CLEAR_ACTIVITY_RECORDS_CONFIRMATION } from './dto/clear-activity-records.dto';
+import { RESET_DEMO_DATA_CONFIRMATION } from './dto/reset-demo-data.dto';
 
 @Injectable()
 export class ActivityDataService {
@@ -38,34 +45,49 @@ export class ActivityDataService {
   async create(organizationId: string, dto: CreateActivityDataDto, userId?: string) {
     await this.validateRelations(organizationId, dto);
 
-    const created = await this.prisma.activityData.create({
-      data: {
-        organizationId,
-        facilityId: dto.facilityId ?? null,
-        assetId: dto.assetId ?? null,
-        documentId: dto.documentId ?? null,
-        activityType: dto.activityType,
-        customTypeLabel: dto.customTypeLabel ?? null,
-        recordDate: new Date(dto.recordDate),
-        dateEstimated: dto.dateEstimated ?? false,
-        jurisdictionCountry: dto.jurisdictionCountry ?? null,
-        jurisdictionRegion: dto.jurisdictionRegion ?? null,
-        recordYear: dto.recordYear ?? new Date(dto.recordDate).getUTCFullYear(),
-        periodStart: dto.periodStart ? new Date(dto.periodStart) : null,
-        periodEnd: dto.periodEnd ? new Date(dto.periodEnd) : null,
-        quantity: new Prisma.Decimal(dto.quantity),
-        unit: dto.unit,
-        sourceType: dto.sourceType,
-        sourceReference: dto.sourceReference ?? null,
-        sourceFileName: dto.sourceFileName ?? null,
-        sourceDocumentId: dto.sourceDocumentId ?? null,
-        sourcePage: normalizeOptionalText(dto.sourcePage),
-        sourceRow: normalizeOptionalText(dto.sourceRow),
-        sourceTextSnippet: dto.sourceTextSnippet ?? null,
-        importBatchId: dto.importBatchId ?? null,
-        notes: dto.notes ?? null,
-      },
-    });
+    const data = {
+      organizationId,
+      facilityId: dto.facilityId ?? null,
+      assetId: dto.assetId ?? null,
+      documentId: dto.documentId ?? null,
+      activityType: dto.activityType,
+      customTypeLabel: dto.customTypeLabel ?? null,
+      recordDate: parseDateOnlyUtc(dto.recordDate),
+      dateEstimated: dto.dateEstimated ?? false,
+      jurisdictionCountry: dto.jurisdictionCountry ?? null,
+      jurisdictionRegion: dto.jurisdictionRegion ?? null,
+      recordYear: dto.recordYear ?? getDateOnlyYear(dto.recordDate),
+      periodStart: dto.periodStart ? new Date(dto.periodStart) : null,
+      periodEnd: dto.periodEnd ? new Date(dto.periodEnd) : null,
+      quantity: new Prisma.Decimal(dto.quantity),
+      unit: dto.unit,
+      sourceType: dto.sourceType,
+      sourceReference: dto.sourceReference ?? null,
+      sourceFileName: dto.sourceFileName ?? null,
+      sourceDocumentId: dto.sourceDocumentId ?? null,
+      sourcePage: normalizeOptionalText(dto.sourcePage),
+      sourceRow: normalizeOptionalText(dto.sourceRow),
+      sourceTextSnippet: dto.sourceTextSnippet ?? null,
+      importBatchId: dto.importBatchId ?? null,
+      notes: dto.notes ?? null,
+      ...buildCalculationFieldCreateData(dto),
+    };
+
+    let created;
+    try {
+      created = await this.prisma.activityData.create({ data });
+    } catch (error) {
+      this.logger.error(
+        [
+          'ActivityData create failed.',
+          `dto=${JSON.stringify(sanitizeActivityDataCreateDto(dto))}`,
+          `prismaData=${JSON.stringify(sanitizePrismaDataForLog(data))}`,
+          getErrorMessage(error),
+        ].join(' '),
+        getErrorStack(error),
+      );
+      throw error;
+    }
 
     await this.auditLog.log({
       organizationId,
@@ -114,11 +136,11 @@ export class ActivityDataService {
       documentId: item.documentId ?? null,
       activityType: item.activityType as ActivityType,
       customTypeLabel: item.customTypeLabel ?? null,
-      recordDate: new Date(item.recordDate),
+      recordDate: parseDateOnlyUtc(item.recordDate),
       dateEstimated: item.dateEstimated ?? false,
       jurisdictionCountry: item.jurisdictionCountry ?? null,
       jurisdictionRegion: item.jurisdictionRegion ?? null,
-      recordYear: item.recordYear ?? new Date(item.recordDate).getUTCFullYear(),
+      recordYear: item.recordYear ?? getDateOnlyYear(item.recordDate),
       periodStart: item.periodStart ? new Date(item.periodStart) : null,
       periodEnd: item.periodEnd ? new Date(item.periodEnd) : null,
       quantity: new Prisma.Decimal(item.quantity),
@@ -132,6 +154,7 @@ export class ActivityDataService {
       sourceTextSnippet: item.sourceTextSnippet ?? null,
       importBatchId: item.importBatchId ?? null,
       notes: item.notes ?? null,
+      ...buildCalculationFieldCreateData(item),
     }));
     const parseDurationMs = parseTimer.elapsedMs();
 
@@ -194,8 +217,12 @@ export class ActivityDataService {
               OR: [{ organizationId }, { isSystemDefault: true }],
             },
             select: {
+              id: true,
+              name: true,
               activityType: true,
               unit: true,
+              factorValue: true,
+              resultUnit: true,
               jurisdiction: true,
               region: true,
               country: true,
@@ -211,7 +238,10 @@ export class ActivityDataService {
               status: { notIn: ['DEPRECATED', 'ARCHIVED'] },
             },
             select: {
+              id: true,
               inputUnit: true,
+              factorValue: true,
+              resultUnit: true,
               jurisdictionRegion: true,
               jurisdictionCountry: true,
               factorYear: true,
@@ -258,8 +288,8 @@ export class ActivityDataService {
       ...(query.dateFrom || query.dateTo
         ? {
             recordDate: {
-              ...(query.dateFrom ? { gte: new Date(query.dateFrom) } : {}),
-              ...(query.dateTo ? { lte: new Date(query.dateTo) } : {}),
+              ...(query.dateFrom ? { gte: parseDateOnlyUtc(query.dateFrom) } : {}),
+              ...(query.dateTo ? { lte: parseDateOnlyRangeEndUtc(query.dateTo) } : {}),
             },
           }
         : {}),
@@ -275,22 +305,38 @@ export class ActivityDataService {
         : {}),
     };
 
-    const [items, total] = await this.prisma.$transaction([
-      this.prisma.activityData.findMany({
-        where,
-        include: {
-          facility: true,
-          asset: true,
-          document: true,
-        },
-        orderBy: {
-          recordDate: 'desc',
-        },
-        skip,
-        take: pageSize,
-      }),
-      this.prisma.activityData.count({ where }),
-    ]);
+    let items;
+    let total;
+
+    try {
+      [items, total] = await this.prisma.$transaction([
+        this.prisma.activityData.findMany({
+          where,
+          include: {
+            facility: true,
+            asset: true,
+            document: true,
+          },
+          orderBy: {
+            recordDate: 'desc',
+          },
+          skip,
+          take: pageSize,
+        }),
+        this.prisma.activityData.count({ where }),
+      ]);
+    } catch (error) {
+      this.logger.error(
+        [
+          'ActivityData findAll failed.',
+          `query=${JSON.stringify(query)}`,
+          `where=${JSON.stringify(sanitizePrismaDataForLog(where))}`,
+          getErrorMessage(error),
+        ].join(' '),
+        getErrorStack(error),
+      );
+      throw error;
+    }
 
     return {
       items,
@@ -338,7 +384,7 @@ export class ActivityDataService {
         ...(dto.customTypeLabel !== undefined
           ? { customTypeLabel: dto.customTypeLabel || null }
           : {}),
-        ...(dto.recordDate !== undefined ? { recordDate: new Date(dto.recordDate) } : {}),
+        ...(dto.recordDate !== undefined ? { recordDate: parseDateOnlyUtc(dto.recordDate) } : {}),
         ...(dto.dateEstimated !== undefined
           ? { dateEstimated: dto.dateEstimated }
           : {}),
@@ -350,7 +396,9 @@ export class ActivityDataService {
           : {}),
         ...(dto.recordYear !== undefined
           ? { recordYear: dto.recordYear || null }
-          : {}),
+          : dto.recordDate !== undefined
+            ? { recordYear: getDateOnlyYear(dto.recordDate) }
+            : {}),
         ...(dto.periodStart !== undefined
           ? { periodStart: dto.periodStart ? new Date(dto.periodStart) : null }
           : {}),
@@ -381,6 +429,7 @@ export class ActivityDataService {
           ? { sourceTextSnippet: dto.sourceTextSnippet || null }
           : {}),
         ...(dto.notes !== undefined ? { notes: dto.notes || null } : {}),
+        ...buildCalculationFieldUpdateData(dto),
       },
     });
 
@@ -499,6 +548,180 @@ export class ActivityDataService {
     };
   }
 
+  async clearForOrganization(
+    organizationId: string,
+    userId: string | undefined,
+    confirmation: string,
+  ) {
+    if (confirmation !== CLEAR_ACTIVITY_RECORDS_CONFIRMATION) {
+      throw new BadRequestException('Confirmation text is invalid.');
+    }
+
+    const result = await this.prisma.$transaction(async (tx) => {
+      const activityRecords = await tx.activityData.findMany({
+        where: { organizationId },
+        select: { id: true },
+      });
+      const activityRecordIds = activityRecords.map((record) => record.id);
+
+      const deletedCalculationResults = activityRecordIds.length
+        ? await tx.metricResult.deleteMany({
+            where: {
+              organizationId,
+              activityDataId: { in: activityRecordIds },
+            },
+          })
+        : { count: 0 };
+
+      const deletedActivityRecords = await tx.activityData.deleteMany({
+        where: { organizationId },
+      });
+
+      return {
+        deletedActivityRecords: deletedActivityRecords.count,
+        deletedCalculationResults: deletedCalculationResults.count,
+      };
+    });
+
+    await this.auditLog.log({
+      organizationId,
+      userId,
+      action: 'CLEAR_ACTIVITY_RECORDS',
+      entityType: 'ActivityData',
+      description: 'Cleared activity records for organization',
+      newValue: result,
+    });
+
+    await this.activityTracking.track({
+      organizationId,
+      userId,
+      eventName: 'ACTIVITY_RECORDS_CLEARED',
+      entityType: 'ActivityData',
+      metadata: result,
+    });
+
+    return {
+      deletedActivityRecords: result.deletedActivityRecords,
+      deletedCalculationResults: result.deletedCalculationResults,
+      deletedCalculationDetails: result.deletedCalculationResults,
+      clearedMetricsCache: 0,
+      deletedImportBatches: 0,
+      resetReports: 0,
+      message: 'Activity records cleared successfully.',
+    };
+  }
+
+  async resetDemoDataForOrganization(
+    organizationId: string,
+    userId: string | undefined,
+    confirmation: string,
+  ) {
+    if (confirmation !== RESET_DEMO_DATA_CONFIRMATION) {
+      throw new BadRequestException('Confirmation text is invalid.');
+    }
+
+    const result = await this.prisma.$transaction(async (tx) => {
+      const [activityRecords, documents, extractions] = await Promise.all([
+        tx.activityData.findMany({
+          where: { organizationId },
+          select: { id: true, importBatchId: true },
+        }),
+        tx.document.findMany({
+          where: { organizationId },
+          select: { id: true, importBatchId: true },
+        }),
+        tx.documentExtraction.findMany({
+          where: { organizationId },
+          select: { extractedRowCount: true, sourceRowCount: true },
+        }),
+      ]);
+
+      const activityRecordIds = activityRecords.map((record) => record.id);
+      const documentIds = documents.map((document) => document.id);
+      const importBatchIds = new Set(
+        [...activityRecords, ...documents]
+          .map((item) => item.importBatchId?.trim())
+          .filter((id): id is string => Boolean(id)),
+      );
+      const stagedRowsDeleted = extractions.reduce(
+        (total, extraction) =>
+          total +
+          (extraction.extractedRowCount || extraction.sourceRowCount || 0),
+        0,
+      );
+
+      const metricsCacheCleared = activityRecordIds.length
+        ? await tx.metricResult.deleteMany({
+            where: {
+              organizationId,
+              activityDataId: { in: activityRecordIds },
+            },
+          })
+        : { count: 0 };
+
+      const activityRecordsDeleted = await tx.activityData.deleteMany({
+        where: { organizationId },
+      });
+
+      const stagedRowsCleared = documentIds.length
+        ? await tx.documentExtraction.deleteMany({
+            where: {
+              organizationId,
+              documentId: { in: documentIds },
+            },
+          })
+        : { count: 0 };
+
+      const uploadedDocumentsDeleted = await tx.document.deleteMany({
+        where: { organizationId },
+      });
+
+      const resetReports = await tx.report.updateMany({
+        where: {
+          organizationId,
+          status: ReportStatus.DRAFT,
+        },
+        data: {
+          summary: null,
+          contentMarkdown: null,
+          generatedPdfUrl: null,
+        },
+      });
+
+      return {
+        activityRecordsDeleted: activityRecordsDeleted.count,
+        importBatchesDeleted: importBatchIds.size,
+        uploadedDocumentsDeleted: uploadedDocumentsDeleted.count,
+        stagedRowsDeleted,
+        stagedExtractionRecordsDeleted: stagedRowsCleared.count,
+        metricsCacheCleared: metricsCacheCleared.count,
+        resetReports: resetReports.count,
+      };
+    });
+
+    await this.auditLog.log({
+      organizationId,
+      userId,
+      action: 'RESET_DEMO_DATA',
+      entityType: 'Organization',
+      description: 'Reset demo data for organization',
+      newValue: result,
+    });
+
+    await this.activityTracking.track({
+      organizationId,
+      userId,
+      eventName: 'DEMO_DATA_RESET',
+      entityType: 'Organization',
+      metadata: result,
+    });
+
+    return {
+      ...result,
+      message: 'Demo data reset successfully.',
+    };
+  }
+
   private async ensureExists(organizationId: string, id: string) {
     const existing = await this.prisma.activityData.findFirst({
       where: {
@@ -604,4 +827,98 @@ function normalizeOptionalText(value?: string | number | null) {
   if (value === null || value === undefined) return null;
   const text = String(value).trim();
   return text || null;
+}
+
+function buildCalculationFieldCreateData(dto: CreateActivityDataDto) {
+  return {
+    matchingStatus: dto.matchingStatus ?? null,
+    reportTreatment: dto.reportTreatment ?? null,
+    scope: dto.scope ?? null,
+    matchedFactorId: dto.matchedFactorId ?? null,
+    matchedFactorName: dto.matchedFactorName ?? null,
+    matchedFactorSourceYear: dto.matchedFactorSourceYear ?? null,
+    matchedFactorValue: dto.matchedFactorValue ?? null,
+    matchedFactorUnit: dto.matchedFactorUnit ?? null,
+    matchedFactorVersion: dto.matchedFactorVersion ?? null,
+    matchedFactorSourceAuthority: dto.matchedFactorSourceAuthority ?? null,
+    matchedFactorSourceDocument: dto.matchedFactorSourceDocument ?? null,
+    matchedFactorVerificationStatus: dto.matchedFactorVerificationStatus ?? null,
+    matchedFactorConfidenceLevel: dto.matchedFactorConfidenceLevel ?? null,
+    matchedFactorAssumptions: dto.matchedFactorAssumptions ?? null,
+    calculatedEmissionsKgCO2e: dto.calculatedEmissionsKgCO2e ?? null,
+    calculationStatus: dto.calculationStatus ?? null,
+    calculationMessage: dto.calculationMessage ?? null,
+  };
+}
+
+function buildCalculationFieldUpdateData(dto: UpdateActivityDataDto) {
+  return {
+    ...(dto.matchingStatus !== undefined ? { matchingStatus: dto.matchingStatus || null } : {}),
+    ...(dto.reportTreatment !== undefined ? { reportTreatment: dto.reportTreatment || null } : {}),
+    ...(dto.scope !== undefined ? { scope: dto.scope || null } : {}),
+    ...(dto.matchedFactorId !== undefined ? { matchedFactorId: dto.matchedFactorId || null } : {}),
+    ...(dto.matchedFactorName !== undefined ? { matchedFactorName: dto.matchedFactorName || null } : {}),
+    ...(dto.matchedFactorSourceYear !== undefined
+      ? { matchedFactorSourceYear: dto.matchedFactorSourceYear ?? null }
+      : {}),
+    ...(dto.matchedFactorValue !== undefined
+      ? { matchedFactorValue: dto.matchedFactorValue ?? null }
+      : {}),
+    ...(dto.matchedFactorUnit !== undefined
+      ? { matchedFactorUnit: dto.matchedFactorUnit || null }
+      : {}),
+    ...(dto.matchedFactorVersion !== undefined
+      ? { matchedFactorVersion: dto.matchedFactorVersion || null }
+      : {}),
+    ...(dto.matchedFactorSourceAuthority !== undefined
+      ? { matchedFactorSourceAuthority: dto.matchedFactorSourceAuthority || null }
+      : {}),
+    ...(dto.matchedFactorSourceDocument !== undefined
+      ? { matchedFactorSourceDocument: dto.matchedFactorSourceDocument || null }
+      : {}),
+    ...(dto.matchedFactorVerificationStatus !== undefined
+      ? { matchedFactorVerificationStatus: dto.matchedFactorVerificationStatus || null }
+      : {}),
+    ...(dto.matchedFactorConfidenceLevel !== undefined
+      ? { matchedFactorConfidenceLevel: dto.matchedFactorConfidenceLevel || null }
+      : {}),
+    ...(dto.matchedFactorAssumptions !== undefined
+      ? { matchedFactorAssumptions: dto.matchedFactorAssumptions || null }
+      : {}),
+    ...(dto.calculatedEmissionsKgCO2e !== undefined
+      ? { calculatedEmissionsKgCO2e: dto.calculatedEmissionsKgCO2e ?? null }
+      : {}),
+    ...(dto.calculationStatus !== undefined
+      ? { calculationStatus: dto.calculationStatus || null }
+      : {}),
+    ...(dto.calculationMessage !== undefined
+      ? { calculationMessage: dto.calculationMessage || null }
+      : {}),
+  };
+}
+
+function sanitizeActivityDataCreateDto(dto: CreateActivityDataDto) {
+  return sanitizeForLog(dto);
+}
+
+function sanitizePrismaDataForLog(data: object) {
+  return sanitizeForLog(data);
+}
+
+function sanitizeForLog(value: object) {
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>).map(([key, fieldValue]) => [
+      key,
+      fieldValue instanceof Prisma.Decimal ? fieldValue.toString() : fieldValue,
+    ]),
+  );
+}
+
+function getErrorMessage(error: unknown) {
+  if (error instanceof Error) return error.message;
+  return String(error);
+}
+
+function getErrorStack(error: unknown) {
+  return error instanceof Error ? error.stack : undefined;
 }

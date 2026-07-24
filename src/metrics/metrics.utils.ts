@@ -102,9 +102,14 @@ export function normalizeJurisdictionRegion(region?: string | null): string | nu
     saskatchewan: 'Saskatchewan',
     yt: 'Yukon',
     yukon: 'Yukon',
+    ca: 'Canada',
+    national: 'Canada',
     canada: 'Canada',
     'canada generic': 'Canada',
+    'canada national': 'Canada',
+    'canada - national': 'Canada',
     'canada-level': 'Canada',
+    'not province-specific': 'Canada',
     'province required': 'Province Required',
   };
 

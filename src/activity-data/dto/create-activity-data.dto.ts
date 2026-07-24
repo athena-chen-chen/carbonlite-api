@@ -7,6 +7,7 @@ import {
   IsString,
   MaxLength,
 } from 'class-validator';
+import { Type } from 'class-transformer';
 import { ActivityType, RecordSourceType } from '@prisma/client';
 
 export {
@@ -102,4 +103,77 @@ export class CreateActivityDataDto {
   @IsOptional()
   @IsString()
   importBatchId?: string;
+
+  @IsOptional()
+  @IsString()
+  matchingStatus?: string;
+
+  @IsOptional()
+  @IsString()
+  reportTreatment?: string;
+
+  @IsOptional()
+  @IsString()
+  scope?: string;
+
+  @IsOptional()
+  @IsString()
+  matchedFactorId?: string;
+
+  @IsOptional()
+  @IsString()
+  matchedFactorName?: string;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  matchedFactorSourceYear?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  matchedFactorValue?: number;
+
+  @IsOptional()
+  @IsString()
+  matchedFactorUnit?: string;
+
+  @IsOptional()
+  @IsString()
+  matchedFactorVersion?: string;
+
+  @IsOptional()
+  @IsString()
+  matchedFactorSourceAuthority?: string;
+
+  @IsOptional()
+  @IsString()
+  matchedFactorSourceDocument?: string;
+
+  @IsOptional()
+  @IsString()
+  matchedFactorVerificationStatus?: string;
+
+  @IsOptional()
+  @IsString()
+  matchedFactorConfidenceLevel?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(1000)
+  matchedFactorAssumptions?: string;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  calculatedEmissionsKgCO2e?: number;
+
+  @IsOptional()
+  @IsString()
+  calculationStatus?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  calculationMessage?: string;
 }

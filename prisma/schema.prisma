@@ -42,6 +42,7 @@ enum ActivityType {
   WASTE
   AIR_TRAVEL
   HOTEL
+  GROUND_TRANSPORT
   SHIPPING
   CUSTOM
 }
@@ -196,7 +197,7 @@ model User {
   activityEvents UserActivityEvent[] @relation("UserActivityEventUser")
   factorReviews  FactorReviewLog[]   @relation("FactorReviewReviewedBy")
   factorChanges  FactorChangeLog[]   @relation("FactorChangeChangedBy")
-  feedback        Feedback[]          @relation("FeedbackUser")
+  feedback       Feedback[]          @relation("FeedbackUser")
 
   @@index([organizationId])
 }
@@ -295,33 +296,50 @@ model Asset {
 }
 
 model ActivityData {
-  id                  String           @id @default(cuid())
-  organizationId      String
-  facilityId          String?
-  assetId             String?
-  documentId          String?
-  activityType        ActivityType
-  customTypeLabel     String?
-  recordDate          DateTime
-  dateEstimated       Boolean          @default(false)
-  jurisdictionCountry String?
-  jurisdictionRegion  String?
-  recordYear          Int?
-  periodStart         DateTime?
-  periodEnd           DateTime?
-  quantity            Decimal          @db.Decimal(18, 4)
-  unit                String
-  sourceType          RecordSourceType
-  sourceReference     String?
-  sourceFileName      String?
-  sourceDocumentId    String?
-  sourcePage          String?
-  sourceRow           String?
-  sourceTextSnippet   String?
-  importBatchId       String?
-  notes               String?
-  createdAt           DateTime         @default(now())
-  updatedAt           DateTime         @updatedAt
+  id                        String           @id @default(cuid())
+  organizationId            String
+  facilityId                String?
+  assetId                   String?
+  documentId                String?
+  activityType              ActivityType
+  customTypeLabel           String?
+  recordDate                DateTime
+  dateEstimated             Boolean          @default(false)
+  jurisdictionCountry       String?
+  jurisdictionRegion        String?
+  recordYear                Int?
+  periodStart               DateTime?
+  periodEnd                 DateTime?
+  quantity                  Decimal          @db.Decimal(18, 4)
+  unit                      String
+  sourceType                RecordSourceType
+  sourceReference           String?
+  sourceFileName            String?
+  sourceDocumentId          String?
+  sourcePage                String?
+  sourceRow                 String?
+  sourceTextSnippet         String?
+  importBatchId             String?
+  notes                     String?
+  matchingStatus            String?
+  reportTreatment           String?
+  scope                     String?
+  matchedFactorId           String?
+  matchedFactorName         String?
+  matchedFactorSourceYear   Int?
+  matchedFactorValue        Float?
+  matchedFactorUnit         String?
+  matchedFactorVersion      String?
+  matchedFactorSourceAuthority String?
+  matchedFactorSourceDocument  String?
+  matchedFactorVerificationStatus String?
+  matchedFactorConfidenceLevel String?
+  matchedFactorAssumptions  String?
+  calculatedEmissionsKgCO2e Float?
+  calculationStatus         String?
+  calculationMessage        String?
+  createdAt                 DateTime         @default(now())
+  updatedAt                 DateTime         @updatedAt
 
   organization  Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   facility      Facility?      @relation(fields: [facilityId], references: [id], onDelete: SetNull)
@@ -497,34 +515,34 @@ model FactorChangeLog {
 }
 
 model ConversionFactor {
-  id              String        @id @default(cuid())
-  organizationId  String?
-  name            String
-  type            FactorType
-  activityType    ActivityType?
-  jurisdiction    String?
-  region          String?
-  country         String?
-  unit            String
-  factorValue     Decimal       @db.Decimal(18, 8)
-  resultUnit      String
-  sourceName      String?
-  sourceReference String?
-  sourceAuthority String?
-  sourceDocument  String?
-  sourceYear      Int?
-  sourceUrl       String?
-  methodology     String?
-  confidenceLevel String?
+  id                 String        @id @default(cuid())
+  organizationId     String?
+  name               String
+  type               FactorType
+  activityType       ActivityType?
+  jurisdiction       String?
+  region             String?
+  country            String?
+  unit               String
+  factorValue        Decimal       @db.Decimal(18, 8)
+  resultUnit         String
+  sourceName         String?
+  sourceReference    String?
+  sourceAuthority    String?
+  sourceDocument     String?
+  sourceYear         Int?
+  sourceUrl          String?
+  methodology        String?
+  confidenceLevel    String?
   verificationStatus String?
-  verified        Boolean       @default(false)
-  notes           String?
-  effectiveFrom   DateTime?
-  effectiveTo     DateTime?
-  isDefault       Boolean       @default(false)
-  isSystemDefault Boolean       @default(false)
-  createdAt       DateTime      @default(now())
-  updatedAt       DateTime      @updatedAt
+  verified           Boolean       @default(false)
+  notes              String?
+  effectiveFrom      DateTime?
+  effectiveTo        DateTime?
+  isDefault          Boolean       @default(false)
+  isSystemDefault    Boolean       @default(false)
+  createdAt          DateTime      @default(now())
+  updatedAt          DateTime      @updatedAt
 
   organization  Organization?  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   metricResults MetricResult[]

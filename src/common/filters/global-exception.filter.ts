@@ -4,6 +4,7 @@ import {
   ExceptionFilter,
   HttpException,
   HttpStatus,
+  Logger,
 } from '@nestjs/common';
 import { Request, Response } from 'express';
 import { AuthenticatedUser } from '../../auth/auth.service';
@@ -14,6 +15,8 @@ import {
 
 @Catch()
 export class GlobalExceptionFilter implements ExceptionFilter {
+  private readonly logger = new Logger(GlobalExceptionFilter.name);
+
   catch(exception: unknown, host: ArgumentsHost) {
     const http = host.switchToHttp();
     const request = http.getRequest<Request & { user?: AuthenticatedUser }>();
@@ -39,6 +42,17 @@ export class GlobalExceptionFilter implements ExceptionFilter {
           statusCode: status,
         },
       });
+    }
+
+    if (status >= HttpStatus.INTERNAL_SERVER_ERROR) {
+      this.logger.error(
+        [
+          `${request.method} ${request.originalUrl || request.url} failed with ${status}`,
+          getErrorMessage(exception),
+          `body=${JSON.stringify(sanitizeRequestBody(request.body))}`,
+        ].join(' '),
+        getErrorStack(exception),
+      );
     }
 
     response.status(status).json({
@@ -72,4 +86,33 @@ export class GlobalExceptionFilter implements ExceptionFilter {
           : 'Request failed',
     };
   }
+}
+
+function getErrorMessage(exception: unknown) {
+  if (exception instanceof Error) return exception.message;
+  return String(exception);
+}
+
+function getErrorStack(exception: unknown) {
+  return exception instanceof Error ? exception.stack : undefined;
+}
+
+function sanitizeRequestBody(value: unknown): unknown {
+  if (!value || typeof value !== 'object') return value;
+
+  const sensitiveKeys = new Set([
+    'password',
+    'passwordHash',
+    'token',
+    'accessToken',
+    'refreshToken',
+    'authorization',
+  ]);
+
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>).map(([key, fieldValue]) => [
+      key,
+      sensitiveKeys.has(key.toLowerCase()) ? '[REDACTED]' : fieldValue,
+    ]),
+  );
 }

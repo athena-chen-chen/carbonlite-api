@@ -15,6 +15,10 @@ import { matchBestFactor } from './metrics.utils';
 import { AuditLogService } from '../audit-log/audit-log.service';
 import { addAppBreadcrumb } from '../common/monitoring/capture-app-error';
 import { CalculationQualityService } from './calculation-quality.service';
+import {
+  parseDateOnlyRangeEndUtc,
+  parseDateOnlyUtc,
+} from '../common/date-only';
 
 @Injectable()
 export class MetricsService {
@@ -264,8 +268,8 @@ export class MetricsService {
         ...(dto.periodStart || dto.periodEnd
           ? {
               recordDate: {
-                ...(dto.periodStart ? { gte: new Date(dto.periodStart) } : {}),
-                ...(dto.periodEnd ? { lte: new Date(dto.periodEnd) } : {}),
+                ...(dto.periodStart ? { gte: parseDateOnlyUtc(dto.periodStart) } : {}),
+                ...(dto.periodEnd ? { lte: parseDateOnlyRangeEndUtc(dto.periodEnd) } : {}),
               },
             }
           : {}),

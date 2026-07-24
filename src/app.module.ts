@@ -14,6 +14,7 @@ import { FeedbackModule } from './feedback/feedback.module';
 import { AuditLogModule } from './audit-log/audit-log.module';
 import { ActivityTrackingModule } from './activity-tracking/activity-tracking.module';
 import { SentryTestController } from './sentry-test.controller';
+import { FacilitiesModule } from './facilities/facilities.module';
 
 @Module({
   imports: [
@@ -30,6 +31,7 @@ import { SentryTestController } from './sentry-test.controller';
     DocumentExtractionModule,
     ReportsModule,
     FeedbackModule,
+    FacilitiesModule,
   ],
   controllers: [HealthController, SentryTestController],
 })

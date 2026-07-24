@@ -35,6 +35,9 @@ export type JsonActivityPreviewRecord = {
   date?: string;
   scope: ExtractedScope;
   matchedFactorStatus: MatchedFactorStatus;
+  matchedFactor?: JsonActivityPreviewMatchedFactor;
+  estimatedEmissionsKgCO2e?: number | null;
+  estimatedEmissionsStatus?: 'Calculated' | 'Waiting for quantity';
   reportTreatment: ReportTreatment;
   sourceFile?: string;
   notes?: string;
@@ -59,9 +62,14 @@ export type JsonActivityPreviewResult = {
 };
 
 type FactorCandidate = {
+  id?: string | null;
+  name?: string | null;
   activityType?: ActivityType | null;
   unit?: string | null;
   inputUnit?: string | null;
+  value?: number | string | Prisma.Decimal | null;
+  factorValue?: number | string | Prisma.Decimal | null;
+  resultUnit?: string | null;
   jurisdiction?: string | null;
   region?: string | null;
   country?: string | null;
@@ -69,6 +77,18 @@ type FactorCandidate = {
   jurisdictionCountry?: string | null;
   sourceYear?: number | null;
   factorYear?: number | null;
+};
+
+export type JsonActivityPreviewMatchedFactor = {
+  id?: string | null;
+  name?: string | null;
+  factorValue: number | null;
+  value: number | null;
+  unit: string | null;
+  resultUnit: string | null;
+  sourceYear: number | null;
+  jurisdictionRegion: string | null;
+  jurisdictionCountry: string | null;
 };
 
 type RawActivityRecord = Record<string, unknown>;
@@ -120,9 +140,33 @@ const ACTIVITY_DEFINITIONS: Record<
   },
   'ground transport - taxi/rideshare': {
     label: 'Ground Transport - Taxi/Rideshare',
-    prismaType: ActivityType.CUSTOM,
+    prismaType: ActivityType.GROUND_TRANSPORT,
     scope: 'Scope 3',
-    customTypeLabel: 'Ground Transport - Taxi/Rideshare',
+  },
+  'ground transport': {
+    label: 'Ground Transport',
+    prismaType: ActivityType.GROUND_TRANSPORT,
+    scope: 'Scope 3',
+  },
+  'business travel - ground transport': {
+    label: 'Ground Transport',
+    prismaType: ActivityType.GROUND_TRANSPORT,
+    scope: 'Scope 3',
+  },
+  taxi: {
+    label: 'Ground Transport',
+    prismaType: ActivityType.GROUND_TRANSPORT,
+    scope: 'Scope 3',
+  },
+  rideshare: {
+    label: 'Ground Transport',
+    prismaType: ActivityType.GROUND_TRANSPORT,
+    scope: 'Scope 3',
+  },
+  'rental car': {
+    label: 'Ground Transport',
+    prismaType: ActivityType.GROUND_TRANSPORT,
+    scope: 'Scope 3',
   },
   'water usage': {
     label: 'Water Usage',
@@ -228,14 +272,18 @@ function normalizeJsonActivityRecord(input: {
     unit,
     recordDate,
   });
-  const factorStatus = classifyFactorStatus({
+  const factorMatch = findBestJsonPreviewFactorMatch({
     definition,
     province,
     unit,
     recordYear: recordDate ? new Date(recordDate).getUTCFullYear() : null,
     factors: input.factors,
   });
-  const reportTreatment = treatmentForStatus(factorStatus);
+  const reportTreatment = treatmentForStatus(factorMatch.status);
+  const estimatedEmissionsKgCO2e =
+    amount !== null && factorMatch.factor?.factorValue !== null && factorMatch.factor?.factorValue !== undefined
+      ? round(amount * factorMatch.factor.factorValue)
+      : null;
   const canImport = validationErrors.length === 0 && reportTreatment !== 'Excluded';
 
   const preview: JsonActivityPreviewRecord = {
@@ -250,7 +298,15 @@ function normalizeJsonActivityRecord(input: {
     ...(endDate ? { endDate } : {}),
     ...(date ? { date } : {}),
     scope: definition?.scope ?? 'Scope 3',
-    matchedFactorStatus: factorStatus,
+    matchedFactorStatus: factorMatch.status,
+    ...(factorMatch.factor ? { matchedFactor: factorMatch.factor } : {}),
+    ...(factorMatch.factor
+      ? {
+          estimatedEmissionsKgCO2e,
+          estimatedEmissionsStatus:
+            amount === null ? 'Waiting for quantity' : 'Calculated',
+        }
+      : {}),
     reportTreatment,
     ...(sourceFile ? { sourceFile } : {}),
     ...(notes ? { notes } : {}),
@@ -281,41 +337,49 @@ function normalizeJsonActivityRecord(input: {
   return preview;
 }
 
-function classifyFactorStatus(input: {
+export function findBestJsonPreviewFactorMatch(input: {
   definition?: ReturnType<typeof getActivityDefinition>;
   province?: string;
   unit: string;
   recordYear: number | null;
   factors: FactorCandidate[];
-}): MatchedFactorStatus {
-  if (!input.definition) return 'Missing Factor';
-  if (input.definition.trackedOnly) return 'Not Emissions Factor Required';
+}): { status: MatchedFactorStatus; factor: JsonActivityPreviewMatchedFactor | null } {
+  if (!input.definition) return { status: 'Missing Factor', factor: null };
+  if (input.definition.trackedOnly) {
+    return { status: 'Not Emissions Factor Required', factor: null };
+  }
   if (input.definition.prismaType === ActivityType.ELECTRICITY && !input.province) {
-    return 'Missing Province';
+    return { status: 'Missing Province', factor: null };
   }
 
   const activityFactors = input.factors.filter(
     (factor) => factor.activityType === input.definition?.prismaType,
   );
-  if (activityFactors.length === 0) return 'Missing Factor';
+  if (activityFactors.length === 0) return { status: 'Missing Factor', factor: null };
 
   const normalizedInputUnit = normalizeUnit(input.unit);
   const unitMatches = activityFactors.filter(
     (factor) => normalizeUnit(String(factor.unit ?? factor.inputUnit ?? '')) === normalizedInputUnit,
   );
-  if (unitMatches.length === 0) return 'Unit Mismatch';
+  if (unitMatches.length === 0) return { status: 'Unit Mismatch', factor: null };
 
   const region = normalizeJurisdictionRegion(input.province);
   const country = normalizeJurisdictionCountry('Canada');
-  const yearMatches = unitMatches.filter((factor) =>
-    factorYearMatches(factor.sourceYear ?? factor.factorYear, input.recordYear),
-  );
-  const candidates = yearMatches.length > 0 ? yearMatches : unitMatches;
-  const jurisdictionMatches = candidates.filter((factor) =>
+  const jurisdictionMatches = unitMatches.filter((factor) =>
     jurisdictionCompatible(input.definition?.prismaType, factor, region, country),
   );
+  if (jurisdictionMatches.length === 0) {
+    return { status: 'Missing Factor', factor: null };
+  }
 
-  return jurisdictionMatches.length > 0 ? 'Matched' : 'Missing Factor';
+  const selectedFactor = selectFactorForRecordYear(
+    jurisdictionMatches,
+    input.recordYear,
+  );
+
+  return selectedFactor
+    ? { status: 'Matched', factor: toMatchedFactor(selectedFactor) }
+    : { status: 'Missing Factor', factor: null };
 }
 
 function validateNormalizedFields(input: {
@@ -394,10 +458,6 @@ function normalizeAmount(value: unknown): number | null {
   return null;
 }
 
-function factorYearMatches(factorYear?: number | null, recordYear?: number | null) {
-  return !factorYear || !recordYear || Number(factorYear) === Number(recordYear);
-}
-
 function jurisdictionCompatible(
   activityType: ActivityType | undefined,
   factor: FactorCandidate,
@@ -422,6 +482,72 @@ function jurisdictionCompatible(
   );
 }
 
+function selectFactorForRecordYear(
+  factors: FactorCandidate[],
+  recordYear: number | null,
+) {
+  const withYears = factors
+    .map((factor) => ({
+      factor,
+      year: Number(factor.sourceYear ?? factor.factorYear),
+    }))
+    .filter((item) => Number.isFinite(item.year));
+
+  if (recordYear) {
+    const exact = withYears
+      .filter((item) => item.year === recordYear)
+      .sort((a, b) => compareFactorCandidates(a.factor, b.factor))[0];
+    if (exact) return exact.factor;
+
+    const prior = withYears
+      .filter((item) => item.year <= recordYear)
+      .sort((a, b) => b.year - a.year || compareFactorCandidates(a.factor, b.factor))[0];
+    if (prior) return prior.factor;
+
+    return null;
+  }
+
+  const latest = withYears.sort(
+    (a, b) => b.year - a.year || compareFactorCandidates(a.factor, b.factor),
+  )[0];
+  return latest?.factor ?? factors.sort(compareFactorCandidates)[0] ?? null;
+}
+
+function compareFactorCandidates(a: FactorCandidate, b: FactorCandidate) {
+  return String(a.name ?? a.id ?? '').localeCompare(String(b.name ?? b.id ?? ''));
+}
+
+function toMatchedFactor(factor: FactorCandidate): JsonActivityPreviewMatchedFactor {
+  const factorValue = normalizeFactorValue(factor.factorValue ?? factor.value);
+
+  return {
+    id: factor.id ?? null,
+    name: factor.name ?? null,
+    factorValue,
+    value: factorValue,
+    unit: factor.unit ?? factor.inputUnit ?? null,
+    resultUnit: factor.resultUnit ?? null,
+    sourceYear: factor.sourceYear ?? factor.factorYear ?? null,
+    jurisdictionRegion:
+      normalizeJurisdictionRegion(
+        factor.jurisdictionRegion ?? factor.region ?? factor.jurisdiction,
+      ) ?? null,
+    jurisdictionCountry:
+      normalizeJurisdictionCountry(factor.jurisdictionCountry ?? factor.country) ??
+      null,
+  };
+}
+
+function normalizeFactorValue(value: FactorCandidate['factorValue']) {
+  if (value === null || value === undefined) return null;
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : null;
+}
+
+function round(value: number) {
+  return Math.round(value * 1000) / 1000;
+}
+
 function regionMatches(factorRegion?: string | null, recordRegion?: string | null) {
   const factor = normalizeJurisdictionRegion(factorRegion);
   const record = normalizeJurisdictionRegion(recordRegion);
@@ -430,15 +556,22 @@ function regionMatches(factorRegion?: string | null, recordRegion?: string | nul
 
 export function toJsonPreviewFactorCandidates(input: {
   legacyFactors?: Array<{
+    id?: string | null;
+    name?: string | null;
     activityType: ActivityType | null;
     unit: string;
+    factorValue?: number | string | Prisma.Decimal | null;
+    resultUnit?: string | null;
     jurisdiction: string | null;
     region: string | null;
     country: string | null;
     sourceYear: number | null;
   }>;
   governedFactors?: Array<{
+    id?: string | null;
     inputUnit: string;
+    factorValue?: number | string | Prisma.Decimal | null;
+    resultUnit?: string | null;
     jurisdictionRegion: string | null;
     jurisdictionCountry: string | null;
     factorYear: number | null;
@@ -451,8 +584,11 @@ export function toJsonPreviewFactorCandidates(input: {
         Boolean(factor.activityType),
     ),
     ...(input.governedFactors ?? []).map((factor) => ({
+      id: factor.id,
       activityType: factor.factor.activityType,
       inputUnit: factor.inputUnit,
+      factorValue: factor.factorValue,
+      resultUnit: factor.resultUnit,
       jurisdictionRegion: factor.jurisdictionRegion,
       jurisdictionCountry: factor.jurisdictionCountry,
       factorYear: factor.factorYear,
