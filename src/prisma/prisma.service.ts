@@ -24,6 +24,12 @@ export class PrismaService
       await this.$connect();
     } catch (error) {
       this.logger.error(buildDatabaseConnectionErrorMessage(error));
+      if (process.env.LOCAL_DEMO_AUTH_ENABLED === 'true') {
+        this.logger.warn(
+          'Continuing API startup with LOCAL_DEMO_AUTH_ENABLED=true. Database-backed routes may fail until DATABASE_URL is reachable.',
+        );
+        return;
+      }
       throw error;
     }
   }
@@ -73,4 +79,3 @@ function parseDatabaseUrl(value?: string) {
     return null;
   }
 }
-
