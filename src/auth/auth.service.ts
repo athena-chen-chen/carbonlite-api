@@ -1,16 +1,25 @@
 import {
+  BadRequestException,
   ConflictException,
+  ForbiddenException,
   Injectable,
   Logger,
   UnauthorizedException,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import bcrypt from 'bcryptjs';
-import { Prisma, UserRole } from '@prisma/client';
+import { createHash, randomBytes, timingSafeEqual } from 'crypto';
+import { MembershipRole, Prisma, UserRole } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { RegisterDto } from './dto/register.dto';
 import { AuditLogService } from '../audit-log/audit-log.service';
 import { ActivityTrackingService } from '../activity-tracking/activity-tracking.service';
+import { CreatePilotReviewerDto } from './dto/create-pilot-reviewer.dto';
+import { SetPasswordDto } from './dto/set-password.dto';
+import {
+  GOLDEN_SAMPLE_WORKSPACE_NAME,
+  ensureGoldenSampleDataForWorkspace,
+} from '../sample-data/golden-sample-data.service';
 
 export type AuthenticatedUser = {
   id: string;
@@ -18,6 +27,7 @@ export type AuthenticatedUser = {
   organizationId: string;
   organizationName: string;
   role: UserRole;
+  accountType?: string | null;
 };
 
 type JwtPayload = {
@@ -25,6 +35,12 @@ type JwtPayload = {
   email: string;
   organizationId: string;
 };
+
+const PILOT_REVIEWER_ACCOUNT_TYPE = 'PILOT_REVIEWER';
+const DEFAULT_PILOT_WORKSPACE_NAME = GOLDEN_SAMPLE_WORKSPACE_NAME;
+const DEFAULT_INVITE_TTL_HOURS = 48;
+const EMAIL_VALIDATION_MESSAGE =
+  'Please enter a valid email address, for example alexander@example.com.';
 
 @Injectable()
 export class AuthService {
@@ -110,6 +126,8 @@ export class AuthService {
       throw new UnauthorizedException('Invalid email or password.');
     }
 
+    this.assertAccountNotExpired(user);
+
     if (!user.organization) {
       throw new UnauthorizedException(
         'Account setup is incomplete. Please contact an administrator.',
@@ -155,6 +173,185 @@ export class AuthService {
     return { loggedOut: true };
   }
 
+  async createPilotReviewer(
+    currentUser: AuthenticatedUser,
+    dto: CreatePilotReviewerDto,
+  ) {
+    if (currentUser.role !== UserRole.ADMIN) {
+      throw new ForbiddenException(
+        'You do not have permission to create pilot reviewers.',
+      );
+    }
+
+    const email = this.normalizePilotReviewerEmail(dto.email);
+    const fullName = dto.name.trim();
+    const workspaceName =
+      dto.workspaceName?.trim() ||
+      dto.workspace?.trim() ||
+      DEFAULT_PILOT_WORKSPACE_NAME;
+    const expiresAt = dto.expiresAt || dto.expires;
+    const accountExpiresAt = expiresAt ? new Date(expiresAt) : null;
+
+    if (!fullName) {
+      throw new BadRequestException('Pilot reviewer name is required.');
+    }
+
+    if (accountExpiresAt && Number.isNaN(accountExpiresAt.getTime())) {
+      throw new BadRequestException('Pilot reviewer expiry date is invalid.');
+    }
+
+    const inviteToken = randomBytes(32).toString('base64url');
+    const inviteTokenHash = this.hashInviteToken(inviteToken);
+    const inviteExpiresAt = new Date(
+      Date.now() + DEFAULT_INVITE_TTL_HOURS * 60 * 60 * 1000,
+    );
+    const { firstName, lastName } = this.splitName(fullName);
+
+    const result = await this.prisma.$transaction(async (tx) => {
+      const workspace = dto.workspaceId
+        ? await tx.organization.findUnique({ where: { id: dto.workspaceId } })
+        : await this.findOrCreatePilotWorkspace(tx, workspaceName);
+
+      if (!workspace) {
+        throw new BadRequestException('Selected workspace was not found.');
+      }
+
+      const existingUser = await tx.user.findUnique({ where: { email } });
+      if (existingUser?.role === UserRole.ADMIN) {
+        throw new ConflictException(
+          'Admin accounts cannot be converted into pilot reviewers.',
+        );
+      }
+
+      const user = existingUser
+        ? await tx.user.update({
+            where: { id: existingUser.id },
+            data: {
+              organizationId: workspace.id,
+              firstName,
+              lastName,
+              role: UserRole.USER,
+              accountType: PILOT_REVIEWER_ACCOUNT_TYPE,
+              accountExpiresAt,
+              passwordHash: null,
+              passwordSetupRequired: true,
+              passwordSetupTokenHash: inviteTokenHash,
+              passwordSetupTokenExpiresAt: inviteExpiresAt,
+              passwordSetupTokenUsedAt: null,
+              isActive: true,
+            },
+          })
+        : await tx.user.create({
+            data: {
+              organizationId: workspace.id,
+              email,
+              firstName,
+              lastName,
+              role: UserRole.USER,
+              accountType: PILOT_REVIEWER_ACCOUNT_TYPE,
+              accountExpiresAt,
+              passwordSetupRequired: true,
+              passwordSetupTokenHash: inviteTokenHash,
+              passwordSetupTokenExpiresAt: inviteExpiresAt,
+              isActive: true,
+            },
+          });
+
+      await tx.membership.deleteMany({ where: { userId: user.id } });
+      await tx.membership.create({
+        data: {
+          userId: user.id,
+          organizationId: workspace.id,
+          role: MembershipRole.VIEWER,
+        },
+      });
+
+      await ensureGoldenSampleDataForWorkspace(tx, workspace.id, {
+        createdById: user.id,
+      });
+
+      return { user, workspace };
+    });
+
+    return {
+      success: true,
+      pilotReviewer: {
+        name: this.formatUserName(result.user.firstName, result.user.lastName),
+        email: result.user.email,
+        accountType: PILOT_REVIEWER_ACCOUNT_TYPE,
+        role: MembershipRole.VIEWER,
+        workspaceName: result.workspace.name,
+        expiresAt: result.user.accountExpiresAt?.toISOString() ?? null,
+      },
+      inviteLink: this.buildInviteLink(inviteToken),
+    };
+  }
+
+  async authenticatePilotReviewerCreator(
+    authorizationHeader?: string,
+  ): Promise<AuthenticatedUser> {
+    const token = this.extractBearerToken(authorizationHeader);
+    if (!token) {
+      throw new UnauthorizedException(
+        'Admin authentication or ADMIN_SCRIPT_TOKEN is required.',
+      );
+    }
+
+    if (this.isValidAdminScriptToken(token)) {
+      return {
+        id: 'admin-script',
+        email: 'admin-script@carbonlite.local',
+        organizationId: 'admin-script',
+        organizationName: 'CarbonLite Admin Script',
+        role: UserRole.ADMIN,
+      };
+    }
+
+    try {
+      const payload = await this.jwt.verifyAsync<JwtPayload>(token);
+      return this.validateJwtPayload(payload);
+    } catch {
+      throw new UnauthorizedException(
+        'Script is not authorized to create pilot reviewers. Check ADMIN_SCRIPT_TOKEN or admin authentication.',
+      );
+    }
+  }
+
+  async setPasswordFromInvite(dto: SetPasswordDto) {
+    const tokenHash = this.hashInviteToken(dto.token);
+    const now = new Date();
+
+    const user = await this.prisma.user.findFirst({
+      where: {
+        passwordSetupTokenHash: tokenHash,
+        passwordSetupTokenUsedAt: null,
+        passwordSetupTokenExpiresAt: { gt: now },
+        isActive: true,
+      },
+      include: { organization: true },
+    });
+
+    if (!user) {
+      throw new UnauthorizedException('Invite link is invalid or expired.');
+    }
+
+    this.assertAccountNotExpired(user);
+
+    const passwordHash = await bcrypt.hash(dto.password, 10);
+    const updatedUser = await this.prisma.user.update({
+      where: { id: user.id },
+      data: {
+        passwordHash,
+        passwordSetupRequired: false,
+        passwordSetupTokenHash: null,
+        passwordSetupTokenUsedAt: now,
+      },
+      include: { organization: true },
+    });
+
+    return this.buildAuthResponse(updatedUser);
+  }
+
   async validateJwtPayload(payload: JwtPayload): Promise<AuthenticatedUser> {
     const user = await this.prisma.user.findFirst({
       where: {
@@ -169,12 +366,15 @@ export class AuthService {
       throw new UnauthorizedException('Unauthorized request.');
     }
 
+    this.assertAccountNotExpired(user);
+
     return this.toSafeUser(user);
   }
 
   private async buildAuthResponse(
     user: Prisma.UserGetPayload<{ include: { organization: true } }>,
   ) {
+    await this.ensurePilotReviewerSampleData(user);
     const safeUser = this.toSafeUser(user);
 
     return {
@@ -185,6 +385,21 @@ export class AuthService {
       } satisfies JwtPayload),
       user: safeUser,
     };
+  }
+
+  private async ensurePilotReviewerSampleData(
+    user: Prisma.UserGetPayload<{ include: { organization: true } }>,
+  ) {
+    if (
+      user.accountType !== PILOT_REVIEWER_ACCOUNT_TYPE ||
+      user.organization?.name !== GOLDEN_SAMPLE_WORKSPACE_NAME
+    ) {
+      return;
+    }
+
+    await ensureGoldenSampleDataForWorkspace(this.prisma, user.organizationId, {
+      createdById: user.id,
+    });
   }
 
   private toSafeUser(
@@ -202,6 +417,7 @@ export class AuthService {
       organizationId: user.organizationId,
       organizationName: user.organization.name,
       role: user.role,
+      accountType: user.accountType,
     };
   }
 
@@ -225,6 +441,90 @@ export class AuthService {
     }
 
     return slug;
+  }
+
+  private async findOrCreatePilotWorkspace(
+    tx: Prisma.TransactionClient,
+    workspaceName: string,
+  ) {
+    const existing = await tx.organization.findFirst({
+      where: { name: workspaceName },
+    });
+    if (existing) return existing;
+
+    return tx.organization.create({
+      data: {
+        name: workspaceName,
+        slug: await this.createUniqueOrganizationSlug(tx, workspaceName),
+        allowDemoFactorsForCalculations: true,
+      },
+    });
+  }
+
+  private buildInviteLink(token: string) {
+    const appUrl = (process.env.APP_URL || 'http://localhost:5173').replace(
+      /\/+$/,
+      '',
+    );
+
+    return `${appUrl}/set-password?token=${encodeURIComponent(token)}`;
+  }
+
+  private hashInviteToken(token: string) {
+    return createHash('sha256').update(token).digest('hex');
+  }
+
+  private extractBearerToken(authorizationHeader?: string) {
+    const [scheme, token] = String(authorizationHeader ?? '').split(/\s+/);
+    if (scheme?.toLowerCase() !== 'bearer' || !token) return '';
+    return token.trim();
+  }
+
+  private isValidAdminScriptToken(token: string) {
+    const expectedToken = String(
+      process.env.ADMIN_SCRIPT_TOKEN ||
+        process.env.ADMIN_API_TOKEN ||
+        process.env.CARBONLITE_ADMIN_TOKEN ||
+        '',
+    ).trim();
+    if (!expectedToken) return false;
+
+    const tokenBuffer = Buffer.from(token);
+    const expectedBuffer = Buffer.from(expectedToken);
+    return (
+      tokenBuffer.length === expectedBuffer.length &&
+      timingSafeEqual(tokenBuffer, expectedBuffer)
+    );
+  }
+
+  private splitName(name: string) {
+    const [firstName, ...rest] = name.trim().split(/\s+/);
+    return {
+      firstName,
+      lastName: rest.length ? rest.join(' ') : null,
+    };
+  }
+
+  private formatUserName(firstName?: string | null, lastName?: string | null) {
+    return [firstName, lastName].filter(Boolean).join(' ').trim();
+  }
+
+  private normalizePilotReviewerEmail(email: string) {
+    const normalized = String(email ?? '').trim().toLowerCase();
+    if (
+      /[\[\]()]|mailto:/i.test(normalized) ||
+      !/^[^\s@()[\]]+@[^\s@()[\]]+\.[^\s@()[\]]+$/.test(normalized)
+    ) {
+      throw new BadRequestException(EMAIL_VALIDATION_MESSAGE);
+    }
+
+    return normalized;
+  }
+
+  private assertAccountNotExpired(user: { accountExpiresAt?: Date | null }) {
+    if (user.accountExpiresAt && user.accountExpiresAt <= new Date()) {
+      throw new UnauthorizedException('Account access has expired.');
+    }
   }
 
   private async tryLocalDemoLogin(email: string, password: string) {
