@@ -1,7 +1,7 @@
 import { IsDateString, IsEmail, IsOptional, IsString, Matches, MinLength } from 'class-validator';
 
 const EMAIL_VALIDATION_MESSAGE =
-  'Please enter a valid email address, for example alexander@example.com.';
+  'Please enter a valid email address, for example name@example.com.';
 
 export class CreatePilotReviewerDto {
   @IsString()
@@ -9,7 +9,7 @@ export class CreatePilotReviewerDto {
   name!: string;
 
   @IsEmail({}, { message: EMAIL_VALIDATION_MESSAGE })
-  @Matches(/^(?!.*mailto:)[^\s@()[\]]+@[^\s@()[\]]+\.[^\s@()[\]]+$/i, {
+  @Matches(/^(?!.*mailto:)[^\s@()[\]"']+@[^\s@()[\]"']+\.[^\s@()[\]"']+$/i, {
     message: EMAIL_VALIDATION_MESSAGE,
   })
   email!: string;

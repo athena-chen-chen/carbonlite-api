@@ -46,7 +46,7 @@ const PILOT_REVIEWER_ACCOUNT_TYPE = 'PILOT_REVIEWER';
 const DEFAULT_PILOT_WORKSPACE_NAME = GOLDEN_SAMPLE_WORKSPACE_NAME;
 const DEFAULT_INVITE_TTL_HOURS = 48;
 const EMAIL_VALIDATION_MESSAGE =
-  'Please enter a valid email address, for example alexander@example.com.';
+  'Please enter a valid email address, for example name@example.com.';
 
 @Injectable()
 export class AuthService {
@@ -540,8 +540,8 @@ export class AuthService {
   private normalizePilotReviewerEmail(email: string) {
     const normalized = String(email ?? '').trim().toLowerCase();
     if (
-      /[\[\]()]|mailto:/i.test(normalized) ||
-      !/^[^\s@()[\]]+@[^\s@()[\]]+\.[^\s@()[\]]+$/.test(normalized)
+      /[\[\]()"']|mailto:/i.test(normalized) ||
+      !/^[^\s@()[\]"']+@[^\s@()[\]"']+\.[^\s@()[\]"']+$/.test(normalized)
     ) {
       throw new BadRequestException(EMAIL_VALIDATION_MESSAGE);
     }

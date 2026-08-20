@@ -236,7 +236,7 @@ describe('AuthService login resilience', () => {
       },
       {
         name: 'Test Reviewer',
-        email: 'Reviewer@Example.com',
+        email: '  Reviewer@Example.com  ',
       },
     );
 
@@ -402,23 +402,34 @@ describe('AuthService login resilience', () => {
   });
 
   it('rejects markdown mailto pilot reviewer emails before persistence', async () => {
-    await expect(
-      service.createPilotReviewer(
-        {
-          id: 'admin-1',
-          email: 'admin@example.com',
-          organizationId: 'admin-org',
-          organizationName: 'Admin Org',
-          role: UserRole.ADMIN,
-        },
-        {
-          name: 'Test Reviewer',
-          email: '[alexander@example.com](mailto:alexander@example.com)',
-        },
-      ),
-    ).rejects.toThrow(
-      'Please enter a valid email address, for example alexander@example.com.',
-    );
+    const invalidEmails = [
+      '[mint_pp@hotmail.com](mailto:mint_pp@hotmail.com)',
+      'mailto:mint_pp@hotmail.com',
+      'mint pp@hotmail.com',
+      '"mint_pp@hotmail.com"',
+      '(mint_pp@hotmail.com)',
+      '[mint_pp@hotmail.com]',
+    ];
+
+    for (const invalidEmail of invalidEmails) {
+      await expect(
+        service.createPilotReviewer(
+          {
+            id: 'admin-1',
+            email: 'admin@example.com',
+            organizationId: 'admin-org',
+            organizationName: 'Admin Org',
+            role: UserRole.ADMIN,
+          },
+          {
+            name: 'Test Reviewer',
+            email: invalidEmail,
+          },
+        ),
+      ).rejects.toThrow(
+        'Please enter a valid email address, for example name@example.com.',
+      );
+    }
 
     expect(prisma.$transaction).not.toHaveBeenCalled();
   });

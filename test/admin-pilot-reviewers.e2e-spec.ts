@@ -243,7 +243,7 @@ describe('Admin pilot reviewers (e2e)', () => {
       data: { role: 'ADMIN' },
     });
     const adminToken = await loginAndGetToken(app, admin.user.email, admin.password);
-    const malformedEmail = '[alexander@example.com](mailto:alexander@example.com)';
+    const malformedEmail = '[mint_pp@hotmail.com](mailto:mint_pp@hotmail.com)';
 
     const response = await request(app.getHttpServer())
       .post('/api/admin/pilot-reviewers')
@@ -256,7 +256,7 @@ describe('Admin pilot reviewers (e2e)', () => {
       .expect(400);
 
     expect(JSON.stringify(response.body)).toContain(
-      'Please enter a valid email address, for example alexander@example.com.',
+      'Please enter a valid email address, for example name@example.com.',
     );
     await expect(
       prisma.user.findUnique({ where: { email: malformedEmail } }),
