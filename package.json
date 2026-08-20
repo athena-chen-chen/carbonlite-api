@@ -13,7 +13,8 @@
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "seed": "tsx prisma/seed.ts",
-    "seed:sample-workspace": "tsx scripts/seed-sample-workspace.ts"
+    "seed:sample-workspace": "tsx scripts/seed-sample-workspace.ts",
+    "reset:user-password": "node scripts/reset-user-password.mjs"
   },
   "dependencies": {
     "@nestjs/common": "^11.1.6",
