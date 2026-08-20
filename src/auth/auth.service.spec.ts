@@ -336,12 +336,48 @@ describe('AuthService login resilience', () => {
         id: 'admin-org',
         name: 'Admin Org',
       },
+      memberships: [],
     });
 
     await expect(
       service.authenticatePilotReviewerCreator('Bearer admin-jwt'),
     ).resolves.toMatchObject({
       id: 'admin-1',
+      role: UserRole.ADMIN,
+      organizationName: 'Admin Org',
+    });
+  });
+
+  it('authenticates pilot reviewer creation with an admin membership JWT', async () => {
+    jwt.verifyAsync.mockResolvedValue({
+      sub: 'membership-admin-1',
+      email: 'membership-admin@example.com',
+      organizationId: 'admin-org',
+    });
+    prisma.user.findFirst.mockResolvedValue({
+      id: 'membership-admin-1',
+      email: 'membership-admin@example.com',
+      organizationId: 'admin-org',
+      role: UserRole.USER,
+      isActive: true,
+      organization: {
+        id: 'admin-org',
+        name: 'Admin Org',
+      },
+      memberships: [
+        {
+          id: 'membership-1',
+          userId: 'membership-admin-1',
+          organizationId: 'admin-org',
+          role: MembershipRole.ADMIN,
+        },
+      ],
+    });
+
+    await expect(
+      service.authenticatePilotReviewerCreator('Bearer admin-membership-jwt'),
+    ).resolves.toMatchObject({
+      id: 'membership-admin-1',
       role: UserRole.ADMIN,
       organizationName: 'Admin Org',
     });

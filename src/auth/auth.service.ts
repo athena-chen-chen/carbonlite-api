@@ -36,6 +36,12 @@ type JwtPayload = {
   organizationId: string;
 };
 
+type SafeUserSource = Prisma.UserGetPayload<{
+  include: { organization: true };
+}> & {
+  memberships?: Array<{ role: MembershipRole }>;
+};
+
 const PILOT_REVIEWER_ACCOUNT_TYPE = 'PILOT_REVIEWER';
 const DEFAULT_PILOT_WORKSPACE_NAME = GOLDEN_SAMPLE_WORKSPACE_NAME;
 const DEFAULT_INVITE_TTL_HOURS = 48;
@@ -359,7 +365,13 @@ export class AuthService {
         organizationId: payload.organizationId,
         isActive: true,
       },
-      include: { organization: true },
+      include: {
+        organization: true,
+        memberships: {
+          where: { organizationId: payload.organizationId },
+          take: 1,
+        },
+      },
     });
 
     if (!user) {
@@ -402,9 +414,7 @@ export class AuthService {
     });
   }
 
-  private toSafeUser(
-    user: Prisma.UserGetPayload<{ include: { organization: true } }>,
-  ): AuthenticatedUser {
+  private toSafeUser(user: SafeUserSource): AuthenticatedUser {
     if (!user.organization) {
       throw new UnauthorizedException(
         'Account setup is incomplete. Please contact an administrator.',
@@ -416,9 +426,27 @@ export class AuthService {
       email: user.email,
       organizationId: user.organizationId,
       organizationName: user.organization.name,
-      role: user.role,
+      role: this.resolveEffectiveUserRole(
+        user.role,
+        user.memberships?.[0]?.role,
+      ),
       accountType: user.accountType,
     };
+  }
+
+  private resolveEffectiveUserRole(
+    userRole: UserRole,
+    membershipRole?: MembershipRole | null,
+  ) {
+    if (
+      userRole === UserRole.ADMIN ||
+      membershipRole === MembershipRole.ADMIN ||
+      membershipRole === MembershipRole.OWNER
+    ) {
+      return UserRole.ADMIN;
+    }
+
+    return UserRole.USER;
   }
 
   private async createUniqueOrganizationSlug(
