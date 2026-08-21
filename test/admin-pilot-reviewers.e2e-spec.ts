@@ -216,6 +216,72 @@ describe('Admin pilot reviewers (e2e)', () => {
     expect(response.body.inviteLink).toEqual(expect.any(String));
   });
 
+  it('regenerates a pilot reviewer invite link for admins', async () => {
+    const admin = await createTestUser(app, {
+      organizationName: `${testRunId} Regenerate Admin Org`,
+      email: `regenerate-admin-${testRunId}@carbonlite-e2e.test`,
+    });
+    await prisma.user.update({
+      where: { id: admin.user.id },
+      data: { role: 'ADMIN' },
+    });
+    const adminToken = await loginAndGetToken(app, admin.user.email, admin.password);
+    const reviewerEmail = `regenerate-reviewer-${testRunId}@carbonlite-e2e.test`;
+
+    const createResponse = await request(app.getHttpServer())
+      .post('/api/admin/pilot-reviewers')
+      .set(authHeader(adminToken))
+      .send({
+        name: 'Regenerate Reviewer',
+        email: reviewerEmail,
+        workspace: `${testRunId} Regenerate Sample Workspace`,
+      })
+      .expect(201);
+    const beforeReviewer = await prisma.user.findUniqueOrThrow({
+      where: { email: reviewerEmail },
+    });
+
+    const response = await request(app.getHttpServer())
+      .post('/api/admin/pilot-reviewers/regenerate-invite')
+      .set(authHeader(adminToken))
+      .send({ email: ` ${reviewerEmail.toUpperCase()} ` })
+      .expect(201);
+
+    expect(response.body).toMatchObject({
+      success: true,
+      message: 'Invite link regenerated.',
+      pilotReviewer: {
+        email: reviewerEmail,
+        accountType: 'PILOT_REVIEWER',
+        workspaceName: `${testRunId} Regenerate Sample Workspace`,
+        status: 'Active',
+      },
+    });
+    expect(response.body.inviteLink).toMatch(
+      /^http:\/\/localhost:5173\/set-password\?token=.+/,
+    );
+    expect(response.body.inviteLink).not.toBe(createResponse.body.inviteLink);
+
+    const afterReviewer = await prisma.user.findUniqueOrThrow({
+      where: { email: reviewerEmail },
+    });
+    expect(afterReviewer.organizationId).toBe(beforeReviewer.organizationId);
+    expect(afterReviewer.accountType).toBe('PILOT_REVIEWER');
+    expect(afterReviewer.role).toBe('USER');
+    expect(afterReviewer.passwordSetupTokenHash).not.toBe(
+      beforeReviewer.passwordSetupTokenHash,
+    );
+
+    await request(app.getHttpServer())
+      .post('/api/admin/pilot-reviewers/regenerate-invite')
+      .set(authHeader((await createTestUser(app, {
+        organizationName: `${testRunId} Regenerate Member Org`,
+        email: `regenerate-member-${testRunId}@carbonlite-e2e.test`,
+      })).accessToken))
+      .send({ email: reviewerEmail })
+      .expect(403);
+  });
+
   it('rejects non-admin pilot reviewer creation', async () => {
     const member = await createTestUser(app, {
       organizationName: `${testRunId} Member Org`,
@@ -231,6 +297,63 @@ describe('Admin pilot reviewers (e2e)', () => {
         workspace: `${testRunId} Blocked Sample Workspace`,
       })
       .expect(403);
+  });
+
+  it('deactivates a pilot reviewer without deleting sample workspace data', async () => {
+    const admin = await createTestUser(app, {
+      organizationName: `${testRunId} Deactivate Admin Org`,
+      email: `deactivate-admin-${testRunId}@carbonlite-e2e.test`,
+    });
+    await prisma.user.update({
+      where: { id: admin.user.id },
+      data: { role: 'ADMIN' },
+    });
+    const adminToken = await loginAndGetToken(app, admin.user.email, admin.password);
+    const reviewerEmail = `deactivate-reviewer-${testRunId}@carbonlite-e2e.test`;
+
+    const createResponse = await request(app.getHttpServer())
+      .post('/api/admin/pilot-reviewers')
+      .set(authHeader(adminToken))
+      .send({
+        name: 'Deactivate Reviewer',
+        email: reviewerEmail,
+        workspace: `${testRunId} Deactivate Sample Workspace`,
+      })
+      .expect(201);
+
+    const reviewer = await prisma.user.findUniqueOrThrow({
+      where: { email: reviewerEmail },
+    });
+    await expect(
+      prisma.activityData.count({ where: { organizationId: reviewer.organizationId } }),
+    ).resolves.toBe(10);
+
+    const response = await request(app.getHttpServer())
+      .post('/api/admin/pilot-reviewers/deactivate')
+      .set(authHeader(adminToken))
+      .send({ email: ` ${reviewerEmail.toUpperCase()} ` })
+      .expect(201);
+
+    expect(response.body).toMatchObject({
+      success: true,
+      message: 'This pilot reviewer account has been deactivated.',
+      pilotReviewer: {
+        email: reviewerEmail,
+        status: 'Deactivated',
+      },
+    });
+    await expect(
+      prisma.user.findUnique({ where: { email: reviewerEmail } }),
+    ).resolves.toMatchObject({ isActive: false });
+    await expect(
+      prisma.activityData.count({ where: { organizationId: reviewer.organizationId } }),
+    ).resolves.toBe(10);
+
+    const inviteToken = new URL(createResponse.body.inviteLink).searchParams.get('token');
+    await request(app.getHttpServer())
+      .post('/api/auth/password-reset/confirm')
+      .send({ token: inviteToken, password: 'password123' })
+      .expect(401);
   });
 
   it('rejects markdown mailto email values without creating a user', async () => {

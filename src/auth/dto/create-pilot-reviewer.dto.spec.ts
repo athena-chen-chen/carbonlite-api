@@ -25,6 +25,7 @@ describe('CreatePilotReviewerDto', () => {
     '"alexander@example.com"',
     '(alexander@example.com)',
     '[alexander@example.com]',
+    'alexander@gamil.com',
   ])('rejects unsafe email value %s', async (email) => {
     const errors = await validate(buildDto(email));
 

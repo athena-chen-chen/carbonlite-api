@@ -15,6 +15,8 @@ import { RegisterDto } from './dto/register.dto';
 import { AuditLogService } from '../audit-log/audit-log.service';
 import { ActivityTrackingService } from '../activity-tracking/activity-tracking.service';
 import { CreatePilotReviewerDto } from './dto/create-pilot-reviewer.dto';
+import { DeactivatePilotReviewerDto } from './dto/deactivate-pilot-reviewer.dto';
+import { RegeneratePilotReviewerInviteDto } from './dto/regenerate-pilot-reviewer-invite.dto';
 import { SetPasswordDto } from './dto/set-password.dto';
 import {
   GOLDEN_SAMPLE_WORKSPACE_NAME,
@@ -47,6 +49,13 @@ const DEFAULT_PILOT_WORKSPACE_NAME = GOLDEN_SAMPLE_WORKSPACE_NAME;
 const DEFAULT_INVITE_TTL_HOURS = 48;
 const EMAIL_VALIDATION_MESSAGE =
   'Please enter a valid email address, for example name@example.com.';
+const INVALID_LOGIN_MESSAGE = 'The email or password is incorrect.';
+const EXPIRED_INVITE_MESSAGE =
+  'This invite link has expired. Please contact hello@carbonliteapp.ca for a new link.';
+const USED_INVITE_MESSAGE =
+  'This invite link has already been used. Please log in or contact hello@carbonliteapp.ca.';
+const DEACTIVATED_ACCOUNT_MESSAGE =
+  'This account has been deactivated. Please contact hello@carbonliteapp.ca.';
 
 @Injectable()
 export class AuthService {
@@ -128,8 +137,12 @@ export class AuthService {
       throw error;
     }
 
+    if (user && !user.isActive) {
+      throw new UnauthorizedException(DEACTIVATED_ACCOUNT_MESSAGE);
+    }
+
     if (!user || !user.passwordHash || !user.isActive) {
-      throw new UnauthorizedException('Invalid email or password.');
+      throw new UnauthorizedException(INVALID_LOGIN_MESSAGE);
     }
 
     this.assertAccountNotExpired(user);
@@ -142,7 +155,7 @@ export class AuthService {
 
     const passwordMatches = await bcrypt.compare(password, user.passwordHash);
     if (!passwordMatches) {
-      throw new UnauthorizedException('Invalid email or password.');
+      throw new UnauthorizedException(INVALID_LOGIN_MESSAGE);
     }
 
     await this.prisma.user.update({
@@ -206,6 +219,7 @@ export class AuthService {
       throw new BadRequestException('Pilot reviewer expiry date is invalid.');
     }
 
+    const inviteFrontendUrl = this.resolveInviteFrontendUrl();
     const inviteToken = randomBytes(32).toString('base64url');
     const inviteTokenHash = this.hashInviteToken(inviteToken);
     const inviteExpiresAt = new Date(
@@ -288,8 +302,135 @@ export class AuthService {
         role: MembershipRole.VIEWER,
         workspaceName: result.workspace.name,
         expiresAt: result.user.accountExpiresAt?.toISOString() ?? null,
+        status: this.getPilotReviewerStatus(result.user),
       },
-      inviteLink: this.buildInviteLink(inviteToken),
+      inviteLink: this.buildInviteLink(inviteFrontendUrl, inviteToken),
+    };
+  }
+
+  async deactivatePilotReviewer(
+    currentUser: AuthenticatedUser,
+    dto: DeactivatePilotReviewerDto,
+  ) {
+    if (currentUser.role !== UserRole.ADMIN) {
+      throw new ForbiddenException(
+        'You do not have permission to deactivate pilot reviewers.',
+      );
+    }
+
+    const email = this.normalizePilotReviewerEmail(dto.email);
+    const existingUser = await this.prisma.user.findUnique({
+      where: { email },
+      include: { organization: true },
+    });
+
+    if (!existingUser) {
+      throw new BadRequestException('Pilot reviewer account was not found.');
+    }
+
+    if (existingUser.role === UserRole.ADMIN) {
+      throw new ConflictException('Admin accounts cannot be deactivated here.');
+    }
+
+    if (existingUser.accountType !== PILOT_REVIEWER_ACCOUNT_TYPE) {
+      throw new BadRequestException('Only pilot reviewer accounts can be deactivated here.');
+    }
+
+    const updatedUser = await this.prisma.user.update({
+      where: { id: existingUser.id },
+      data: {
+        isActive: false,
+        passwordSetupTokenHash: null,
+        passwordSetupTokenExpiresAt: null,
+        passwordSetupTokenUsedAt: null,
+      },
+      include: { organization: true },
+    });
+
+    return {
+      success: true,
+      message: 'This pilot reviewer account has been deactivated.',
+      pilotReviewer: {
+        name: this.formatUserName(updatedUser.firstName, updatedUser.lastName),
+        email: updatedUser.email,
+        accountType: updatedUser.accountType,
+        role: MembershipRole.VIEWER,
+        workspaceName: updatedUser.organization?.name,
+        expiresAt: updatedUser.accountExpiresAt?.toISOString() ?? null,
+        status: this.getPilotReviewerStatus(updatedUser),
+      },
+    };
+  }
+
+  async regeneratePilotReviewerInvite(
+    currentUser: AuthenticatedUser,
+    dto: RegeneratePilotReviewerInviteDto,
+  ) {
+    if (currentUser.role !== UserRole.ADMIN) {
+      throw new ForbiddenException(
+        'You do not have permission to regenerate pilot reviewer invite links.',
+      );
+    }
+
+    const email = this.normalizePilotReviewerEmail(dto.email);
+    const inviteFrontendUrl = this.resolveInviteFrontendUrl();
+    const existingUser = await this.prisma.user.findUnique({
+      where: { email },
+      include: { organization: true },
+    });
+
+    if (!existingUser) {
+      throw new BadRequestException('Pilot reviewer account was not found.');
+    }
+
+    if (existingUser.role === UserRole.ADMIN) {
+      throw new ConflictException(
+        'Admin accounts cannot receive pilot reviewer invite links.',
+      );
+    }
+
+    if (existingUser.accountType !== PILOT_REVIEWER_ACCOUNT_TYPE) {
+      throw new BadRequestException(
+        'Only pilot reviewer accounts can receive regenerated invite links.',
+      );
+    }
+
+    if (this.getPilotReviewerStatus(existingUser) !== 'Active') {
+      throw new BadRequestException(
+        'Only active pilot reviewer accounts can receive regenerated invite links.',
+      );
+    }
+
+    const inviteToken = randomBytes(32).toString('base64url');
+    const inviteTokenHash = this.hashInviteToken(inviteToken);
+    const inviteExpiresAt = new Date(
+      Date.now() + DEFAULT_INVITE_TTL_HOURS * 60 * 60 * 1000,
+    );
+
+    const updatedUser = await this.prisma.user.update({
+      where: { id: existingUser.id },
+      data: {
+        passwordSetupRequired: true,
+        passwordSetupTokenHash: inviteTokenHash,
+        passwordSetupTokenExpiresAt: inviteExpiresAt,
+        passwordSetupTokenUsedAt: null,
+      },
+      include: { organization: true },
+    });
+
+    return {
+      success: true,
+      message: 'Invite link regenerated.',
+      pilotReviewer: {
+        name: this.formatUserName(updatedUser.firstName, updatedUser.lastName),
+        email: updatedUser.email,
+        accountType: updatedUser.accountType,
+        role: MembershipRole.VIEWER,
+        workspaceName: updatedUser.organization?.name,
+        expiresAt: updatedUser.accountExpiresAt?.toISOString() ?? null,
+        status: this.getPilotReviewerStatus(updatedUser),
+      },
+      inviteLink: this.buildInviteLink(inviteFrontendUrl, inviteToken),
     };
   }
 
@@ -324,21 +465,35 @@ export class AuthService {
   }
 
   async setPasswordFromInvite(dto: SetPasswordDto) {
-    const tokenHash = this.hashInviteToken(dto.token);
+    const token = String(dto.token ?? '').trim();
+    if (!token) {
+      throw new UnauthorizedException(EXPIRED_INVITE_MESSAGE);
+    }
+
+    const tokenHash = this.hashInviteToken(token);
     const now = new Date();
 
     const user = await this.prisma.user.findFirst({
       where: {
         passwordSetupTokenHash: tokenHash,
-        passwordSetupTokenUsedAt: null,
-        passwordSetupTokenExpiresAt: { gt: now },
-        isActive: true,
       },
       include: { organization: true },
     });
 
     if (!user) {
-      throw new UnauthorizedException('Invite link is invalid or expired.');
+      throw new UnauthorizedException(EXPIRED_INVITE_MESSAGE);
+    }
+
+    if (user.passwordSetupTokenUsedAt) {
+      throw new UnauthorizedException(USED_INVITE_MESSAGE);
+    }
+
+    if (
+      !user.isActive ||
+      !user.passwordSetupTokenExpiresAt ||
+      user.passwordSetupTokenExpiresAt <= now
+    ) {
+      throw new UnauthorizedException(EXPIRED_INVITE_MESSAGE);
     }
 
     this.assertAccountNotExpired(user);
@@ -349,7 +504,6 @@ export class AuthService {
       data: {
         passwordHash,
         passwordSetupRequired: false,
-        passwordSetupTokenHash: null,
         passwordSetupTokenUsedAt: now,
       },
       include: { organization: true },
@@ -489,13 +643,36 @@ export class AuthService {
     });
   }
 
-  private buildInviteLink(token: string) {
-    const appUrl = (process.env.APP_URL || 'http://localhost:5173').replace(
-      /\/+$/,
-      '',
-    );
+  private resolveInviteFrontendUrl() {
+    const configuredUrl = String(
+      process.env.FRONTEND_URL || process.env.APP_URL || '',
+    ).trim();
+    const appEnv = String(process.env.APP_ENV || process.env.NODE_ENV || '')
+      .trim()
+      .toLowerCase();
+    const isProduction = appEnv === 'production';
+    const appUrl = (configuredUrl || 'http://localhost:5173').replace(/\/+$/, '');
 
+    if (isProduction && (!configuredUrl || this.isLocalhostUrl(appUrl))) {
+      throw new BadRequestException(
+        'Production frontend URL is not configured correctly. Please set FRONTEND_URL to https://www.carbonliteapp.ca.',
+      );
+    }
+
+    return appUrl;
+  }
+
+  private buildInviteLink(appUrl: string, token: string) {
     return `${appUrl}/set-password?token=${encodeURIComponent(token)}`;
+  }
+
+  private isLocalhostUrl(value: string) {
+    try {
+      const url = new URL(value);
+      return ['localhost', '127.0.0.1', '::1'].includes(url.hostname);
+    } catch {
+      return /\blocalhost\b|127\.0\.0\.1|\[::1\]/i.test(value);
+    }
   }
 
   private hashInviteToken(token: string) {
@@ -541,12 +718,30 @@ export class AuthService {
     const normalized = String(email ?? '').trim().toLowerCase();
     if (
       /[\[\]()"']|mailto:/i.test(normalized) ||
-      !/^[^\s@()[\]"']+@[^\s@()[\]"']+\.[^\s@()[\]"']+$/.test(normalized)
+      !/^[^\s@()[\]"']+@[^\s@()[\]"']+\.[^\s@()[\]"']+$/.test(normalized) ||
+      this.isKnownEmailDomainTypo(normalized)
     ) {
       throw new BadRequestException(EMAIL_VALIDATION_MESSAGE);
     }
 
     return normalized;
+  }
+
+  private isKnownEmailDomainTypo(email: string) {
+    const domain = email.split('@')[1] ?? '';
+    return ['gamil.com', 'gmai.com', 'gmial.com'].includes(domain);
+  }
+
+  private getPilotReviewerStatus(user: {
+    isActive: boolean;
+    accountExpiresAt?: Date | null;
+  }) {
+    if (!user.isActive) return 'Deactivated';
+    if (user.accountExpiresAt && user.accountExpiresAt <= new Date()) {
+      return 'Expired';
+    }
+
+    return 'Active';
   }
 
   private assertAccountNotExpired(user: { accountExpiresAt?: Date | null }) {
@@ -565,11 +760,11 @@ export class AuthService {
     const localPassword = process.env.LOCAL_DEMO_PASSWORD;
 
     if (!localPassword || !allowedEmails.includes(email)) {
-      throw new UnauthorizedException('Invalid email or password.');
+      throw new UnauthorizedException(INVALID_LOGIN_MESSAGE);
     }
 
     if (password !== localPassword) {
-      throw new UnauthorizedException('Invalid email or password.');
+      throw new UnauthorizedException(INVALID_LOGIN_MESSAGE);
     }
 
     const user: AuthenticatedUser = {

@@ -1,4 +1,9 @@
-import { ForbiddenException, UnauthorizedException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  ForbiddenException,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { MembershipRole, UserRole } from '@prisma/client';
 import bcrypt from 'bcryptjs';
 import { AuthService } from './auth.service';
@@ -198,6 +203,7 @@ describe('AuthService login resilience', () => {
       firstName: 'Test',
       lastName: 'Reviewer',
       accountExpiresAt: null,
+      isActive: true,
     };
     const tx = {
       organization: {
@@ -249,6 +255,7 @@ describe('AuthService login resilience', () => {
         role: MembershipRole.VIEWER,
         workspaceName: 'CarbonLite Sample Workspace',
         expiresAt: null,
+        status: 'Active',
       },
     });
     expect(result.inviteLink).toMatch(
@@ -304,6 +311,119 @@ describe('AuthService login resilience', () => {
         status: 'GENERATED',
       }),
     });
+  });
+
+  it('uses FRONTEND_URL for production pilot reviewer invite links', async () => {
+    process.env.APP_ENV = 'production';
+    process.env.FRONTEND_URL = 'https://www.carbonliteapp.ca';
+    process.env.APP_URL = 'http://localhost:5173';
+    const workspace = {
+      id: 'sample-workspace',
+      name: 'CarbonLite Sample Workspace',
+    };
+    const createdUser = {
+      id: 'reviewer-1',
+      email: 'reviewer@example.com',
+      firstName: 'Test',
+      lastName: 'Reviewer',
+      accountExpiresAt: null,
+      isActive: true,
+    };
+    const tx = {
+      organization: {
+        findFirst: jest.fn().mockResolvedValue(workspace),
+        findUnique: jest.fn(),
+        create: jest.fn(),
+        findUniqueOrThrow: jest.fn(),
+      },
+      user: {
+        findUnique: jest.fn().mockResolvedValue(null),
+        create: jest.fn().mockResolvedValue(createdUser),
+        update: jest.fn(),
+      },
+      membership: {
+        deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
+        create: jest.fn().mockResolvedValue({}),
+      },
+      activityData: {
+        count: jest.fn().mockResolvedValue(0),
+        createMany: jest.fn().mockResolvedValue({ count: 10 }),
+      },
+      report: {
+        count: jest.fn().mockResolvedValue(0),
+        create: jest.fn().mockResolvedValue({}),
+      },
+    };
+    prisma.$transaction.mockImplementation((callback) => callback(tx));
+
+    const result = await service.createPilotReviewer(
+      {
+        id: 'admin-1',
+        email: 'admin@example.com',
+        organizationId: 'admin-org',
+        organizationName: 'Admin Org',
+        role: UserRole.ADMIN,
+      },
+      {
+        name: 'Test Reviewer',
+        email: 'reviewer@example.com',
+      },
+    );
+
+    expect(result.inviteLink).toMatch(
+      /^https:\/\/www\.carbonliteapp\.ca\/set-password\?token=.+/,
+    );
+  });
+
+  it('does not create pilot reviewer accounts in production when frontend URL is missing', async () => {
+    process.env.APP_ENV = 'production';
+    delete process.env.FRONTEND_URL;
+    delete process.env.APP_URL;
+
+    await expect(
+      service.createPilotReviewer(
+        {
+          id: 'admin-1',
+          email: 'admin@example.com',
+          organizationId: 'admin-org',
+          organizationName: 'Admin Org',
+          role: UserRole.ADMIN,
+        },
+        {
+          name: 'Test Reviewer',
+          email: 'reviewer@example.com',
+        },
+      ),
+    ).rejects.toThrow(
+      'Production frontend URL is not configured correctly. Please set FRONTEND_URL to https://www.carbonliteapp.ca.',
+    );
+
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it('does not create pilot reviewer accounts in production when frontend URL is localhost', async () => {
+    process.env.APP_ENV = 'production';
+    process.env.FRONTEND_URL = 'http://localhost:5173';
+
+    await expect(
+      service.createPilotReviewer(
+        {
+          id: 'admin-1',
+          email: 'admin@example.com',
+          organizationId: 'admin-org',
+          organizationName: 'Admin Org',
+          role: UserRole.ADMIN,
+        },
+        {
+          name: 'Test Reviewer',
+          email: 'reviewer@example.com',
+        },
+      ),
+    ).rejects.toThrow(
+      'Production frontend URL is not configured correctly. Please set FRONTEND_URL to https://www.carbonliteapp.ca.',
+    );
+
+    expect(prisma.$transaction).not.toHaveBeenCalled();
   });
 
   it('authenticates pilot reviewer creation with ADMIN_SCRIPT_TOKEN', async () => {
@@ -409,6 +529,7 @@ describe('AuthService login resilience', () => {
       '"mint_pp@hotmail.com"',
       '(mint_pp@hotmail.com)',
       '[mint_pp@hotmail.com]',
+      'alexander@gamil.com',
     ];
 
     for (const invalidEmail of invalidEmails) {
@@ -434,6 +555,264 @@ describe('AuthService login resilience', () => {
     expect(prisma.$transaction).not.toHaveBeenCalled();
   });
 
+  it('deactivates pilot reviewer accounts without deleting workspace data', async () => {
+    prisma.user.findUnique.mockResolvedValue({
+      id: 'reviewer-1',
+      email: 'reviewer@example.com',
+      firstName: 'Test',
+      lastName: 'Reviewer',
+      role: UserRole.USER,
+      accountType: 'PILOT_REVIEWER',
+      accountExpiresAt: null,
+      isActive: true,
+      organization: {
+        id: 'sample-workspace',
+        name: 'CarbonLite Sample Workspace',
+      },
+    });
+    prisma.user.update.mockResolvedValue({
+      id: 'reviewer-1',
+      email: 'reviewer@example.com',
+      firstName: 'Test',
+      lastName: 'Reviewer',
+      role: UserRole.USER,
+      accountType: 'PILOT_REVIEWER',
+      accountExpiresAt: null,
+      isActive: false,
+      organization: {
+        id: 'sample-workspace',
+        name: 'CarbonLite Sample Workspace',
+      },
+    });
+
+    await expect(
+      service.deactivatePilotReviewer(
+        {
+          id: 'admin-1',
+          email: 'admin@example.com',
+          organizationId: 'admin-org',
+          organizationName: 'Admin Org',
+          role: UserRole.ADMIN,
+        },
+        { email: ' Reviewer@Example.com ' },
+      ),
+    ).resolves.toMatchObject({
+      success: true,
+      message: 'This pilot reviewer account has been deactivated.',
+      pilotReviewer: {
+        email: 'reviewer@example.com',
+        status: 'Deactivated',
+      },
+    });
+
+    expect(prisma.user.findUnique).toHaveBeenCalledWith({
+      where: { email: 'reviewer@example.com' },
+      include: { organization: true },
+    });
+    expect(prisma.user.update).toHaveBeenCalledWith({
+      where: { id: 'reviewer-1' },
+      data: expect.objectContaining({
+        isActive: false,
+        passwordSetupTokenHash: null,
+      }),
+      include: { organization: true },
+    });
+    expect(prisma.activityData.deleteMany).not.toHaveBeenCalled();
+    expect(prisma.report.deleteMany).not.toHaveBeenCalled();
+  });
+
+  it('regenerates invite links for active pilot reviewers without changing access', async () => {
+    process.env.APP_ENV = 'production';
+    process.env.FRONTEND_URL = 'https://www.carbonliteapp.ca';
+    prisma.user.findUnique.mockResolvedValue({
+      id: 'reviewer-1',
+      email: 'reviewer@example.com',
+      firstName: 'Test',
+      lastName: 'Reviewer',
+      role: UserRole.USER,
+      accountType: 'PILOT_REVIEWER',
+      accountExpiresAt: null,
+      isActive: true,
+      organizationId: 'sample-workspace',
+      organization: {
+        id: 'sample-workspace',
+        name: 'CarbonLite Sample Workspace',
+      },
+    });
+    prisma.user.update.mockResolvedValue({
+      id: 'reviewer-1',
+      email: 'reviewer@example.com',
+      firstName: 'Test',
+      lastName: 'Reviewer',
+      role: UserRole.USER,
+      accountType: 'PILOT_REVIEWER',
+      accountExpiresAt: null,
+      isActive: true,
+      organizationId: 'sample-workspace',
+      organization: {
+        id: 'sample-workspace',
+        name: 'CarbonLite Sample Workspace',
+      },
+    });
+
+    const result = await service.regeneratePilotReviewerInvite(
+      {
+        id: 'admin-1',
+        email: 'admin@example.com',
+        organizationId: 'admin-org',
+        organizationName: 'Admin Org',
+        role: UserRole.ADMIN,
+      },
+      { email: ' Reviewer@Example.com ' },
+    );
+
+    expect(result).toMatchObject({
+      success: true,
+      message: 'Invite link regenerated.',
+      pilotReviewer: {
+        email: 'reviewer@example.com',
+        accountType: 'PILOT_REVIEWER',
+        role: MembershipRole.VIEWER,
+        workspaceName: 'CarbonLite Sample Workspace',
+        status: 'Active',
+      },
+    });
+    expect(result.inviteLink).toMatch(
+      /^https:\/\/www\.carbonliteapp\.ca\/set-password\?token=.+/,
+    );
+    expect(result.inviteLink).not.toContain('passwordSetupTokenHash');
+    expect(prisma.user.findUnique).toHaveBeenCalledWith({
+      where: { email: 'reviewer@example.com' },
+      include: { organization: true },
+    });
+    expect(prisma.user.update).toHaveBeenCalledWith({
+      where: { id: 'reviewer-1' },
+      data: expect.objectContaining({
+        passwordSetupRequired: true,
+        passwordSetupTokenHash: expect.any(String),
+        passwordSetupTokenExpiresAt: expect.any(Date),
+        passwordSetupTokenUsedAt: null,
+      }),
+      include: { organization: true },
+    });
+    const updatedData = prisma.user.update.mock.calls[0][0].data;
+    expect(updatedData).not.toHaveProperty('role');
+    expect(updatedData).not.toHaveProperty('accountType');
+    expect(updatedData).not.toHaveProperty('organizationId');
+    expect(updatedData).not.toHaveProperty('passwordHash');
+  });
+
+  it('does not regenerate invite links for deactivated pilot reviewers', async () => {
+    process.env.FRONTEND_URL = 'http://localhost:5173';
+    prisma.user.findUnique.mockResolvedValue({
+      id: 'reviewer-1',
+      email: 'reviewer@example.com',
+      role: UserRole.USER,
+      accountType: 'PILOT_REVIEWER',
+      accountExpiresAt: null,
+      isActive: false,
+      organization: {
+        id: 'sample-workspace',
+        name: 'CarbonLite Sample Workspace',
+      },
+    });
+
+    await expect(
+      service.regeneratePilotReviewerInvite(
+        {
+          id: 'admin-1',
+          email: 'admin@example.com',
+          organizationId: 'admin-org',
+          organizationName: 'Admin Org',
+          role: UserRole.ADMIN,
+        },
+        { email: 'reviewer@example.com' },
+      ),
+    ).rejects.toBeInstanceOf(BadRequestException);
+
+    expect(prisma.user.update).not.toHaveBeenCalled();
+  });
+
+  it('does not deactivate admin accounts through the pilot reviewer action', async () => {
+    prisma.user.findUnique.mockResolvedValue({
+      id: 'admin-1',
+      email: 'admin@example.com',
+      role: UserRole.ADMIN,
+      accountType: null,
+      isActive: true,
+      organization: { id: 'admin-org', name: 'Admin Org' },
+    });
+
+    await expect(
+      service.deactivatePilotReviewer(
+        {
+          id: 'admin-2',
+          email: 'admin2@example.com',
+          organizationId: 'admin-org',
+          organizationName: 'Admin Org',
+          role: UserRole.ADMIN,
+        },
+        { email: 'admin@example.com' },
+      ),
+    ).rejects.toBeInstanceOf(ConflictException);
+
+    expect(prisma.user.update).not.toHaveBeenCalled();
+  });
+
+  it('rejects deactivate for non pilot reviewer accounts', async () => {
+    prisma.user.findUnique.mockResolvedValue({
+      id: 'customer-1',
+      email: 'customer@example.com',
+      role: UserRole.USER,
+      accountType: 'CUSTOMER',
+      isActive: true,
+      organization: { id: 'customer-org', name: 'Customer Org' },
+    });
+
+    await expect(
+      service.deactivatePilotReviewer(
+        {
+          id: 'admin-1',
+          email: 'admin@example.com',
+          organizationId: 'admin-org',
+          organizationName: 'Admin Org',
+          role: UserRole.ADMIN,
+        },
+        { email: 'customer@example.com' },
+      ),
+    ).rejects.toBeInstanceOf(BadRequestException);
+
+    expect(prisma.user.update).not.toHaveBeenCalled();
+  });
+
+  it('blocks login for deactivated pilot reviewers with a friendly message', async () => {
+    prisma.user.findUnique.mockResolvedValue({
+      id: 'reviewer-1',
+      email: 'reviewer@example.com',
+      passwordHash: 'hash',
+      role: UserRole.USER,
+      accountType: 'PILOT_REVIEWER',
+      isActive: false,
+      accountExpiresAt: null,
+      organization: {
+        id: 'sample-workspace',
+        name: 'CarbonLite Sample Workspace',
+      },
+    });
+
+    await expect(service.login('reviewer@example.com', 'password123')).rejects.toThrow(
+      'This account has been deactivated. Please contact hello@carbonliteapp.ca.',
+    );
+  });
+
+  it('uses production-safe wording for invalid login credentials', async () => {
+    prisma.user.findUnique.mockResolvedValue(null);
+
+    await expect(service.login('missing@example.com', 'password123')).rejects.toThrow(
+      'The email or password is incorrect.',
+    );
+  });
+
   it('sets password from a valid invite and clears the active token hash', async () => {
     prisma.user.findFirst.mockResolvedValue({
       id: 'reviewer-1',
@@ -442,6 +821,9 @@ describe('AuthService login resilience', () => {
       role: UserRole.USER,
       accountType: 'PILOT_REVIEWER',
       isActive: true,
+      passwordSetupTokenUsedAt: null,
+      passwordSetupTokenExpiresAt: new Date('2099-01-01T00:00:00.000Z'),
+      accountExpiresAt: null,
       organization: {
         id: 'sample-workspace',
         name: 'CarbonLite Sample Workspace',
@@ -476,9 +858,6 @@ describe('AuthService login resilience', () => {
     expect(prisma.user.findFirst).toHaveBeenCalledWith({
       where: expect.objectContaining({
         passwordSetupTokenHash: expect.any(String),
-        passwordSetupTokenUsedAt: null,
-        passwordSetupTokenExpiresAt: { gt: expect.any(Date) },
-        isActive: true,
       }),
       include: { organization: true },
     });
@@ -487,10 +866,51 @@ describe('AuthService login resilience', () => {
       data: expect.objectContaining({
         passwordHash: expect.any(String),
         passwordSetupRequired: false,
-        passwordSetupTokenHash: null,
         passwordSetupTokenUsedAt: expect.any(Date),
       }),
       include: { organization: true },
     });
+  });
+
+  it('shows a friendly invalid or expired invite message without exposing token details', async () => {
+    prisma.user.findFirst.mockResolvedValue(null);
+
+    await expect(
+      service.setPasswordFromInvite({
+        token: 'missing-token',
+        password: 'password123',
+      }),
+    ).rejects.toThrow(
+      'This invite link has expired. Please contact hello@carbonliteapp.ca for a new link.',
+    );
+
+    expect(prisma.user.update).not.toHaveBeenCalled();
+  });
+
+  it('shows a friendly already-used invite message without exposing token details', async () => {
+    prisma.user.findFirst.mockResolvedValue({
+      id: 'reviewer-1',
+      email: 'reviewer@example.com',
+      passwordSetupTokenHash: 'hashed-token',
+      passwordSetupTokenUsedAt: new Date('2026-08-01T12:00:00.000Z'),
+      passwordSetupTokenExpiresAt: new Date('2099-01-01T00:00:00.000Z'),
+      isActive: true,
+      accountExpiresAt: null,
+      organization: {
+        id: 'sample-workspace',
+        name: 'CarbonLite Sample Workspace',
+      },
+    });
+
+    await expect(
+      service.setPasswordFromInvite({
+        token: 'used-token',
+        password: 'password123',
+      }),
+    ).rejects.toThrow(
+      'This invite link has already been used. Please log in or contact hello@carbonliteapp.ca.',
+    );
+
+    expect(prisma.user.update).not.toHaveBeenCalled();
   });
 });

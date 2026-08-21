@@ -8,9 +8,12 @@ export class CreatePilotReviewerDto {
   @MinLength(2)
   name!: string;
 
-  @Matches(/^\s*(?!.*mailto:)[^\s@()[\]"']+@[^\s@()[\]"']+\.[^\s@()[\]"']+\s*$/i, {
+  @Matches(
+    /^\s*(?!.*mailto:)(?!.*@(gamil|gmai|gmial)\.com\s*$)[^\s@()[\]"']+@[^\s@()[\]"']+\.[^\s@()[\]"']+\s*$/i,
+    {
     message: EMAIL_VALIDATION_MESSAGE,
-  })
+    },
+  )
   email!: string;
 
   @IsOptional()
