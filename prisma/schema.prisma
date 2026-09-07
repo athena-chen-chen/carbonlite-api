@@ -215,8 +215,21 @@ model Organization {
   name                            String
   slug                            String   @unique
   industry                        String?
+  otherIndustry                   String?
   country                         String?
   provinceState                   String?
+  city                            String?
+  primaryContactName              String?
+  primaryContactEmail             String?
+  reportingPeriodStart            String?
+  reportingPeriodEnd              String?
+  geographicBoundary              String?
+  includedFacilitiesOrLocations   String?
+  excludedFacilitiesOrLocations   String?
+  includedScopes                  String?
+  scope3CoverageNote              String?
+  exclusionsAndLimitations        String?
+  boundaryNotes                   String?
   timezone                        String?
   defaultReportingYear            Int?
   allowDemoFactorsForCalculations Boolean  @default(false)
