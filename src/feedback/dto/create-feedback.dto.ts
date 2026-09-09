@@ -1,4 +1,5 @@
 import { FeedbackType } from '@prisma/client';
+import { Transform } from 'class-transformer';
 import { IsEmail, IsEnum, IsOptional, IsString, MaxLength } from 'class-validator';
 
 export class CreateFeedbackDto {
@@ -14,6 +15,11 @@ export class CreateFeedbackDto {
   message!: string;
 
   @IsOptional()
+  @Transform(({ value }) => {
+    if (typeof value !== 'string') return value;
+    const trimmed = value.trim();
+    return trimmed ? trimmed.toLowerCase() : undefined;
+  })
   @IsEmail()
   @MaxLength(255)
   email?: string;

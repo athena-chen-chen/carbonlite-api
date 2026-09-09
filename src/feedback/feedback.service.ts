@@ -25,7 +25,7 @@ export class FeedbackService {
         type: dto.type,
         intent: dto.intent.trim(),
         message: dto.message.trim(),
-        email: dto.email?.trim() || null,
+        email: dto.email?.trim().toLowerCase() || null,
         page: dto.page?.trim() || null,
         url: dto.url?.trim() || null,
         userAgent: userAgent?.trim() || null,

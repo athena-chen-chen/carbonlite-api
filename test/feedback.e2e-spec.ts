@@ -60,6 +60,88 @@ describe('Feedback (e2e)', () => {
     expect(response.body.createdAt).toEqual(expect.any(String));
   });
 
+  it('allows pilot reviewer accounts to submit feedback without mutating sample data', async () => {
+    const user = await createTestUser(app, {
+      organizationName: `${testRunId} Pilot Reviewer Feedback Org`,
+      email: `pilot-reviewer-feedback-${testRunId}@carbonlite-e2e.test`,
+    });
+
+    await prisma.user.update({
+      where: { id: user.user.id },
+      data: {
+        accountType: 'PILOT_REVIEWER',
+        role: 'USER',
+      },
+    });
+
+    const response = await request(app.getHttpServer())
+      .post('/api/feedback')
+      .set(authHeader(user.accessToken))
+      .send({
+        type: 'BUG',
+        intent: 'Bug feedback',
+        message: 'Reports feedback from a pilot reviewer.',
+        email: ' reviewer@example.com ',
+        page: '/reports',
+        url: 'https://www.carbonliteapp.ca/reports',
+      })
+      .expect(201);
+
+    expect(response.body).toMatchObject({
+      type: 'BUG',
+      intent: 'Bug feedback',
+      message: 'Reports feedback from a pilot reviewer.',
+      email: 'reviewer@example.com',
+      page: '/reports',
+      url: 'https://www.carbonliteapp.ca/reports',
+      organizationId: user.user.organizationId,
+      userId: user.user.id,
+      status: 'NEW',
+    });
+  });
+
+  it('accepts blank optional feedback email as omitted', async () => {
+    const user = await createTestUser(app, {
+      organizationName: `${testRunId} Blank Email Feedback Org`,
+      email: `blank-feedback-${testRunId}@carbonlite-e2e.test`,
+    });
+
+    const response = await request(app.getHttpServer())
+      .post('/api/feedback')
+      .set(authHeader(user.accessToken))
+      .send({
+        type: 'QUESTION',
+        intent: 'Ask question',
+        message: 'The email field was left blank.',
+        email: '   ',
+      })
+      .expect(201);
+
+    expect(response.body.email).toBeNull();
+  });
+
+  it('rejects unknown feedback payload fields with a validation error', async () => {
+    const user = await createTestUser(app, {
+      organizationName: `${testRunId} Strict Feedback Org`,
+      email: `strict-feedback-${testRunId}@carbonlite-e2e.test`,
+    });
+
+    const response = await request(app.getHttpServer())
+      .post('/api/feedback')
+      .set(authHeader(user.accessToken))
+      .send({
+        type: 'BUG',
+        intent: 'Report bug',
+        message: 'Payload contains frontend-only fields.',
+        workspaceName: 'CarbonLite Sample Workspace',
+      })
+      .expect(400);
+
+    expect(response.body.message).toEqual(
+      expect.arrayContaining(['property workspaceName should not exist']),
+    );
+  });
+
   it('lists and filters feedback by organization and status', async () => {
     const userA = await createTestUser(app, {
       organizationName: `${testRunId} List Org A`,
