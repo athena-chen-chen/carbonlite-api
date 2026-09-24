@@ -5,6 +5,7 @@ import { ConfirmExtractionDto } from './dto/confirm-extraction.dto';
 import { AuthenticatedUser } from '../auth/auth.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
+import { assertCanContributeActivityData } from '../common/permissions/activity-data-permissions';
 
 @UseGuards(JwtAuthGuard)
 @Controller('document-extraction')
@@ -16,6 +17,11 @@ export class DocumentExtractionController {
 
   @Post('extract')
   extract(@CurrentUser() user: AuthenticatedUser, @Body() dto: ExtractDocumentDto) {
+    assertCanContributeActivityData(
+      user,
+      'Your current role does not allow extracting document rows.',
+    );
+
     return this.service.extract(
       user.organizationId,
       dto.documentId,
@@ -37,6 +43,8 @@ export class DocumentExtractionController {
     @CurrentUser() user: AuthenticatedUser,
     @Body() dto: ConfirmExtractionDto,
   ) {
+    assertCanContributeActivityData(user);
+
     return this.service.confirmImport(
       user.organizationId,
       dto.documentId,

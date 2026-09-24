@@ -44,6 +44,7 @@ describe('ActivityDataService canonical calculation persistence', () => {
       findFirst: jest.fn(),
       findMany: jest.fn(),
       update: jest.fn(),
+      updateMany: jest.fn(),
     },
     document: {
       deleteMany: jest.fn(),
@@ -133,6 +134,91 @@ describe('ActivityDataService canonical calculation persistence', () => {
         }),
       ],
     });
+  });
+
+  it('bulk updates province for selected electricity records in the organization', async () => {
+    const eligibleRecords = [
+      {
+        id: 'activity-electricity-missing-province',
+        organizationId: 'org-1',
+        activityType: 'ELECTRICITY',
+        jurisdictionRegion: '',
+      },
+      {
+        id: 'activity-already-has-province',
+        organizationId: 'org-1',
+        activityType: 'ELECTRICITY',
+        jurisdictionRegion: 'BC',
+      },
+    ];
+    const updatedRecords = eligibleRecords.map((record) => ({
+      ...record,
+      jurisdictionRegion: 'AB',
+    }));
+
+    prisma.activityData.findMany
+      .mockResolvedValueOnce(eligibleRecords)
+      .mockResolvedValueOnce(updatedRecords);
+    prisma.activityData.updateMany.mockResolvedValue({ count: 1 });
+
+    const result = await service.bulkUpdateProvince(
+      'org-1',
+      [
+        'activity-electricity-missing-province',
+        'activity-electricity-missing-province',
+        'activity-already-has-province',
+      ],
+      'Alberta',
+      'user-1',
+    );
+
+    expect(prisma.activityData.findMany).toHaveBeenNthCalledWith(1, {
+      where: {
+        id: {
+          in: [
+            'activity-electricity-missing-province',
+            'activity-already-has-province',
+          ],
+        },
+        organizationId: 'org-1',
+        activityType: 'ELECTRICITY',
+      },
+    });
+    expect(prisma.activityData.updateMany).toHaveBeenCalledWith({
+      where: {
+        id: { in: ['activity-electricity-missing-province', 'activity-already-has-province'] },
+        organizationId: 'org-1',
+      },
+      data: {
+        jurisdictionRegion: 'AB',
+      },
+    });
+    expect(result).toMatchObject({
+      ids: ['activity-electricity-missing-province', 'activity-already-has-province'],
+      province: 'AB',
+      updatedCount: 2,
+      updatedRecords,
+    });
+    expect(activityTracking.track).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventName: 'ACTIVITY_RECORDS_PROVINCE_UPDATED',
+        metadata: expect.objectContaining({
+          requestedCount: 2,
+          updatedCount: 2,
+          province: 'AB',
+        }),
+      }),
+    );
+  });
+
+  it('rejects bulk province updates when no selected electricity records match', async () => {
+    prisma.activityData.findMany.mockResolvedValue([]);
+
+    await expect(
+      service.bulkUpdateProvince('org-1', ['activity-1'], 'AB', 'user-1'),
+    ).rejects.toThrow('No selected electricity records.');
+
+    expect(prisma.activityData.updateMany).not.toHaveBeenCalled();
   });
 
   it('keeps existing records without canonical fields valid by persisting nulls on create', async () => {

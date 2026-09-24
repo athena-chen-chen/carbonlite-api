@@ -40,6 +40,7 @@ type ParsedActivityRaw = {
   unit: string;
   jurisdictionCountry?: string | null;
   jurisdictionRegion?: string | null;
+  facilityName?: string | null;
   sourceReference?: string | null;
   notes?: string | null;
 };
@@ -56,6 +57,7 @@ type ParsedActivityWithConfidence = {
   unit: ConfidenceField<string>;
   jurisdictionCountry: ConfidenceField<string>;
   jurisdictionRegion: ConfidenceField<string>;
+  facilityName: ConfidenceField<string>;
   sourceReference: ConfidenceField<string>;
   notes: ConfidenceField<string>;
 };
@@ -198,10 +200,11 @@ export class DocumentExtractionService {
                 type: 'input_text',
                 text:
                   'You extract operational activity data from invoices, utility bills, receipts, and similar business documents. ' +
-                  'Return only the requested structured data. ' +
+                  'Return only activity quantities and usage units, not billing charges. ' +
+                  'Ignore CAD, dollar amounts, taxes, service charges, delivery charges, rate riders, and totals unless a supported spend-based category is explicitly requested. ' +
                   'If a value is missing, return null where allowed. ' +
                   'Supported activityType values: ELECTRICITY, NATURAL_GAS, DIESEL, GASOLINE, AIR_TRAVEL, STEAM, WATER, WASTE, HOTEL, SHIPPING, CUSTOM. ' +
-                  'Prefer the most explicit quantity and unit shown in the document.',
+                  'Prefer consumption units such as kWh, MWh, GJ, m3, liters, km, and nights.',
               },
             ],
           },
@@ -212,13 +215,14 @@ export class DocumentExtractionService {
                 type: 'input_text',
                 text:
                   `
-Extract ALL activity records from the document.
+Extract operational activity quantities from the document.
 
 IMPORTANT:
-- If the document contains a table, extract EVERY row as a separate activity.
-- Do NOT skip any rows.
-- Return ALL detected activities.
-- Even if some rows look less important, still include them.
+- For utility bills, extract consumption or usage quantities only.
+- Prefer lines with units such as USE(kWh), USE(GJ), USE(m3), kWh @, GJ @, or m3 @.
+- Do not create activity rows for currency-only billing lines, CAD amounts, GST, subtotals, totals, delivery charges, service charges, administration charges, franchise fees, rate riders, or cart program charges.
+- Waste and recycling dollar charges should be ignored unless the document provides a physical activity quantity such as mass or volume.
+- Wastewater derived from water usage should be ignored for this pilot unless it has a distinct supported activity quantity.
 
 For CSV or tabular data:
 - Each row = one activity
@@ -237,8 +241,11 @@ Normalize activity types:
 - Gasoline → GASOLINE
 - Natural Gas → NATURAL_GAS
 - Water → WATER
+- Natural gas usage in GJ → NATURAL_GAS with unit GJ
+- Water usage in m3 → WATER and note that it is tracked only
+- CAD, $, GST, total amount due, and service charge rows → ignore, do not return
 
-Return all rows as activities array.
+Return only activity rows with operational quantities as activities array.
 ` +
                   'If the document contains a fuel invoice, prefer DIESEL or GASOLINE. ' +
                   'If it contains a utility bill, prefer ELECTRICITY or NATURAL_GAS.',
@@ -319,8 +326,9 @@ Return all rows as activities array.
 
       const rawText = response.output_text;
       const parsed = JSON.parse(rawText) as { activities: ParsedActivityRaw[] };
+      const activityRows = this.filterOperationalActivityRows(parsed.activities ?? []);
 
-      const parsedActivities = (parsed.activities ?? []).map((activity) =>
+      const parsedActivities = activityRows.map((activity) =>
         this.addConfidence(activity),
       );
       const sourceRowCount = localText
@@ -726,12 +734,35 @@ Return all rows as activities array.
           'Facility Province',
         ]),
       ),
+      facilityName: this.readAliasedField(activity, [
+        'facility',
+        'Facility',
+        'facilityName',
+        'Facility Name',
+        'site',
+        'Site',
+        'siteName',
+        'Site Name',
+        'location',
+        'Location',
+        'branch',
+        'Branch',
+        'factory',
+        'Factory',
+      ]),
       sourceReference:
         this.readAliasedField(activity, [
           'sourceReference',
           'Source Reference',
-          'sourceFile',
-          'sourceFileName',
+          'source reference',
+          'reference',
+          'Reference',
+          'invoice',
+          'Invoice',
+          'documentReference',
+          'Document Reference',
+          'sourceDocument',
+          'Source Document',
         ]) ?? fallbackSourceReference,
       notes: this.readAliasedField(activity, ['notes', 'Notes']),
     };
@@ -850,6 +881,7 @@ Return all rows as activities array.
                 recordDate: new Date(normalized.recordDate),
                 jurisdictionCountry: normalized.jurisdictionCountry ?? null,
                 jurisdictionRegion: normalized.jurisdictionRegion ?? null,
+                facilityName: normalized.facilityName ?? null,
                 quantity: normalized.quantity,
                 unit: normalized.unit,
                 sourceType: 'DOCUMENT_AI' as any,
@@ -1041,6 +1073,10 @@ Return all rows as activities array.
         value: activity.jurisdictionRegion ?? null,
         confidence: activity.jurisdictionRegion ? 'high' : 'low',
       },
+      facilityName: {
+        value: activity.facilityName ?? null,
+        confidence: activity.facilityName ? 'high' : 'low',
+      },
       sourceReference: {
         value: activity.sourceReference ?? null,
         confidence: activity.sourceReference ? 'high' : 'low',
@@ -1050,6 +1086,29 @@ Return all rows as activities array.
         confidence: activity.notes ? 'medium' : 'low',
       },
     };
+  }
+
+
+  private filterOperationalActivityRows(activities: ParsedActivityRaw[]) {
+    return activities.filter((activity) => !this.isCurrencyOnlyBillingCharge(activity));
+  }
+
+  private isCurrencyOnlyBillingCharge(activity: ParsedActivityRaw) {
+    const unit = String(activity.unit ?? '').trim().toLowerCase();
+    const text = [
+      activity.activityType,
+      activity.sourceReference,
+      activity.notes,
+    ]
+      .filter(Boolean)
+      .join(' ')
+      .toLowerCase();
+
+    const hasCurrencyUnit = /^(cad|\$|dollar|dollars|currency|amount due|cr)$/i.test(unit);
+    const mentionsCurrencyAmount = /(?:cad|\$)\s*-?\d|\d[\d,]*(?:\.\d{2})?\s*(?:cad|\$)/i.test(text);
+    const isBillingLine = /\b(subtotal|total current charges|total amount due|amount due|gst|administration charge|delivery charge|service charge|franchise fee|transaction fee|rate rider|rate riders|cart program charge|blue cart|black cart|green cart|waste and recycling|charge|charges|fee|fees)\b/i.test(text);
+
+    return hasCurrencyUnit || (mentionsCurrencyAmount && isBillingLine);
   }
 
   private normalizeActivityForImport(activity: any): ParsedActivityRaw {
@@ -1105,12 +1164,34 @@ Return all rows as activities array.
       unit: this.readAliasedField(activity, ['unit', 'Unit', 'units', 'Units']),
       jurisdictionCountry: normalizedCountry,
       jurisdictionRegion: normalizedRegion,
+      facilityName: this.readAliasedField(activity, [
+        'facility',
+        'Facility',
+        'facilityName',
+        'Facility Name',
+        'site',
+        'Site',
+        'siteName',
+        'Site Name',
+        'location',
+        'Location',
+        'branch',
+        'Branch',
+        'factory',
+        'Factory',
+      ]),
       sourceReference: this.readAliasedField(activity, [
         'sourceReference',
         'Source Reference',
         'source reference',
         'reference',
         'Reference',
+        'invoice',
+        'Invoice',
+        'documentReference',
+        'Document Reference',
+        'sourceDocument',
+        'Source Document',
       ]),
       notes: this.readAliasedField(activity, ['notes', 'Notes']),
     };

@@ -3,6 +3,7 @@ import { ActivityDataController } from './activity-data.controller';
 import { AdminActivityRecordsController } from './admin-activity-records.controller';
 import { ActivityDataService } from './activity-data.service';
 import { CreateActivityDataDto } from './dto/create-activity-data.dto';
+import { BulkUpdateProvinceDto } from './dto/bulk-update-province.dto';
 import { ResetDemoDataDto } from './dto/reset-demo-data.dto';
 import { UpdateActivityDataDto } from './dto/update-activity-data.dto';
 import { AuthenticatedUser } from '../auth/auth.service';
@@ -60,6 +61,11 @@ const resetDemoDataMetadata: ArgumentMetadata = {
   metatype: ResetDemoDataDto,
 };
 
+const bulkUpdateProvinceMetadata: ArgumentMetadata = {
+  type: 'body',
+  metatype: BulkUpdateProvinceDto,
+};
+
 describe('ActivityDataController canonical calculation fields', () => {
   const validationPipe = new ValidationPipe({
     whitelist: true,
@@ -68,6 +74,9 @@ describe('ActivityDataController canonical calculation fields', () => {
   const activityDataService = {
     create: jest.fn(),
     update: jest.fn(),
+    bulkImport: jest.fn(),
+    previewJsonImport: jest.fn(),
+    bulkUpdateProvince: jest.fn(),
   };
   const controller = new ActivityDataController(
     activityDataService as unknown as ActivityDataService,
@@ -192,6 +201,71 @@ describe('ActivityDataController canonical calculation fields', () => {
     );
   });
 
+  it('allows customer users to import activity records in their workspace', async () => {
+    const dto = {
+      items: [canonicalPayload],
+    };
+    activityDataService.bulkImport.mockResolvedValue({
+      count: 1,
+      createdIds: ['activity-1'],
+    });
+
+    await expect(
+      controller.bulkImport(
+        {
+          ...authenticatedUser,
+          role: 'USER',
+          accountType: 'CUSTOMER',
+        },
+        dto as any,
+      ),
+    ).resolves.toEqual({
+      count: 1,
+      createdIds: ['activity-1'],
+    });
+
+    expect(activityDataService.bulkImport).toHaveBeenCalledWith(
+      'org-1',
+      dto,
+      'user-1',
+    );
+  });
+
+  it('rejects pilot reviewers and viewer-style users from importing activity records', async () => {
+    const dto = {
+      items: [canonicalPayload],
+    };
+
+    expect(() =>
+      controller.bulkImport(
+        {
+          ...authenticatedUser,
+          accountType: 'PILOT_REVIEWER',
+        },
+        dto as any,
+      ),
+    ).toThrow('Pilot reviewer accounts are read-only for sample data.');
+
+    expect(() =>
+      controller.create(
+        {
+          ...authenticatedUser,
+          role: 'USER',
+          accountType: 'CUSTOMER',
+          membershipRole: 'VIEWER',
+        },
+        canonicalPayload as any,
+      ),
+    ).toThrow('Your current role does not allow importing activity data.');
+
+    expect(activityDataService.bulkImport).not.toHaveBeenCalled();
+    expect(activityDataService.create).not.toHaveBeenCalledWith(
+      'org-1',
+      expect.anything(),
+      'user-1',
+    );
+  });
+
   it('still rejects fields that are not defined on the DTO', async () => {
     await expect(
       validationPipe.transform(
@@ -208,6 +282,130 @@ describe('ActivityDataController canonical calculation fields', () => {
         ]),
       }),
     });
+  });
+
+  it('routes bulk province updates for selected activity records', async () => {
+    const dto = await validationPipe.transform(
+      {
+        ids: ['activity-1'],
+        province: 'AB',
+      },
+      bulkUpdateProvinceMetadata,
+    );
+    activityDataService.bulkUpdateProvince.mockResolvedValue({
+      ids: ['activity-1'],
+      province: 'AB',
+      updatedCount: 1,
+    });
+
+    await expect(
+      controller.bulkUpdateProvince(authenticatedUser, dto),
+    ).resolves.toEqual({
+      ids: ['activity-1'],
+      province: 'AB',
+      updatedCount: 1,
+    });
+
+    expect(activityDataService.bulkUpdateProvince).toHaveBeenCalledWith(
+      'org-1',
+      ['activity-1'],
+      'AB',
+      'user-1',
+    );
+  });
+
+  it('allows customer users to set province through the narrow bulk province endpoint', async () => {
+    const dto = await validationPipe.transform(
+      {
+        ids: ['activity-1'],
+        province: 'AB',
+      },
+      bulkUpdateProvinceMetadata,
+    );
+    activityDataService.bulkUpdateProvince.mockResolvedValue({
+      ids: ['activity-1'],
+      province: 'AB',
+      updatedCount: 1,
+    });
+
+    await expect(
+      controller.bulkUpdateProvince(
+        {
+          ...authenticatedUser,
+          role: 'USER',
+          accountType: 'CUSTOMER',
+        },
+        dto,
+      ),
+    ).resolves.toEqual({
+      ids: ['activity-1'],
+      province: 'AB',
+      updatedCount: 1,
+    });
+  });
+
+  it('rejects pilot reviewers and viewer-style users for bulk province updates', async () => {
+    const dto = await validationPipe.transform(
+      {
+        ids: ['activity-1'],
+        province: 'AB',
+      },
+      bulkUpdateProvinceMetadata,
+    );
+
+    expect(() =>
+      controller.bulkUpdateProvince(
+        {
+          ...authenticatedUser,
+          accountType: 'PILOT_REVIEWER',
+        },
+        dto,
+      ),
+    ).toThrow('Pilot reviewer accounts are read-only for sample data.');
+
+    expect(() =>
+      controller.bulkUpdateProvince(
+        {
+          ...authenticatedUser,
+          role: 'VIEWER' as any,
+          accountType: 'CUSTOMER',
+        },
+        dto,
+      ),
+    ).toThrow('Your current role does not allow setting province.');
+
+    expect(() =>
+      controller.bulkUpdateProvince(
+        {
+          ...authenticatedUser,
+          role: 'USER',
+          accountType: 'CUSTOMER',
+          membershipRole: 'VIEWER',
+        },
+        dto,
+      ),
+    ).toThrow('Your current role does not allow setting province.');
+
+    expect(activityDataService.bulkUpdateProvince).not.toHaveBeenCalledWith(
+      'org-1',
+      ['activity-1'],
+      'AB',
+      'user-1',
+    );
+  });
+
+  it('rejects invalid bulk province update payloads', async () => {
+    await expect(
+      validationPipe.transform(
+        {
+          ids: [],
+          province: 'AB',
+        },
+        bulkUpdateProvinceMetadata,
+      ),
+    ).rejects.toThrow();
+
+    expect(activityDataService.bulkUpdateProvince).not.toHaveBeenCalled();
   });
 });
 

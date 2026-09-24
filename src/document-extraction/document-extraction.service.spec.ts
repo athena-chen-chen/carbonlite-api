@@ -26,6 +26,116 @@ describe('DocumentExtractionService import normalization', () => {
     });
   });
 
+
+  it('keeps ENMAX-style utility usage rows and drops CAD billing charges', () => {
+    const rows = [
+      {
+        activityType: 'ELECTRICITY',
+        recordDate: '2026-08-01',
+        quantity: 358,
+        unit: 'kWh',
+        jurisdictionCountry: 'Canada',
+        jurisdictionRegion: 'Alberta',
+        sourceReference: 'Electricity USE(kWh)',
+      },
+      {
+        activityType: 'NATURAL_GAS',
+        recordDate: '2026-08-01',
+        quantity: 3,
+        unit: 'GJ',
+        jurisdictionCountry: 'Canada',
+        jurisdictionRegion: 'Alberta',
+        sourceReference: 'Natural Gas USE(GJ)',
+      },
+      {
+        activityType: 'WATER',
+        recordDate: '2026-08-01',
+        quantity: 6,
+        unit: 'm3',
+        jurisdictionCountry: 'Canada',
+        jurisdictionRegion: 'Alberta',
+        sourceReference: 'Water Treatment and Supply USE(m3)',
+        notes: 'Water usage is tracked only.',
+      },
+      {
+        activityType: 'CUSTOM',
+        recordDate: '2026-08-01',
+        quantity: 19.54,
+        unit: 'CAD',
+        jurisdictionCountry: 'Canada',
+        jurisdictionRegion: 'Alberta',
+        sourceReference: 'Waste and Recycling $19.54',
+      },
+      {
+        activityType: 'CUSTOM',
+        recordDate: '2026-08-01',
+        quantity: 2.17,
+        unit: '$',
+        jurisdictionCountry: 'Canada',
+        jurisdictionRegion: 'Alberta',
+        sourceReference: 'Blue Cart Program Charge $2.17',
+      },
+      {
+        activityType: 'CUSTOM',
+        recordDate: '2026-08-01',
+        quantity: 236.63,
+        unit: 'CAD',
+        jurisdictionCountry: 'Canada',
+        jurisdictionRegion: 'Alberta',
+        sourceReference: 'Total amount due $236.63',
+      },
+      {
+        activityType: 'CUSTOM',
+        recordDate: '2026-08-01',
+        quantity: 4.18,
+        unit: 'CAD',
+        jurisdictionCountry: 'Canada',
+        jurisdictionRegion: 'Alberta',
+        sourceReference: 'GST',
+      },
+    ];
+
+    const filtered = (service as any).filterOperationalActivityRows(rows);
+
+    expect(filtered).toHaveLength(3);
+    expect(filtered).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ activityType: 'ELECTRICITY', quantity: 358, unit: 'kWh' }),
+        expect.objectContaining({ activityType: 'NATURAL_GAS', quantity: 3, unit: 'GJ' }),
+        expect.objectContaining({ activityType: 'WATER', quantity: 6, unit: 'm3' }),
+      ]),
+    );
+    expect(filtered).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ unit: 'CAD' }),
+        expect.objectContaining({ unit: '$' }),
+      ]),
+    );
+  });
+
+  it('drops charge-like rows even when currency appears in the source reference text', () => {
+    const filtered = (service as any).filterOperationalActivityRows([
+      {
+        activityType: 'CUSTOM',
+        recordDate: '2026-08-01',
+        quantity: 9.98,
+        unit: 'charge',
+        sourceReference: 'Green Cart Program Charge $9.98',
+      },
+      {
+        activityType: 'WATER',
+        recordDate: '2026-08-01',
+        quantity: 6,
+        unit: 'm3',
+        sourceReference: 'Water USE(m3)',
+      },
+    ]);
+
+    expect(filtered).toEqual([
+      expect.objectContaining({ activityType: 'WATER', quantity: 6, unit: 'm3' }),
+    ]);
+  });
+
   it('accepts JSON uploads as supported extraction files', () => {
     expect(() =>
       (service as any).validateSupportedFile({

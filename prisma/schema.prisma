@@ -320,6 +320,7 @@ model ActivityData {
   id                        String           @id @default(cuid())
   organizationId            String
   facilityId                String?
+  facilityName              String?
   assetId                   String?
   documentId                String?
   activityType              ActivityType

@@ -22,6 +22,16 @@ export class CreateActivityDataDto {
 
   @IsOptional()
   @IsString()
+  @MaxLength(200)
+  facility?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  facilityName?: string;
+
+  @IsOptional()
+  @IsString()
   assetId?: string;
 
   @IsOptional()

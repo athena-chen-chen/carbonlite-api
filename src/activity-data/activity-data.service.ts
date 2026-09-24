@@ -48,6 +48,7 @@ export class ActivityDataService {
     const data = {
       organizationId,
       facilityId: dto.facilityId ?? null,
+      facilityName: resolveFacilityName(dto),
       assetId: dto.assetId ?? null,
       documentId: dto.documentId ?? null,
       activityType: dto.activityType,
@@ -132,6 +133,7 @@ export class ActivityDataService {
     const rows = dto.items.map((item) => ({
       organizationId,
       facilityId: item.facilityId ?? null,
+      facilityName: resolveFacilityName(item),
       assetId: item.assetId ?? null,
       documentId: item.documentId ?? null,
       activityType: item.activityType as ActivityType,
@@ -376,6 +378,9 @@ export class ActivityDataService {
       where: { id },
       data: {
         ...(dto.facilityId !== undefined ? { facilityId: dto.facilityId || null } : {}),
+        ...(dto.facility !== undefined || dto.facilityName !== undefined
+          ? { facilityName: resolveFacilityName(dto) }
+          : {}),
         ...(dto.assetId !== undefined ? { assetId: dto.assetId || null } : {}),
         ...(dto.documentId !== undefined ? { documentId: dto.documentId || null } : {}),
         ...(dto.activityType !== undefined
@@ -545,6 +550,91 @@ export class ActivityDataService {
       ids: uniqueIds,
       deleted: true,
       deletedCount: result.count,
+    };
+  }
+
+  async bulkUpdateProvince(
+    organizationId: string,
+    ids: string[],
+    province: string,
+    userId?: string,
+  ) {
+    const uniqueIds = Array.from(
+      new Set(ids.map((id) => String(id).trim()).filter(Boolean)),
+    );
+    const normalizedProvince = normalizeProvinceInput(province);
+
+    if (!uniqueIds.length) {
+      throw new BadRequestException('No eligible activity records selected.');
+    }
+
+    if (!normalizedProvince) {
+      throw new BadRequestException('Select a province before applying.');
+    }
+
+    const eligibleRecords = await this.prisma.activityData.findMany({
+      where: {
+        id: { in: uniqueIds },
+        organizationId,
+        activityType: ActivityType.ELECTRICITY,
+      },
+    });
+
+    if (!eligibleRecords.length) {
+      throw new BadRequestException('No selected electricity records.');
+    }
+
+    const eligibleIds = eligibleRecords.map((record) => record.id);
+    const updated = await this.prisma.$transaction(async (tx) => {
+      await tx.activityData.updateMany({
+        where: {
+          id: { in: eligibleIds },
+          organizationId,
+        },
+        data: {
+          jurisdictionRegion: normalizedProvince,
+        },
+      });
+
+      return tx.activityData.findMany({
+        where: {
+          id: { in: eligibleIds },
+          organizationId,
+        },
+      });
+    });
+
+    await this.auditLog.log({
+      organizationId,
+      userId,
+      action: 'BULK_UPDATE_ACTIVITY_RECORD_PROVINCE',
+      entityType: 'ActivityData',
+      description: `Set province on ${updated.length} electricity activity records`,
+      oldValue: eligibleRecords,
+      newValue: {
+        ids: eligibleIds,
+        province: normalizedProvince,
+        updatedCount: updated.length,
+      },
+    });
+
+    await this.activityTracking.track({
+      organizationId,
+      userId,
+      eventName: 'ACTIVITY_RECORDS_PROVINCE_UPDATED',
+      entityType: 'ActivityData',
+      metadata: {
+        requestedCount: uniqueIds.length,
+        updatedCount: updated.length,
+        province: normalizedProvince,
+      },
+    });
+
+    return {
+      ids: eligibleIds,
+      province: normalizedProvince,
+      updatedCount: updated.length,
+      updatedRecords: updated,
     };
   }
 
@@ -895,6 +985,46 @@ function buildCalculationFieldUpdateData(dto: UpdateActivityDataDto) {
       ? { calculationMessage: dto.calculationMessage || null }
       : {}),
   };
+}
+
+function resolveFacilityName(dto: Pick<CreateActivityDataDto, 'facility' | 'facilityName'>) {
+  return normalizeOptionalText(dto.facilityName ?? dto.facility) ?? null;
+}
+
+function normalizeProvinceInput(value: string) {
+  const normalized = String(value ?? '').trim().toLowerCase();
+  const provinceMap: Record<string, string> = {
+    alberta: 'AB',
+    ab: 'AB',
+    'british columbia': 'BC',
+    bc: 'BC',
+    ontario: 'ON',
+    on: 'ON',
+    saskatchewan: 'SK',
+    sk: 'SK',
+    manitoba: 'MB',
+    mb: 'MB',
+    quebec: 'QC',
+    québec: 'QC',
+    qc: 'QC',
+    'nova scotia': 'NS',
+    ns: 'NS',
+    'new brunswick': 'NB',
+    nb: 'NB',
+    'newfoundland and labrador': 'NL',
+    nl: 'NL',
+    'prince edward island': 'PE',
+    pei: 'PE',
+    pe: 'PE',
+    'northwest territories': 'NT',
+    nt: 'NT',
+    yukon: 'YT',
+    yt: 'YT',
+    nunavut: 'NU',
+    nu: 'NU',
+  };
+
+  return provinceMap[normalized] ?? null;
 }
 
 function sanitizeActivityDataCreateDto(dto: CreateActivityDataDto) {

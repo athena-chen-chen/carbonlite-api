@@ -29,6 +29,7 @@ export type AuthenticatedUser = {
   organizationId: string;
   organizationName: string;
   role: UserRole;
+  membershipRole?: MembershipRole | null;
   accountType?: string | null;
 };
 
@@ -584,6 +585,7 @@ export class AuthService {
         user.role,
         user.memberships?.[0]?.role,
       ),
+      membershipRole: user.memberships?.[0]?.role ?? null,
       accountType: user.accountType,
     };
   }

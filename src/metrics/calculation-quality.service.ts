@@ -897,7 +897,7 @@ export class CalculationQualityService {
       jurisdictionSource: result.jurisdictionSource ?? 'unknown',
       jurisdictionAssumed: Boolean(result.jurisdictionAssumed),
       facilityId: record.facilityId,
-      facilityName: record.facility?.name ?? null,
+      facilityName: record.facilityName ?? record.facility?.name ?? null,
       activityQuantity: Number(record.quantity),
       activityUnit: record.unit,
       quantityUnit: record.unit,

@@ -27,6 +27,14 @@ export class ParsedActivityDto {
   @IsString()
   jurisdictionRegion?: string;
 
+  @IsOptional()
+  @IsString()
+  facility?: string;
+
+  @IsOptional()
+  @IsString()
+  facilityName?: string;
+
   @IsString()
   sourceReference?: string;
 

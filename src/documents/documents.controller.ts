@@ -24,6 +24,7 @@ import { AuthenticatedUser } from '../auth/auth.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { throwCapturedAppError } from '../common/monitoring/capture-app-error';
+import { assertCanContributeActivityData } from '../common/permissions/activity-data-permissions';
 
 @UseGuards(JwtAuthGuard)
 @Controller('documents')
@@ -41,6 +42,11 @@ export class DocumentsController {
     @Body('type') type: string,
     @Body('allowDuplicate') allowDuplicate?: string,
   ) {
+    assertCanContributeActivityData(
+      user,
+      'Your current role does not allow file upload.',
+    );
+
     if (!file) {
       throw new BadRequestException('File is required.');
     }
