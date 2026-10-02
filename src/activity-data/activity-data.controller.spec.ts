@@ -4,6 +4,7 @@ import { AdminActivityRecordsController } from './admin-activity-records.control
 import { ActivityDataService } from './activity-data.service';
 import { CreateActivityDataDto } from './dto/create-activity-data.dto';
 import { BulkUpdateProvinceDto } from './dto/bulk-update-province.dto';
+import { BulkUpdateFacilityDto } from './dto/bulk-update-facility.dto';
 import { ResetDemoDataDto } from './dto/reset-demo-data.dto';
 import { UpdateActivityDataDto } from './dto/update-activity-data.dto';
 import { AuthenticatedUser } from '../auth/auth.service';
@@ -66,6 +67,11 @@ const bulkUpdateProvinceMetadata: ArgumentMetadata = {
   metatype: BulkUpdateProvinceDto,
 };
 
+const bulkUpdateFacilityMetadata: ArgumentMetadata = {
+  type: 'body',
+  metatype: BulkUpdateFacilityDto,
+};
+
 describe('ActivityDataController canonical calculation fields', () => {
   const validationPipe = new ValidationPipe({
     whitelist: true,
@@ -77,6 +83,7 @@ describe('ActivityDataController canonical calculation fields', () => {
     bulkImport: jest.fn(),
     previewJsonImport: jest.fn(),
     bulkUpdateProvince: jest.fn(),
+    bulkUpdateFacility: jest.fn(),
   };
   const controller = new ActivityDataController(
     activityDataService as unknown as ActivityDataService,
@@ -288,13 +295,13 @@ describe('ActivityDataController canonical calculation fields', () => {
     const dto = await validationPipe.transform(
       {
         ids: ['activity-1'],
-        province: 'AB',
+        province: ' bc ',
       },
       bulkUpdateProvinceMetadata,
     );
     activityDataService.bulkUpdateProvince.mockResolvedValue({
       ids: ['activity-1'],
-      province: 'AB',
+      province: 'BC',
       updatedCount: 1,
     });
 
@@ -302,14 +309,14 @@ describe('ActivityDataController canonical calculation fields', () => {
       controller.bulkUpdateProvince(authenticatedUser, dto),
     ).resolves.toEqual({
       ids: ['activity-1'],
-      province: 'AB',
+      province: 'BC',
       updatedCount: 1,
     });
 
     expect(activityDataService.bulkUpdateProvince).toHaveBeenCalledWith(
       'org-1',
       ['activity-1'],
-      'AB',
+      'BC',
       'user-1',
     );
   });
@@ -405,7 +412,143 @@ describe('ActivityDataController canonical calculation fields', () => {
       ),
     ).rejects.toThrow();
 
+    await expect(
+      validationPipe.transform(
+        {
+          ids: ['activity-1'],
+          province: 'XX',
+        },
+        bulkUpdateProvinceMetadata,
+      ),
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({
+        message: expect.arrayContaining(['Unsupported province code: XX']),
+      }),
+    });
+
     expect(activityDataService.bulkUpdateProvince).not.toHaveBeenCalled();
+  });
+
+  it('routes bulk facility updates for selected activity records', async () => {
+    const dto = await validationPipe.transform(
+      {
+        ids: ['cmsr3zkl100h5gdj0so3atxoc'],
+        facilityName: ' Calgary Office ',
+      },
+      bulkUpdateFacilityMetadata,
+    );
+    activityDataService.bulkUpdateFacility.mockResolvedValue({
+      ids: ['cmsr3zkl100h5gdj0so3atxoc'],
+      facilityName: 'Calgary Office',
+      updatedCount: 1,
+    });
+
+    await expect(
+      controller.bulkUpdateFacility(authenticatedUser, dto),
+    ).resolves.toEqual({
+      ids: ['cmsr3zkl100h5gdj0so3atxoc'],
+      facilityName: 'Calgary Office',
+      updatedCount: 1,
+    });
+
+    expect(activityDataService.bulkUpdateFacility).toHaveBeenCalledWith(
+      'org-1',
+      ['cmsr3zkl100h5gdj0so3atxoc'],
+      'Calgary Office',
+      'user-1',
+    );
+  });
+
+  it('rejects pilot reviewers and viewer-style users for bulk facility updates', async () => {
+    const dto = await validationPipe.transform(
+      {
+        ids: ['activity-1'],
+        facilityName: 'Calgary Office',
+      },
+      bulkUpdateFacilityMetadata,
+    );
+
+    expect(() =>
+      controller.bulkUpdateFacility(
+        {
+          ...authenticatedUser,
+          accountType: 'PILOT_REVIEWER',
+        },
+        dto,
+      ),
+    ).toThrow('Pilot reviewer accounts are read-only for sample data.');
+
+    expect(() =>
+      controller.bulkUpdateFacility(
+        {
+          ...authenticatedUser,
+          role: 'VIEWER' as any,
+          accountType: 'CUSTOMER',
+        },
+        dto,
+      ),
+    ).toThrow('Your current role does not allow setting facility.');
+
+    expect(() =>
+      controller.bulkUpdateFacility(
+        {
+          ...authenticatedUser,
+          role: 'USER',
+          accountType: 'CUSTOMER',
+          membershipRole: 'VIEWER',
+        },
+        dto,
+      ),
+    ).toThrow('Your current role does not allow setting facility.');
+
+    expect(activityDataService.bulkUpdateFacility).not.toHaveBeenCalledWith(
+      'org-1',
+      ['activity-1'],
+      'Calgary Office',
+      'user-1',
+    );
+  });
+
+  it('rejects invalid bulk facility update payloads', async () => {
+    await expect(
+      validationPipe.transform(
+        {
+          ids: [],
+          facilityName: 'Calgary Office',
+        },
+        bulkUpdateFacilityMetadata,
+      ),
+    ).rejects.toThrow();
+
+    await expect(
+      validationPipe.transform(
+        {
+          ids: ['cmsr3zkl100h5gdj0so3atxoc'],
+          facility: 'cold lake',
+        },
+        bulkUpdateFacilityMetadata,
+      ),
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({
+        message: expect.arrayContaining(['property facility should not exist']),
+      }),
+    });
+
+    await expect(
+      validationPipe.transform(
+        {
+          ids: ['cmsr3zkl100h5gdj0so3atxoc'],
+          facilityName: '   ',
+        },
+        bulkUpdateFacilityMetadata,
+      ),
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({
+        message: expect.arrayContaining(['Facility name is required.']),
+      }),
+    });
+
+    expect(activityDataService.bulkUpdateFacility).not.toHaveBeenCalled();
   });
 });
 

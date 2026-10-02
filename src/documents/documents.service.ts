@@ -103,6 +103,21 @@ export class DocumentsService {
     const [items, total] = await this.prisma.$transaction([
       this.prisma.document.findMany({
         where,
+        include: {
+          extractions: {
+            orderBy: { extractedAt: 'desc' },
+            take: 1,
+            select: {
+              sourceRowCount: true,
+              extractedRowCount: true,
+            },
+          },
+          _count: {
+            select: {
+              activityData: true,
+            },
+          },
+        },
         orderBy: { createdAt: 'desc' },
         skip,
         take: pageSize,
@@ -111,7 +126,17 @@ export class DocumentsService {
     ]);
 
     return {
-      items,
+      items: items.map((item) => {
+        const latestExtraction = item.extractions[0];
+        const { extractions, _count, ...document } = item;
+
+        return {
+          ...document,
+          sourceRowCount: latestExtraction?.sourceRowCount ?? null,
+          extractedRowCount: latestExtraction?.extractedRowCount ?? null,
+          importedRecordCount: _count.activityData,
+        };
+      }),
       page,
       pageSize,
       total,

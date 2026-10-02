@@ -69,6 +69,8 @@ export class ActivityDataService {
       sourcePage: normalizeOptionalText(dto.sourcePage),
       sourceRow: normalizeOptionalText(dto.sourceRow),
       sourceTextSnippet: dto.sourceTextSnippet ?? null,
+      costCad: normalizeOptionalCost(dto.costCad),
+      costCurrency: normalizeOptionalText(dto.costCurrency),
       importBatchId: dto.importBatchId ?? null,
       notes: dto.notes ?? null,
       ...buildCalculationFieldCreateData(dto),
@@ -433,6 +435,10 @@ export class ActivityDataService {
         ...(dto.sourceTextSnippet !== undefined
           ? { sourceTextSnippet: dto.sourceTextSnippet || null }
           : {}),
+        ...(dto.costCad !== undefined ? { costCad: normalizeOptionalCost(dto.costCad) } : {}),
+        ...(dto.costCurrency !== undefined
+          ? { costCurrency: normalizeOptionalText(dto.costCurrency) }
+          : {}),
         ...(dto.notes !== undefined ? { notes: dto.notes || null } : {}),
         ...buildCalculationFieldUpdateData(dto),
       },
@@ -569,7 +575,7 @@ export class ActivityDataService {
     }
 
     if (!normalizedProvince) {
-      throw new BadRequestException('Select a province before applying.');
+      throw new BadRequestException(`Unsupported province code: ${province}`);
     }
 
     const eligibleRecords = await this.prisma.activityData.findMany({
@@ -593,6 +599,24 @@ export class ActivityDataService {
         },
         data: {
           jurisdictionRegion: normalizedProvince,
+          matchingStatus: null,
+          reportTreatment: null,
+          scope: null,
+          matchedFactorId: null,
+          matchedFactorName: null,
+          matchedFactorSourceYear: null,
+          matchedFactorValue: null,
+          matchedFactorUnit: null,
+          matchedFactorVersion: null,
+          matchedFactorSourceAuthority: null,
+          matchedFactorSourceDocument: null,
+          matchedFactorVerificationStatus: null,
+          matchedFactorConfidenceLevel: null,
+          matchedFactorAssumptions: null,
+          calculatedEmissionsKgCO2e: null,
+          calculationStatus: 'PENDING_RECALCULATION',
+          calculationMessage:
+            'Province changed. Recalculate to refresh factor matching and emissions.',
         },
       });
 
@@ -633,6 +657,91 @@ export class ActivityDataService {
     return {
       ids: eligibleIds,
       province: normalizedProvince,
+      updatedCount: updated.length,
+      updatedRecords: updated,
+    };
+  }
+
+  async bulkUpdateFacility(
+    organizationId: string,
+    ids: string[],
+    facilityName: string,
+    userId?: string,
+  ) {
+    const uniqueIds = Array.from(
+      new Set(ids.map((id) => String(id).trim()).filter(Boolean)),
+    );
+    const normalizedFacilityName = normalizeOptionalText(facilityName);
+
+    if (!uniqueIds.length) {
+      throw new BadRequestException('No selected activity records.');
+    }
+
+    if (!normalizedFacilityName) {
+      throw new BadRequestException('Facility name is required.');
+    }
+
+    const eligibleRecords = await this.prisma.activityData.findMany({
+      where: {
+        id: { in: uniqueIds },
+        organizationId,
+      },
+    });
+
+    if (!eligibleRecords.length) {
+      throw new BadRequestException('No selected activity records.');
+    }
+
+    const eligibleIds = eligibleRecords.map((record) => record.id);
+    const updated = await this.prisma.$transaction(async (tx) => {
+      await tx.activityData.updateMany({
+        where: {
+          id: { in: eligibleIds },
+          organizationId,
+        },
+        data: {
+          facilityId: null,
+          facilityName: normalizedFacilityName,
+        },
+      });
+
+      return tx.activityData.findMany({
+        where: {
+          id: { in: eligibleIds },
+          organizationId,
+        },
+      });
+    });
+
+    await this.auditLog.log({
+      organizationId,
+      userId,
+      action: 'BULK_UPDATE_ACTIVITY_RECORD_FACILITY',
+      entityType: 'ActivityData',
+      description: `Set facility on ${updated.length} activity records`,
+      oldValue: eligibleRecords,
+      newValue: {
+        ids: eligibleIds,
+        facilityName: normalizedFacilityName,
+        updatedCount: updated.length,
+      },
+    });
+
+    await this.activityTracking.track({
+      organizationId,
+      userId,
+      eventName: 'ACTIVITY_RECORDS_FACILITY_UPDATED',
+      entityType: 'ActivityData',
+      metadata: {
+        requestedCount: uniqueIds.length,
+        updatedCount: updated.length,
+        facilityName: normalizedFacilityName,
+      },
+    });
+
+    return {
+      ids: eligibleIds,
+      facilityName: normalizedFacilityName,
       updatedCount: updated.length,
       updatedRecords: updated,
     };
@@ -917,6 +1026,16 @@ function normalizeOptionalText(value?: string | number | null) {
   if (value === null || value === undefined) return null;
   const text = String(value).trim();
   return text || null;
+}
+
+function normalizeOptionalCost(value?: number | string | null) {
+  if (value === null || value === undefined || value === '') return null;
+  const numericValue =
+    typeof value === 'number'
+      ? value
+      : Number(String(value).trim().replace(/[$,\s]/g, ''));
+
+  return Number.isFinite(numericValue) ? new Prisma.Decimal(numericValue) : null;
 }
 
 function buildCalculationFieldCreateData(dto: CreateActivityDataDto) {

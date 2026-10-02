@@ -54,6 +54,18 @@ enum RecordSourceType {
   DOCUMENT_AI
 }
 
+enum SpreadsheetImportSourceType {
+  CSV
+  EXCEL
+  PASTE
+}
+
+enum SpreadsheetReviewRowStatus {
+  READY
+  NEEDS_REVIEW
+  TRACKED_ONLY
+}
+
 enum FactorType {
   EMISSION
   ENERGY
@@ -248,6 +260,7 @@ model Organization {
   feedback            Feedback[]
   activityEvents      UserActivityEvent[]
   documentExtractions DocumentExtraction[]
+  spreadsheetReviewRows SpreadsheetImportReviewRow[]
 
   // 缺的就是这两个
   activityData  ActivityData[]
@@ -341,6 +354,8 @@ model ActivityData {
   sourcePage                String?
   sourceRow                 String?
   sourceTextSnippet         String?
+  costCad                   Decimal?         @db.Decimal(18, 2)
+  costCurrency              String?
   importBatchId             String?
   notes                     String?
   matchingStatus            String?
@@ -382,6 +397,64 @@ model ActivityData {
   @@index([organizationId, facilityId, recordDate])
   @@index([organizationId, activityType, recordDate])
   @@index([organizationId, sourceDocumentId])
+}
+
+model SpreadsheetImportReviewRow {
+  id                        String                      @id @default(cuid())
+  organizationId            String
+  sourceDocumentId          String?
+  createdById               String?
+  rowId                     String
+  idempotencyKey            String
+  status                    SpreadsheetReviewRowStatus
+  sourceType                SpreadsheetImportSourceType
+  sourceFileName            String?
+  sourceSheetName           String?
+  sourceRow                 String?
+  sourceReference           String?
+  activityType              String?
+  rawActivityType           String?
+  recordDate                DateTime?
+  rawRecordDate             Json?
+  quantity                  Decimal?                    @db.Decimal(18, 4)
+  rawQuantity               String?
+  unit                      String?
+  jurisdictionCountry       String?
+  jurisdictionRegion        String?
+  facilityName              String?
+  costCad                   Decimal?                    @db.Decimal(18, 2)
+  costCurrency              String?
+  notes                     String?
+  issues                    Json
+  rawSourceRow              Json?
+  matchingStatus            String?
+  reportTreatment           String?
+  scope                     String?
+  matchedFactorId           String?
+  matchedFactorName         String?
+  matchedFactorSourceYear   Int?
+  matchedFactorValue        Float?
+  matchedFactorUnit         String?
+  matchedFactorVersion      String?
+  matchedFactorSourceAuthority String?
+  matchedFactorSourceDocument  String?
+  matchedFactorVerificationStatus String?
+  matchedFactorConfidenceLevel String?
+  matchedFactorAssumptions  String?
+  calculatedEmissionsKgCO2e Float?
+  calculationStatus         String?
+  calculationMessage        String?
+  createdAt                 DateTime                    @default(now())
+  updatedAt                 DateTime                    @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  sourceDocument Document? @relation(fields: [sourceDocumentId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, idempotencyKey], name: "SpreadsheetImportReviewRow_idempotency_key")
+  @@index([organizationId])
+  @@index([sourceDocumentId])
+  @@index([organizationId, status])
+  @@index([organizationId, sourceFileName])
 }
 
 model Factor {
@@ -669,6 +742,7 @@ model Document {
   activityData ActivityData[]
   aiJobs       AIJob[]
   extractions  DocumentExtraction[]
+  spreadsheetReviewRows SpreadsheetImportReviewRow[]
 
   @@index([organizationId])
   @@index([organizationId, fileHash])

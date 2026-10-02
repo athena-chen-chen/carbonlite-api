@@ -499,6 +499,8 @@ export class CalculationQualityService {
         },
         formula: detail.calculationFormula,
         warning: detail.status === 'CALCULATED' ? null : detail.reason,
+        costCad: detail.costCad,
+        costCurrency: detail.costCurrency,
       })),
       categoryBreakdown: buildCategoryBreakdown(inScopeDetails),
       hotspotSummary: buildHotspotSummary(inScopeDetails),
@@ -516,6 +518,8 @@ export class CalculationQualityService {
         sourcePage: detail.sourcePage,
         sourceRow: detail.sourceRow,
         sourceTextSnippet: detail.sourceTextSnippet,
+        costCad: detail.costCad,
+        costCurrency: detail.costCurrency,
         notes: detail.notes,
         factorId: detail.factorId,
         factorVersionId: detail.factorVersionId,
@@ -544,6 +548,8 @@ export class CalculationQualityService {
         sourcePage: detail.sourcePage,
         sourceRow: detail.sourceRow,
         sourceTextSnippet: detail.sourceTextSnippet,
+        costCad: detail.costCad,
+        costCurrency: detail.costCurrency,
       })),
       totalsByMetric: [
         {
@@ -955,6 +961,8 @@ export class CalculationQualityService {
       sourceRow: record.sourceRow,
       sourceTextSnippet: record.sourceTextSnippet,
       sourceDocumentId: record.sourceDocumentId || record.documentId,
+      costCad: record.costCad === null || record.costCad === undefined ? null : Number(record.costCad),
+      costCurrency: record.costCurrency,
       notes: record.notes,
     };
   }
@@ -1385,9 +1393,7 @@ function buildDataQualitySummary(details: Array<ReturnType<CalculationQualitySer
   const sourceReferenceCount = details.filter((detail) =>
     Boolean(detail.sourceReference || detail.sourceFileName || detail.sourceDocumentId),
   ).length;
-  const costDataCount = details.filter((detail) =>
-    /(\bcost\b|\$|\bcad\b|\busd\b)/i.test(`${detail.notes ?? ''} ${detail.sourceTextSnippet ?? ''}`),
-  ).length;
+  const costDataCount = details.filter(hasOptionalCostData).length;
   const requiredCompleteCount = details.filter((detail) => {
     const quantity = Number(detail.activityQuantity);
     return Boolean(
@@ -1486,6 +1492,31 @@ function buildDataQualitySummary(details: Array<ReturnType<CalculationQualitySer
       },
     ],
   };
+}
+
+function hasOptionalCostData(detail: Record<string, unknown>) {
+  const explicitCostFields = [
+    detail.cost,
+    detail.costCad,
+    detail.costCAD,
+    detail.amountCad,
+    detail.spend,
+    detail.monetaryValue,
+    detail.currencyAmount,
+  ];
+
+  if (
+    explicitCostFields.some((value) => {
+      const normalized = String(value ?? '').trim();
+      return normalized.length > 0 && /(\d|\$|\bcad\b|\busd\b)/i.test(normalized);
+    })
+  ) {
+    return true;
+  }
+
+  return /(\bcost\b|\$|\bcad\b|\busd\b)/i.test(
+    `${detail.notes ?? ''} ${detail.sourceTextSnippet ?? ''}`,
+  );
 }
 
 function coverage(count: number, total: number) {

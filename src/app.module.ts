@@ -16,6 +16,7 @@ import { ActivityTrackingModule } from './activity-tracking/activity-tracking.mo
 import { SentryTestController } from './sentry-test.controller';
 import { FacilitiesModule } from './facilities/facilities.module';
 import { OrganizationsModule } from './organizations/organizations.module';
+import { SpreadsheetImportModule } from './spreadsheet-import/spreadsheet-import.module';
 
 @Module({
   imports: [
@@ -34,6 +35,7 @@ import { OrganizationsModule } from './organizations/organizations.module';
     FeedbackModule,
     FacilitiesModule,
     OrganizationsModule,
+    SpreadsheetImportModule,
   ],
   controllers: [HealthController, SentryTestController],
 })

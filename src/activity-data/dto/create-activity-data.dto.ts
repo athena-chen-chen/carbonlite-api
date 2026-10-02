@@ -111,6 +111,16 @@ export class CreateActivityDataDto {
   sourceTextSnippet?: string;
 
   @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  costCad?: number;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(12)
+  costCurrency?: string;
+
+  @IsOptional()
   @IsString()
   importBatchId?: string;
 

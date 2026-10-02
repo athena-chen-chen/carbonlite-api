@@ -1,6 +1,5 @@
 import {
   BadRequestException,
-  ConflictException,
   Injectable,
   InternalServerErrorException,
   Logger,
@@ -11,7 +10,7 @@ import { openai } from '../openai/openai.client';
 import { access, readFile } from 'fs/promises';
 import { constants } from 'fs';
 import { join } from 'path';
-import { ActivityType } from '@prisma/client';
+import { ActivityType, Prisma, SpreadsheetImportReviewRow } from '@prisma/client';
 import { AuditLogService } from '../audit-log/audit-log.service';
 import { ActivityTrackingService } from '../activity-tracking/activity-tracking.service';
 import {
@@ -43,6 +42,32 @@ type ParsedActivityRaw = {
   facilityName?: string | null;
   sourceReference?: string | null;
   notes?: string | null;
+};
+
+type NormalizedImportActivity = ParsedActivityRaw & {
+  sourceRow?: string | null;
+  sourcePage?: string | number | null;
+  sourceTextSnippet?: string | null;
+  sourceFileName?: string | null;
+  importBatchId?: string | null;
+  recordYear?: number | null;
+  matchingStatus?: string | null;
+  reportTreatment?: string | null;
+  scope?: string | null;
+  matchedFactorId?: string | null;
+  matchedFactorName?: string | null;
+  matchedFactorSourceYear?: number | null;
+  matchedFactorValue?: number | null;
+  matchedFactorUnit?: string | null;
+  matchedFactorVersion?: string | null;
+  matchedFactorSourceAuthority?: string | null;
+  matchedFactorSourceDocument?: string | null;
+  matchedFactorVerificationStatus?: string | null;
+  matchedFactorConfidenceLevel?: string | null;
+  matchedFactorAssumptions?: string | null;
+  calculatedEmissionsKgCO2e?: number | null;
+  calculationStatus?: string | null;
+  calculationMessage?: string | null;
 };
 
 type ConfidenceField<T> = {
@@ -831,15 +856,6 @@ Return only activity rows with operational quantities as activities array.
           throw new NotFoundException('Document not found');
         }
 
-        const existingImport = await this.prisma.activityData.findFirst({
-          where: { organizationId, sourceDocumentId: documentId },
-          select: { id: true },
-        });
-
-        if (document.importedAt || existingImport) {
-          throw new ConflictException('This document has already been imported.');
-        }
-
         return { document };
       });
     const { document } = validationResult;
@@ -853,26 +869,63 @@ Return only activity rows with operational quantities as activities array.
       await timeAsync(() =>
         this.prisma.$transaction(async (tx) => {
           const ids: string[] = [];
-          const claimedDocument = await tx.document.updateMany({
+          const spreadsheetReviewRows = await tx.spreadsheetImportReviewRow.findMany({
             where: {
-              id: documentId,
               organizationId,
-              importedAt: null,
+              sourceDocumentId: documentId,
             },
-            data: {
-              status: 'IMPORTED',
-              importedAt: new Date(),
-              importBatchId: stableImportBatchId,
-            },
+            orderBy: [
+              { sourceRow: 'asc' },
+              { createdAt: 'asc' },
+            ],
           });
 
-          if (claimedDocument.count === 0) {
-            throw new ConflictException(
-              'This document has already been imported.',
-            );
-          }
+          const activitiesForImport = this.mergeImportActivities(
+            normalizedActivities,
+            spreadsheetReviewRows,
+          );
+          const existingActivities = await tx.activityData.findMany({
+            where: {
+              organizationId,
+              sourceDocumentId: documentId,
+            },
+            select: {
+              sourceRow: true,
+              sourceReference: true,
+              activityType: true,
+              recordDate: true,
+              quantity: true,
+              unit: true,
+            },
+          });
+          const importedKeys = new Set(
+            existingActivities.flatMap((activity) => {
+              const keyInput = {
+                sourceRow: activity.sourceRow,
+                sourceReference: activity.sourceReference,
+                activityType: activity.activityType,
+                recordDate: activity.recordDate.toISOString().slice(0, 10),
+                quantity: Number(activity.quantity),
+                unit: activity.unit,
+              };
 
-          for (const normalized of normalizedActivities) {
+              return [
+                this.buildImportActivityRecordKey(documentId, keyInput),
+                this.buildImportActivityRecordKey(documentId, {
+                  ...keyInput,
+                  sourceRow: null,
+                }),
+              ];
+            }),
+          );
+
+          for (const normalized of activitiesForImport) {
+            const key = this.buildImportActivityRecordKey(documentId, normalized);
+            const fallbackKey = this.buildImportActivityRecordKey(documentId, {
+              ...normalized,
+              sourceRow: null,
+            });
+            if (importedKeys.has(key) || importedKeys.has(fallbackKey)) continue;
             const row = await tx.activityData.create({
               data: {
                 organizationId,
@@ -882,19 +935,55 @@ Return only activity rows with operational quantities as activities array.
                 jurisdictionCountry: normalized.jurisdictionCountry ?? null,
                 jurisdictionRegion: normalized.jurisdictionRegion ?? null,
                 facilityName: normalized.facilityName ?? null,
+                recordYear: normalized.recordYear ?? this.getDateOnlyYear(normalized.recordDate),
                 quantity: normalized.quantity,
                 unit: normalized.unit,
                 sourceType: 'DOCUMENT_AI' as any,
                 sourceReference: normalized.sourceReference ?? null,
                 sourceDocumentId: documentId,
-                sourceFileName: document.fileName,
+                sourceFileName: normalized.sourceFileName ?? document.fileName,
+                sourceRow: normalized.sourceRow ?? null,
+                sourcePage: normalized.sourcePage == null ? null : String(normalized.sourcePage),
+                sourceTextSnippet: normalized.sourceTextSnippet ?? null,
                 importBatchId: stableImportBatchId,
                 notes: normalized.notes ?? null,
+                matchingStatus: normalized.matchingStatus ?? null,
+                reportTreatment: normalized.reportTreatment ?? null,
+                scope: normalized.scope ?? null,
+                matchedFactorId: normalized.matchedFactorId ?? null,
+                matchedFactorName: normalized.matchedFactorName ?? null,
+                matchedFactorSourceYear: normalized.matchedFactorSourceYear ?? null,
+                matchedFactorValue: normalized.matchedFactorValue ?? null,
+                matchedFactorUnit: normalized.matchedFactorUnit ?? null,
+                matchedFactorVersion: normalized.matchedFactorVersion ?? null,
+                matchedFactorSourceAuthority: normalized.matchedFactorSourceAuthority ?? null,
+                matchedFactorSourceDocument: normalized.matchedFactorSourceDocument ?? null,
+                matchedFactorVerificationStatus: normalized.matchedFactorVerificationStatus ?? null,
+                matchedFactorConfidenceLevel: normalized.matchedFactorConfidenceLevel ?? null,
+                matchedFactorAssumptions: normalized.matchedFactorAssumptions ?? null,
+                calculatedEmissionsKgCO2e: normalized.calculatedEmissionsKgCO2e ?? null,
+                calculationStatus: normalized.calculationStatus ?? null,
+                calculationMessage: normalized.calculationMessage ?? null,
               },
             });
 
             ids.push(row.id);
+            importedKeys.add(key);
+            importedKeys.add(fallbackKey);
           }
+
+          const remainingReviewCount = spreadsheetReviewRows.filter(
+            (row) => row.status === 'NEEDS_REVIEW',
+          ).length;
+          const documentStatus = remainingReviewCount > 0 ? 'REVIEW_REQUIRED' : 'IMPORTED';
+          await tx.document.update({
+            where: { id: documentId },
+            data: {
+              status: documentStatus,
+              importedAt: documentStatus === 'IMPORTED' ? new Date() : null,
+              importBatchId: document.importBatchId ?? stableImportBatchId,
+            },
+          });
 
           return ids;
         }),
@@ -1111,7 +1200,7 @@ Return only activity rows with operational quantities as activities array.
     return hasCurrencyUnit || (mentionsCurrencyAmount && isBillingLine);
   }
 
-  private normalizeActivityForImport(activity: any): ParsedActivityRaw {
+  private normalizeActivityForImport(activity: any): NormalizedImportActivity {
     const normalizedActivityType = this.normalizeActivityType(
       this.readAliasedField(activity, [
         'activityType',
@@ -1216,7 +1305,134 @@ Return only activity rows with operational quantities as activities array.
       throw new BadRequestException('unit is required for import.');
     }
 
-    return normalized;
+    return {
+      ...normalized,
+      sourceRow: this.normalizeOptionalText(
+        this.readAliasedField(activity, ['sourceRow', 'Source Row']),
+      ),
+      sourcePage: this.readAliasedField(activity, ['sourcePage', 'Source Page']),
+      sourceTextSnippet: this.normalizeOptionalText(
+        this.readAliasedField(activity, ['sourceTextSnippet', 'Source Text Snippet']),
+      ),
+      sourceFileName: this.normalizeOptionalText(
+        this.readAliasedField(activity, ['sourceFileName', 'Source File Name']),
+      ),
+      importBatchId: this.normalizeOptionalText(
+        this.readAliasedField(activity, ['importBatchId', 'Import Batch ID']),
+      ),
+      recordYear: this.readOptionalNumber(activity, ['recordYear', 'Record Year']),
+      matchingStatus: this.normalizeOptionalText(activity.matchingStatus),
+      reportTreatment: this.normalizeOptionalText(activity.reportTreatment),
+      scope: this.normalizeOptionalText(activity.scope),
+      matchedFactorId: this.normalizeOptionalText(activity.matchedFactorId),
+      matchedFactorName: this.normalizeOptionalText(activity.matchedFactorName),
+      matchedFactorSourceYear: this.readOptionalNumber(activity, ['matchedFactorSourceYear']),
+      matchedFactorValue: this.readOptionalNumber(activity, ['matchedFactorValue']),
+      matchedFactorUnit: this.normalizeOptionalText(activity.matchedFactorUnit),
+      matchedFactorVersion: this.normalizeOptionalText(activity.matchedFactorVersion),
+      matchedFactorSourceAuthority: this.normalizeOptionalText(activity.matchedFactorSourceAuthority),
+      matchedFactorSourceDocument: this.normalizeOptionalText(activity.matchedFactorSourceDocument),
+      matchedFactorVerificationStatus: this.normalizeOptionalText(activity.matchedFactorVerificationStatus),
+      matchedFactorConfidenceLevel: this.normalizeOptionalText(activity.matchedFactorConfidenceLevel),
+      matchedFactorAssumptions: this.normalizeOptionalText(activity.matchedFactorAssumptions),
+      calculatedEmissionsKgCO2e: this.readOptionalNumber(activity, ['calculatedEmissionsKgCO2e']),
+      calculationStatus: this.normalizeOptionalText(activity.calculationStatus),
+      calculationMessage: this.normalizeOptionalText(activity.calculationMessage),
+    };
+  }
+
+  private mergeImportActivities(
+    requestActivities: NormalizedImportActivity[],
+    reviewRows: SpreadsheetImportReviewRow[],
+  ) {
+    if (reviewRows.length > 0) {
+      return reviewRows
+        .map((row) => this.buildImportActivityFromReviewRow(row))
+        .filter((activity): activity is NormalizedImportActivity => Boolean(activity));
+    }
+
+    const merged = new Map<string, NormalizedImportActivity>();
+
+    for (const activity of requestActivities) {
+      merged.set(this.buildImportActivityRecordKey('', activity), activity);
+    }
+
+    return Array.from(merged.values());
+  }
+
+  private buildImportActivityFromReviewRow(
+    row: SpreadsheetImportReviewRow,
+  ): NormalizedImportActivity | null {
+    if (!this.isSpreadsheetReviewRowImportEligible(row)) return null;
+    if (!row.activityType || !row.recordDate || !row.quantity || !row.unit) return null;
+
+    return {
+      activityType: this.normalizeActivityType(row.activityType),
+      recordDate: row.recordDate.toISOString().slice(0, 10),
+      quantity: Number(row.quantity),
+      unit: row.unit,
+      jurisdictionCountry: normalizeJurisdictionCountry(row.jurisdictionCountry) ?? row.jurisdictionCountry,
+      jurisdictionRegion: normalizeJurisdictionRegion(row.jurisdictionRegion) ?? row.jurisdictionRegion,
+      facilityName: row.facilityName,
+      sourceReference: row.sourceReference,
+      notes: row.notes,
+      sourceRow: row.sourceRow,
+      sourceFileName: row.sourceFileName,
+      matchingStatus: row.matchingStatus,
+      reportTreatment: row.reportTreatment,
+      scope: row.scope,
+      matchedFactorId: row.matchedFactorId,
+      matchedFactorName: row.matchedFactorName,
+      matchedFactorSourceYear: row.matchedFactorSourceYear,
+      matchedFactorValue: row.matchedFactorValue,
+      matchedFactorUnit: row.matchedFactorUnit,
+      matchedFactorVersion: row.matchedFactorVersion,
+      matchedFactorSourceAuthority: row.matchedFactorSourceAuthority,
+      matchedFactorSourceDocument: row.matchedFactorSourceDocument,
+      matchedFactorVerificationStatus: row.matchedFactorVerificationStatus,
+      matchedFactorConfidenceLevel: row.matchedFactorConfidenceLevel,
+      matchedFactorAssumptions: row.matchedFactorAssumptions,
+      calculatedEmissionsKgCO2e: row.calculatedEmissionsKgCO2e,
+      calculationStatus: row.calculationStatus,
+      calculationMessage: row.calculationMessage,
+    };
+  }
+
+  private isSpreadsheetReviewRowImportEligible(row: SpreadsheetImportReviewRow) {
+    const status = String(row.status ?? '').toUpperCase();
+    const reportTreatment = String(row.reportTreatment ?? '').toUpperCase();
+    const calculationStatus = String(row.calculationStatus ?? '').toUpperCase();
+    const matchingStatus = String(row.matchingStatus ?? '').toUpperCase();
+    const scope = String(row.scope ?? '').toUpperCase();
+
+    return (
+      status === 'READY' ||
+      status === 'TRACKED_ONLY' ||
+      reportTreatment === 'TRACKED_ONLY' ||
+      calculationStatus === 'TRACKED_ONLY' ||
+      matchingStatus === 'TRACKED_ONLY' ||
+      scope === 'TRACKED_METRIC'
+    );
+  }
+
+  private buildImportActivityRecordKey(
+    documentId: string,
+    activity: Pick<
+      NormalizedImportActivity,
+      'sourceRow' | 'sourceReference' | 'activityType' | 'recordDate' | 'quantity' | 'unit'
+    >,
+  ) {
+    const sourceRow = this.normalizeOptionalText(activity.sourceRow);
+    if (sourceRow) return `${documentId}::row:${sourceRow}`;
+
+    return [
+      documentId,
+      this.normalizeOptionalText(activity.sourceReference) ?? '',
+      this.normalizeOptionalText(activity.activityType)?.toUpperCase() ?? '',
+      this.normalizeOptionalText(activity.recordDate) ?? '',
+      this.normalizeOptionalText(activity.quantity) ?? '',
+      this.normalizeOptionalText(activity.unit)?.toUpperCase() ?? '',
+    ].join('::');
   }
 
   private unwrapField(value: any): any {
@@ -1241,6 +1457,24 @@ Return only activity rows with operational quantities as activities array.
     }
 
     return null;
+  }
+
+  private readOptionalNumber(activity: any, keys: string[]) {
+    const rawValue = this.readAliasedField(activity, keys);
+    const value = Number(rawValue);
+    return Number.isFinite(value) ? value : null;
+  }
+
+  private normalizeOptionalText(value: unknown) {
+    if (value === null || value === undefined) return null;
+    const text = String(value).trim();
+    return text || null;
+  }
+
+  private getDateOnlyYear(value?: string | null) {
+    const text = String(value ?? '').trim();
+    const year = Number(text.slice(0, 4));
+    return /^\d{4}/.test(text) && Number.isInteger(year) ? year : null;
   }
 
   private isValidDate(value: string | null | undefined): boolean {

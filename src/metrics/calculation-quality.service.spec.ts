@@ -346,6 +346,8 @@ describe('CalculationQualityService', () => {
           sourcePage: '2',
           sourceRow: '5',
           sourceTextSnippet: 'Electricity usage 1000 kWh',
+          costCad: new Prisma.Decimal(214.55),
+          costCurrency: 'CAD',
         }),
       ],
       factors: [],
@@ -373,6 +375,8 @@ describe('CalculationQualityService', () => {
       sourceRow: '5',
       sourceTextSnippet: 'Electricity usage 1000 kWh',
       normalizedUnit: 'kwh',
+      costCad: 214.55,
+      costCurrency: 'CAD',
     });
     expect(result.conversionFactorsUsed[0]).toMatchObject({
       factorVersionId: 'factor-version-ab-2025',
@@ -385,6 +389,16 @@ describe('CalculationQualityService', () => {
       calculationFormula: '1000 kwh × 0.5 kgCO2e/kWh = 500 kgCO2e',
       sourceFileName: 'electricity-bill.pdf',
       sourcePage: '2',
+      costCad: 214.55,
+      costCurrency: 'CAD',
+    });
+    expect(result.records[0]).toMatchObject({
+      costCad: 214.55,
+      costCurrency: 'CAD',
+    });
+    expect(result.activities[0]).toMatchObject({
+      costCad: 214.55,
+      costCurrency: 'CAD',
     });
   });
 

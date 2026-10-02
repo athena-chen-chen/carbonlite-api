@@ -19,6 +19,7 @@ import { ActivityDataQueryDto } from './dto/activity-data-query.dto';
 import { BulkImportActivityDataDto } from './dto/bulk-import-activity-data.dto';
 import { BulkDeleteActivityDataDto } from './dto/bulk-delete-activity-data.dto';
 import { BulkUpdateProvinceDto } from './dto/bulk-update-province.dto';
+import { BulkUpdateFacilityDto } from './dto/bulk-update-facility.dto';
 import { JsonActivityDataPreviewDto } from './dto/json-activity-data-preview.dto';
 import { AuthenticatedUser } from '../auth/auth.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
@@ -90,6 +91,25 @@ export class ActivityDataController {
       user.organizationId,
       dto.ids,
       dto.province,
+      user.id,
+    );
+  }
+
+  @Patch('bulk-facility')
+  @HttpCode(200)
+  bulkUpdateFacility(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() dto: BulkUpdateFacilityDto,
+  ) {
+    assertCanContributeActivityData(
+      user,
+      'Your current role does not allow setting facility.',
+    );
+
+    return this.activityDataService.bulkUpdateFacility(
+      user.organizationId,
+      dto.ids,
+      dto.facilityName,
       user.id,
     );
   }

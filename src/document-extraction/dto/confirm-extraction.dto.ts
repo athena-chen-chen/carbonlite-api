@@ -1,5 +1,4 @@
 import {
-  ArrayMinSize,
   IsArray,
   IsString,
   IsNumber,
@@ -59,7 +58,6 @@ export class ConfirmExtractionDto {
   documentId!: string;
 
   @IsArray()
-  @ArrayMinSize(1)
   activities!: ParsedActivityDto[];
 
   @IsOptional()

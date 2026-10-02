@@ -145,7 +145,14 @@ describe('ActivityDataService canonical calculation persistence', () => {
         jurisdictionRegion: '',
       },
       {
-        id: 'activity-already-has-province',
+        id: 'activity-existing-different-province',
+        organizationId: 'org-1',
+        activityType: 'ELECTRICITY',
+        jurisdictionRegion: 'Alberta',
+        ...canonicalFields,
+      },
+      {
+        id: 'activity-existing-same-province',
         organizationId: 'org-1',
         activityType: 'ELECTRICITY',
         jurisdictionRegion: 'BC',
@@ -153,7 +160,11 @@ describe('ActivityDataService canonical calculation persistence', () => {
     ];
     const updatedRecords = eligibleRecords.map((record) => ({
       ...record,
-      jurisdictionRegion: 'AB',
+      jurisdictionRegion: 'BC',
+      matchingStatus: null,
+      matchedFactorId: null,
+      calculatedEmissionsKgCO2e: null,
+      calculationStatus: 'PENDING_RECALCULATION',
     }));
 
     prisma.activityData.findMany
@@ -166,9 +177,10 @@ describe('ActivityDataService canonical calculation persistence', () => {
       [
         'activity-electricity-missing-province',
         'activity-electricity-missing-province',
-        'activity-already-has-province',
+        'activity-existing-different-province',
+        'activity-existing-same-province',
       ],
-      'Alberta',
+      'BC',
       'user-1',
     );
 
@@ -177,7 +189,8 @@ describe('ActivityDataService canonical calculation persistence', () => {
         id: {
           in: [
             'activity-electricity-missing-province',
-            'activity-already-has-province',
+            'activity-existing-different-province',
+            'activity-existing-same-province',
           ],
         },
         organizationId: 'org-1',
@@ -186,29 +199,116 @@ describe('ActivityDataService canonical calculation persistence', () => {
     });
     expect(prisma.activityData.updateMany).toHaveBeenCalledWith({
       where: {
-        id: { in: ['activity-electricity-missing-province', 'activity-already-has-province'] },
+        id: {
+          in: [
+            'activity-electricity-missing-province',
+            'activity-existing-different-province',
+            'activity-existing-same-province',
+          ],
+        },
         organizationId: 'org-1',
       },
-      data: {
-        jurisdictionRegion: 'AB',
-      },
+      data: expect.objectContaining({
+        jurisdictionRegion: 'BC',
+        matchingStatus: null,
+        matchedFactorId: null,
+        matchedFactorName: null,
+        calculatedEmissionsKgCO2e: null,
+        calculationStatus: 'PENDING_RECALCULATION',
+        calculationMessage:
+          'Province changed. Recalculate to refresh factor matching and emissions.',
+      }),
     });
     expect(result).toMatchObject({
-      ids: ['activity-electricity-missing-province', 'activity-already-has-province'],
-      province: 'AB',
-      updatedCount: 2,
+      ids: [
+        'activity-electricity-missing-province',
+        'activity-existing-different-province',
+        'activity-existing-same-province',
+      ],
+      province: 'BC',
+      updatedCount: 3,
       updatedRecords,
     });
     expect(activityTracking.track).toHaveBeenCalledWith(
       expect.objectContaining({
         eventName: 'ACTIVITY_RECORDS_PROVINCE_UPDATED',
         metadata: expect.objectContaining({
-          requestedCount: 2,
-          updatedCount: 2,
-          province: 'AB',
+          requestedCount: 3,
+          updatedCount: 3,
+          province: 'BC',
         }),
       }),
     );
+  });
+
+  it('ignores selected non-electricity and wrong-organization records safely', async () => {
+    const eligibleRecords = [
+      {
+        id: 'activity-electricity-org-1',
+        organizationId: 'org-1',
+        activityType: 'ELECTRICITY',
+        jurisdictionRegion: null,
+      },
+    ];
+    const updatedRecords = [
+      {
+        ...eligibleRecords[0],
+        jurisdictionRegion: 'ON',
+      },
+    ];
+
+    prisma.activityData.findMany
+      .mockResolvedValueOnce(eligibleRecords)
+      .mockResolvedValueOnce(updatedRecords);
+    prisma.activityData.updateMany.mockResolvedValue({ count: 1 });
+
+    const result = await service.bulkUpdateProvince(
+      'org-1',
+      [
+        'activity-electricity-org-1',
+        'activity-gasoline-org-1',
+        'activity-electricity-other-org',
+      ],
+      'ON',
+      'user-1',
+    );
+
+    expect(prisma.activityData.findMany).toHaveBeenNthCalledWith(1, {
+      where: {
+        id: {
+          in: [
+            'activity-electricity-org-1',
+            'activity-gasoline-org-1',
+            'activity-electricity-other-org',
+          ],
+        },
+        organizationId: 'org-1',
+        activityType: 'ELECTRICITY',
+      },
+    });
+    expect(prisma.activityData.updateMany).toHaveBeenCalledWith({
+      where: {
+        id: { in: ['activity-electricity-org-1'] },
+        organizationId: 'org-1',
+      },
+      data: expect.objectContaining({
+        jurisdictionRegion: 'ON',
+      }),
+    });
+    expect(result).toMatchObject({
+      ids: ['activity-electricity-org-1'],
+      province: 'ON',
+      updatedCount: 1,
+    });
+  });
+
+  it('rejects unsupported bulk province codes with an actionable message', async () => {
+    await expect(
+      service.bulkUpdateProvince('org-1', ['activity-1'], 'XX', 'user-1'),
+    ).rejects.toThrow('Unsupported province code: XX');
+
+    expect(prisma.activityData.findMany).not.toHaveBeenCalled();
+    expect(prisma.activityData.updateMany).not.toHaveBeenCalled();
   });
 
   it('rejects bulk province updates when no selected electricity records match', async () => {
@@ -217,6 +317,172 @@ describe('ActivityDataService canonical calculation persistence', () => {
     await expect(
       service.bulkUpdateProvince('org-1', ['activity-1'], 'AB', 'user-1'),
     ).rejects.toThrow('No selected electricity records.');
+
+    expect(prisma.activityData.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('bulk updates facility for selected records across activity types in the organization', async () => {
+    const eligibleRecords = [
+      {
+        id: 'activity-missing-facility',
+        organizationId: 'org-1',
+        activityType: 'ELECTRICITY',
+        facilityName: null,
+      },
+      {
+        id: 'activity-existing-different-facility',
+        organizationId: 'org-1',
+        activityType: 'NATURAL_GAS',
+        facilityId: 'facility-vancouver',
+        facilityName: 'Vancouver Office',
+      },
+      {
+        id: 'activity-existing-same-facility',
+        organizationId: 'org-1',
+        activityType: 'GASOLINE',
+        facilityName: 'Calgary Office',
+      },
+    ];
+    const updatedRecords = eligibleRecords.map((record) => ({
+      ...record,
+      facilityId: null,
+      facilityName: 'Calgary Office',
+    }));
+
+    prisma.activityData.findMany
+      .mockResolvedValueOnce(eligibleRecords)
+      .mockResolvedValueOnce(updatedRecords);
+    prisma.activityData.updateMany.mockResolvedValue({ count: 3 });
+
+    const result = await service.bulkUpdateFacility(
+      'org-1',
+      [
+        'activity-missing-facility',
+        'activity-existing-different-facility',
+        'activity-existing-same-facility',
+        'activity-existing-same-facility',
+      ],
+      ' Calgary Office ',
+      'user-1',
+    );
+
+    expect(prisma.activityData.findMany).toHaveBeenNthCalledWith(1, {
+      where: {
+        id: {
+          in: [
+            'activity-missing-facility',
+            'activity-existing-different-facility',
+            'activity-existing-same-facility',
+          ],
+        },
+        organizationId: 'org-1',
+      },
+    });
+    expect(prisma.activityData.updateMany).toHaveBeenCalledWith({
+      where: {
+        id: {
+          in: [
+            'activity-missing-facility',
+            'activity-existing-different-facility',
+            'activity-existing-same-facility',
+          ],
+        },
+        organizationId: 'org-1',
+      },
+      data: {
+        facilityId: null,
+        facilityName: 'Calgary Office',
+      },
+    });
+    expect(result).toMatchObject({
+      ids: [
+        'activity-missing-facility',
+        'activity-existing-different-facility',
+        'activity-existing-same-facility',
+      ],
+      facilityName: 'Calgary Office',
+      updatedCount: 3,
+      updatedRecords,
+    });
+    expect(activityTracking.track).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventName: 'ACTIVITY_RECORDS_FACILITY_UPDATED',
+        metadata: expect.objectContaining({
+          requestedCount: 3,
+          updatedCount: 3,
+          facilityName: 'Calgary Office',
+        }),
+      }),
+    );
+  });
+
+  it('ignores selected wrong-organization records when bulk updating facility', async () => {
+    const eligibleRecords = [
+      {
+        id: 'activity-org-1',
+        organizationId: 'org-1',
+        activityType: 'HOTEL',
+        facilityName: null,
+      },
+    ];
+    const updatedRecords = [
+      {
+        ...eligibleRecords[0],
+        facilityId: null,
+        facilityName: 'Calgary Office',
+      },
+    ];
+
+    prisma.activityData.findMany
+      .mockResolvedValueOnce(eligibleRecords)
+      .mockResolvedValueOnce(updatedRecords);
+    prisma.activityData.updateMany.mockResolvedValue({ count: 1 });
+
+    const result = await service.bulkUpdateFacility(
+      'org-1',
+      ['activity-org-1', 'activity-other-org'],
+      'Calgary Office',
+      'user-1',
+    );
+
+    expect(prisma.activityData.findMany).toHaveBeenNthCalledWith(1, {
+      where: {
+        id: { in: ['activity-org-1', 'activity-other-org'] },
+        organizationId: 'org-1',
+      },
+    });
+    expect(prisma.activityData.updateMany).toHaveBeenCalledWith({
+      where: {
+        id: { in: ['activity-org-1'] },
+        organizationId: 'org-1',
+      },
+      data: {
+        facilityId: null,
+        facilityName: 'Calgary Office',
+      },
+    });
+    expect(result).toMatchObject({
+      ids: ['activity-org-1'],
+      facilityName: 'Calgary Office',
+      updatedCount: 1,
+    });
+  });
+
+  it('rejects bulk facility updates when facility name is empty', async () => {
+    await expect(
+      service.bulkUpdateFacility('org-1', ['activity-1'], '   ', 'user-1'),
+    ).rejects.toThrow('Facility name is required.');
+
+    expect(prisma.activityData.findMany).not.toHaveBeenCalled();
+    expect(prisma.activityData.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('rejects bulk facility updates when no selected records match the organization', async () => {
+    prisma.activityData.findMany.mockResolvedValue([]);
+
+    await expect(
+      service.bulkUpdateFacility('org-1', ['activity-1'], 'Calgary Office', 'user-1'),
+    ).rejects.toThrow('No selected activity records.');
 
     expect(prisma.activityData.updateMany).not.toHaveBeenCalled();
   });

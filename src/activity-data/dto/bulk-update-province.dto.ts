@@ -1,4 +1,7 @@
-import { ArrayMinSize, IsArray, IsString, MaxLength } from 'class-validator';
+import { Transform } from 'class-transformer';
+import { ArrayMinSize, IsArray, IsIn, IsString } from 'class-validator';
+
+export const PILOT_PROVINCE_CODES = ['AB', 'BC', 'ON'] as const;
 
 export class BulkUpdateProvinceDto {
   @IsArray()
@@ -6,7 +9,10 @@ export class BulkUpdateProvinceDto {
   @IsString({ each: true })
   ids!: string[];
 
+  @Transform(({ value }) => String(value ?? '').trim().toUpperCase())
   @IsString()
-  @MaxLength(80)
+  @IsIn(PILOT_PROVINCE_CODES, {
+    message: 'Unsupported province code: $value',
+  })
   province!: string;
 }
