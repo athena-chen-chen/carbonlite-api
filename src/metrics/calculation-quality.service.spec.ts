@@ -230,6 +230,46 @@ describe('CalculationQualityService', () => {
     });
   });
 
+  it('does not treat placeholder wording in confidence as electricity factor eligibility', () => {
+    const result = service.evaluate({
+      organization,
+      records: [
+        record({
+          activityType: 'ELECTRICITY',
+          quantity: new Prisma.Decimal(980),
+          unit: 'kWh',
+          recordDate: new Date('2026-08-01T00:00:00.000Z'),
+          jurisdictionRegion: 'Alberta',
+          jurisdictionCountry: 'Canada',
+        }),
+      ],
+      factors: [
+        factor({
+          id: 'electricity-ab-low-placeholder-label',
+          name: 'Electricity - Alberta',
+          activityType: 'ELECTRICITY',
+          unit: 'kWh',
+          jurisdiction: 'Alberta',
+          country: 'Canada',
+          sourceYear: 2026,
+          factorValue: new Prisma.Decimal(0.53),
+          isSystemDefault: true,
+          verified: false,
+          confidenceLevel: 'Low (Placeholder)',
+          verificationStatus: 'INTERNAL REVIEW',
+        }),
+      ],
+    });
+
+    expect(result.totalEstimatedEmissionsKgCO2e).toBe(519.4);
+    expect(result.calculationDetails[0]).toMatchObject({
+      status: 'CALCULATED',
+      factorId: 'electricity-ab-low-placeholder-label',
+      matchingStatus: 'MATCHED',
+      calculatedEmissionsKgCO2e: 519.4,
+    });
+  });
+
   it('prefers an organization custom factor over a verified system factor', () => {
     const result = service.evaluate({
       organization,
@@ -517,9 +557,10 @@ describe('CalculationQualityService', () => {
       jurisdictionRegion: 'Alberta',
       jurisdictionSource: 'source',
       jurisdictionAssumed: true,
-      matchingStatus: 'MATCHED_NEAREST_YEAR',
+      matchingStatus: 'MATCHED',
       matchedBy: 'NEAREST_YEAR',
       factorPriority: 'DEMO_ALLOWED',
+      factorSelectionReason: 'PILOT_DEFAULT_FALLBACK',
     });
   });
 
@@ -620,11 +661,13 @@ describe('CalculationQualityService', () => {
 
     expect(result.totalEstimatedEmissionsKgCO2e).toBe(500);
     expect(result.calculationDetails[0]).toMatchObject({
-      matchingStatus: 'MATCHED_PRIOR_YEAR',
+      matchingStatus: 'MATCHED',
       matchedBy: 'PRIOR_YEAR',
+      factorSelectionReason: 'PRIOR_YEAR_FALLBACK',
       factorYear: 2025,
       recordYear: 2026,
     });
+    expect(result.calculationDetails[0].factorSelectionExplanation).toContain('No exact 2026 factor was available');
   });
 
   it('uses country-level fuel factor when province-specific factor is absent', () => {

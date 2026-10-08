@@ -64,10 +64,12 @@ type FactorMatch = {
     | 'GOVERNED_PRIOR_YEAR'
     | 'GOVERNED_NEAREST_YEAR'
     | 'DEMO_ALLOWED';
-  matchingStatus: 'MATCHED' | 'MATCHED_PRIOR_YEAR' | 'MATCHED_NEAREST_YEAR';
+  matchingStatus: 'MATCHED';
   matchedBy: string;
   message: string;
   quantityMultiplier?: number;
+  factorSelectionReason?: string | null;
+  factorSelectionExplanation?: string | null;
 };
 
 type CalculationQualityTimings = {
@@ -485,6 +487,8 @@ export class CalculationQualityService {
               sourceDocument: detail.sourceDocument,
               sourceYear: detail.sourceYear,
               sourceUrl: detail.sourceUrl,
+              factorSelectionReason: detail.factorSelectionReason,
+              factorSelectionExplanation: detail.factorSelectionExplanation,
               confidenceLevel: detail.factorConfidenceLevel,
               verificationStatus: detail.factorVerificationStatus,
               verified: detail.factorVerified,
@@ -515,6 +519,7 @@ export class CalculationQualityService {
         sourceReference: detail.sourceReference,
         sourceDocumentId: detail.sourceDocumentId,
         sourceFileName: detail.sourceFileName,
+        sourceSheetName: detail.sourceSheetName,
         sourcePage: detail.sourcePage,
         sourceRow: detail.sourceRow,
         sourceTextSnippet: detail.sourceTextSnippet,
@@ -526,6 +531,8 @@ export class CalculationQualityService {
         calculationFormula: detail.calculationFormula,
         matchingMethod: detail.matchedBy,
         matchingMessage: detail.matchingMessage,
+        factorSelectionReason: detail.factorSelectionReason,
+        factorSelectionExplanation: detail.factorSelectionExplanation,
       })),
       conversionFactorsUsed,
       activities: inScopeDetails.map((detail) => ({
@@ -545,6 +552,7 @@ export class CalculationQualityService {
         notes: detail.notes,
         sourceDocumentId: detail.sourceDocumentId,
         sourceFileName: detail.sourceFileName,
+        sourceSheetName: detail.sourceSheetName,
         sourcePage: detail.sourcePage,
         sourceRow: detail.sourceRow,
         sourceTextSnippet: detail.sourceTextSnippet,
@@ -698,7 +706,7 @@ export class CalculationQualityService {
       return {
         governedVersion: priorYear,
         priority: 'GOVERNED_PRIOR_YEAR',
-        matchingStatus: 'MATCHED_PRIOR_YEAR',
+        matchingStatus: 'MATCHED',
         matchedBy: 'PRIOR_YEAR',
         message: `Using nearest prior-year factor because no factor was found for the ${input.reportingYear} record year.`,
         quantityMultiplier: unitConversionMultiplier(input.record.unit, priorYear.inputUnit) ?? 1,
@@ -725,7 +733,7 @@ export class CalculationQualityService {
           nearestYear.confidenceLevel === 'DEMO'
             ? 'DEMO_ALLOWED'
             : 'GOVERNED_NEAREST_YEAR',
-        matchingStatus: 'MATCHED_NEAREST_YEAR',
+        matchingStatus: 'MATCHED',
         matchedBy: 'NEAREST_YEAR',
         message: `Using nearest available-year factor (${nearestYear.factorYear ?? 'unknown year'}) because no factor was found for the ${input.reportingYear} record year.`,
         quantityMultiplier: unitConversionMultiplier(input.record.unit, nearestYear.inputUnit) ?? 1,
@@ -889,6 +897,17 @@ export class CalculationQualityService {
         : null;
     const explanationStatus = mapExplanationStatus(result.status);
     const explanationMatchedBy = mapExplanationMatchedBy(result.matchedBy, result.status);
+    const factorSelection = buildFactorSelectionMetadata({
+      status: result.status,
+      matchedBy: result.matchedBy,
+      priority: result.factorPriority,
+      reportingYear: result.reportingYear,
+      factorYear: governedVersion?.factorYear ?? factor?.sourceYear ?? null,
+      activityRegion: result.jurisdictionRegion,
+      activityCountry: result.jurisdictionCountry,
+      factorRegion: governedVersion?.jurisdictionRegion ?? factor?.region ?? factor?.jurisdiction ?? null,
+      factorCountry: governedVersion?.jurisdictionCountry ?? factor?.country ?? null,
+    });
 
     return {
       activityDataId: record.id,
@@ -935,6 +954,8 @@ export class CalculationQualityService {
       matchedBy: result.matchedBy ?? null,
       matchingMessage: result.matchingMessage ?? result.reason,
       matchingMethod: result.matchedBy ?? null,
+      factorSelectionReason: factorSelection.reason,
+      factorSelectionExplanation: factorSelection.explanation,
       explanationStatus,
       explanationMatchedBy,
       factorType: factor
@@ -957,6 +978,7 @@ export class CalculationQualityService {
       sourceType: record.sourceType,
       sourceReference: record.sourceReference,
       sourceFileName: record.sourceFileName || record.document?.fileName || null,
+      sourceSheetName: record.sourceSheetName,
       sourcePage: record.sourcePage,
       sourceRow: record.sourceRow,
       sourceTextSnippet: record.sourceTextSnippet,
@@ -969,11 +991,65 @@ export class CalculationQualityService {
 }
 
 function isPlaceholderFactor(factor: ConversionFactor) {
-  return (
-    !factor.verified ||
-    String(factor.confidenceLevel ?? '').toUpperCase().includes('PLACEHOLDER') ||
-    String(factor.verificationStatus ?? '').toUpperCase().includes('INTERNAL REVIEW')
+  return normalizeJurisdictionRegion(factor.region || factor.jurisdiction) === 'Province Required';
+}
+
+function buildFactorSelectionMetadata(input: {
+  status: CalculationStatus;
+  matchedBy?: string | null;
+  priority?: FactorMatch['priority'] | null;
+  reportingYear?: number | null;
+  factorYear?: number | null;
+  activityRegion?: string | null;
+  activityCountry?: string | null;
+  factorRegion?: string | null;
+  factorCountry?: string | null;
+}) {
+  if (input.status !== 'CALCULATED') {
+    return { reason: null, explanation: null };
+  }
+
+  const factorIsGeneric = isCountryLevel(input.factorRegion, input.factorCountry);
+  const usedGenericFallback = factorIsGeneric && !isCountryLevel(input.activityRegion, input.activityCountry);
+  const usedPriorYear = Boolean(
+    input.reportingYear &&
+      input.factorYear &&
+      Number(input.factorYear) < Number(input.reportingYear),
   );
+  const usedPilotDefault = input.priority === 'DEMO_ALLOWED';
+  const usedNearestYear = input.matchedBy === 'NEAREST_YEAR' && !usedPriorYear;
+
+  const reason = usedPilotDefault
+    ? 'PILOT_DEFAULT_FALLBACK'
+    : usedGenericFallback
+      ? 'GENERIC_JURISDICTION_FALLBACK'
+      : usedPriorYear
+        ? 'PRIOR_YEAR_FALLBACK'
+        : usedNearestYear
+          ? 'NEAREST_YEAR_PROXY'
+          : 'EXACT_MATCH';
+
+  const parts: string[] = [];
+  if (usedGenericFallback) {
+    parts.push(`No ${input.activityRegion || 'local'}-specific factor was available. A Canada (Generic) factor was used.`);
+  }
+  if (usedPriorYear && input.reportingYear && input.factorYear) {
+    parts.push(`No exact ${input.reportingYear} factor was available. The ${input.factorYear} factor was selected according to the configured prior-year fallback policy.`);
+  }
+  if (usedNearestYear && input.reportingYear && input.factorYear) {
+    parts.push(`No exact or prior-year ${input.reportingYear} factor was available. The nearest available factor year ${input.factorYear} was selected for review.`);
+  }
+  if (usedPilotDefault) {
+    parts.push('A CarbonLite pilot/default factor was used and requires review before formal reporting.');
+  }
+  if (parts.length === 0) {
+    parts.push('An exact activity, unit, jurisdiction, and factor-year match was selected.');
+  }
+
+  return {
+    reason,
+    explanation: parts.join(' '),
+  };
 }
 
 function isPilotElectricitySystemFactor(

@@ -193,6 +193,15 @@ export class SpreadsheetReviewRowDto {
   matchedFactorAssumptions?: string;
 
   @IsOptional()
+  @IsString()
+  factorSelectionReason?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(1000)
+  factorSelectionExplanation?: string;
+
+  @IsOptional()
   @Type(() => Number)
   @IsNumber()
   calculatedEmissionsKgCO2e?: number;

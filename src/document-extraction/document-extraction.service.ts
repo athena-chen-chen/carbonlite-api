@@ -37,6 +37,9 @@ type ParsedActivityRaw = {
   recordDate: string;
   quantity: number;
   unit: string;
+  periodRole?: string | null;
+  usageType?: string | null;
+  comparisonType?: string | null;
   jurisdictionCountry?: string | null;
   jurisdictionRegion?: string | null;
   facilityName?: string | null;
@@ -49,6 +52,9 @@ type NormalizedImportActivity = ParsedActivityRaw & {
   sourcePage?: string | number | null;
   sourceTextSnippet?: string | null;
   sourceFileName?: string | null;
+  sourceSheetName?: string | null;
+  costCad?: number | null;
+  costCurrency?: string | null;
   importBatchId?: string | null;
   recordYear?: number | null;
   matchingStatus?: string | null;
@@ -65,6 +71,8 @@ type NormalizedImportActivity = ParsedActivityRaw & {
   matchedFactorVerificationStatus?: string | null;
   matchedFactorConfidenceLevel?: string | null;
   matchedFactorAssumptions?: string | null;
+  factorSelectionReason?: string | null;
+  factorSelectionExplanation?: string | null;
   calculatedEmissionsKgCO2e?: number | null;
   calculationStatus?: string | null;
   calculationMessage?: string | null;
@@ -80,6 +88,9 @@ type ParsedActivityWithConfidence = {
   recordDate: ConfidenceField<string>;
   quantity: ConfidenceField<number>;
   unit: ConfidenceField<string>;
+  periodRole?: string | null;
+  usageType?: string | null;
+  comparisonType?: string | null;
   jurisdictionCountry: ConfidenceField<string>;
   jurisdictionRegion: ConfidenceField<string>;
   facilityName: ConfidenceField<string>;
@@ -223,9 +234,11 @@ export class DocumentExtractionService {
             content: [
               {
                 type: 'input_text',
-                text:
-                  'You extract operational activity data from invoices, utility bills, receipts, and similar business documents. ' +
+	                text:
+	                  'You extract operational activity data from invoices, utility bills, receipts, and similar business documents. ' +
                   'Return only activity quantities and usage units, not billing charges. ' +
+                  'For utility bills, return only current billing-period consumption as activity rows. ' +
+                  'Do not return comparison chart values such as Last bill, Last month, Last year, same period last year, or past usage as current activities. ' +
                   'Ignore CAD, dollar amounts, taxes, service charges, delivery charges, rate riders, and totals unless a supported spend-based category is explicitly requested. ' +
                   'If a value is missing, return null where allowed. ' +
                   'Supported activityType values: ELECTRICITY, NATURAL_GAS, DIESEL, GASOLINE, AIR_TRAVEL, STEAM, WATER, WASTE, HOTEL, SHIPPING, CUSTOM. ' +
@@ -245,6 +258,9 @@ Extract operational activity quantities from the document.
 IMPORTANT:
 - For utility bills, extract consumption or usage quantities only.
 - Prefer lines with units such as USE(kWh), USE(GJ), USE(m3), kWh @, GJ @, or m3 @.
+- Prefer current billing detail/current usage lines over chart or comparison values.
+- If a bill includes comparison labels such as This bill, Last bill, Last month, Last year, Same period last year, or Past usage, return only the current billing-period quantity as an activity.
+- Set periodRole to CURRENT for current billing-period activity rows. Do not return PREVIOUS_PERIOD, PRIOR_YEAR, or HISTORICAL_COMPARISON rows unless they are needed as non-current evidence.
 - Do not create activity rows for currency-only billing lines, CAD amounts, GST, subtotals, totals, delivery charges, service charges, administration charges, franchise fees, rate riders, or cart program charges.
 - Waste and recycling dollar charges should be ignored unless the document provides a physical activity quantity such as mass or volume.
 - Wastewater derived from water usage should be ignored for this pilot unless it has a distinct supported activity quantity.
@@ -317,6 +333,16 @@ Return only activity rows with operational quantities as activities array.
                       recordDate: { type: 'string' },
                       quantity: { type: 'number' },
                       unit: { type: 'string' },
+                      periodRole: {
+                        type: 'string',
+                        enum: [
+                          'CURRENT',
+                          'PREVIOUS_PERIOD',
+                          'PRIOR_YEAR',
+                          'HISTORICAL_COMPARISON',
+                          'UNKNOWN',
+                        ],
+                      },
                       jurisdictionCountry: {
                         anyOf: [{ type: 'string' }, { type: 'null' }],
                       },
@@ -335,6 +361,7 @@ Return only activity rows with operational quantities as activities array.
                       'recordDate',
                       'quantity',
                       'unit',
+                      'periodRole',
                       'jurisdictionCountry',
                       'jurisdictionRegion',
                       'sourceReference',
@@ -738,6 +765,15 @@ Return only activity rows with operational quantities as activities array.
       ]),
       quantity: Number.isFinite(quantity) ? quantity : NaN,
       unit: this.readAliasedField(activity, ['unit', 'Unit', 'units', 'Units']),
+      periodRole: this.normalizeOptionalText(
+        this.readAliasedField(activity, ['periodRole', 'Period Role', 'period role']),
+      ),
+      usageType: this.normalizeOptionalText(
+        this.readAliasedField(activity, ['usageType', 'Usage Type', 'usage type']),
+      ),
+      comparisonType: this.normalizeOptionalText(
+        this.readAliasedField(activity, ['comparisonType', 'Comparison Type', 'comparison type']),
+      ),
       jurisdictionCountry: normalizeJurisdictionCountry(
         this.readAliasedField(activity, ['jurisdictionCountry', 'country', 'Country']),
       ),
@@ -942,9 +978,12 @@ Return only activity rows with operational quantities as activities array.
                 sourceReference: normalized.sourceReference ?? null,
                 sourceDocumentId: documentId,
                 sourceFileName: normalized.sourceFileName ?? document.fileName,
+                sourceSheetName: normalized.sourceSheetName ?? null,
                 sourceRow: normalized.sourceRow ?? null,
                 sourcePage: normalized.sourcePage == null ? null : String(normalized.sourcePage),
                 sourceTextSnippet: normalized.sourceTextSnippet ?? null,
+                costCad: normalized.costCad ?? null,
+                costCurrency: normalized.costCurrency ?? null,
                 importBatchId: stableImportBatchId,
                 notes: normalized.notes ?? null,
                 matchingStatus: normalized.matchingStatus ?? null,
@@ -961,6 +1000,8 @@ Return only activity rows with operational quantities as activities array.
                 matchedFactorVerificationStatus: normalized.matchedFactorVerificationStatus ?? null,
                 matchedFactorConfidenceLevel: normalized.matchedFactorConfidenceLevel ?? null,
                 matchedFactorAssumptions: normalized.matchedFactorAssumptions ?? null,
+                factorSelectionReason: normalized.factorSelectionReason ?? null,
+                factorSelectionExplanation: normalized.factorSelectionExplanation ?? null,
                 calculatedEmissionsKgCO2e: normalized.calculatedEmissionsKgCO2e ?? null,
                 calculationStatus: normalized.calculationStatus ?? null,
                 calculationMessage: normalized.calculationMessage ?? null,
@@ -1154,6 +1195,9 @@ Return only activity rows with operational quantities as activities array.
         value: activity.unit ?? null,
         confidence: this.getUnitConfidence(activity.unit),
       },
+      periodRole: activity.periodRole ?? null,
+      usageType: activity.usageType ?? null,
+      comparisonType: activity.comparisonType ?? null,
       jurisdictionCountry: {
         value: activity.jurisdictionCountry ?? null,
         confidence: activity.jurisdictionCountry ? 'high' : 'low',
@@ -1179,7 +1223,59 @@ Return only activity rows with operational quantities as activities array.
 
 
   private filterOperationalActivityRows(activities: ParsedActivityRaw[]) {
-    return activities.filter((activity) => !this.isCurrencyOnlyBillingCharge(activity));
+    return activities.filter(
+      (activity) =>
+        !this.isCurrencyOnlyBillingCharge(activity) &&
+        !this.isHistoricalComparisonActivity(activity),
+    );
+  }
+
+  private isHistoricalComparisonActivity(activity: ParsedActivityRaw) {
+    const periodRole = this.normalizeExtractionRole(activity.periodRole);
+    const usageType = this.normalizeExtractionRole(activity.usageType);
+    const comparisonType = this.normalizeExtractionRole(activity.comparisonType);
+
+    if (['PREVIOUS_PERIOD', 'PRIOR_YEAR', 'HISTORICAL_COMPARISON'].includes(periodRole)) {
+      return true;
+    }
+
+    if (
+      ['PREVIOUS_PERIOD', 'PRIOR_YEAR', 'HISTORICAL_COMPARISON'].includes(usageType) ||
+      ['PREVIOUS_PERIOD', 'PRIOR_YEAR', 'HISTORICAL_COMPARISON'].includes(comparisonType)
+    ) {
+      return true;
+    }
+
+    if (periodRole === 'CURRENT') return false;
+
+    const text = [
+      activity.sourceReference,
+      activity.notes,
+    ]
+      .filter(Boolean)
+      .join(' ')
+      .toLowerCase();
+
+    if (!text) return false;
+
+    const hasHistoricalContext =
+      /\b(last|previous|prior)\s+(bill|billing period|month|period|year)\b/i.test(text) ||
+      /\bsame\s+period\s+last\s+year\b/i.test(text) ||
+      /\bhistorical\b|\bcomparison\b|\bcompare\b|\busage\s+chart\b|\bchart\s+value\b/i.test(text);
+    if (!hasHistoricalContext) return false;
+
+    const hasCurrentContext =
+      /\bthis\s+bill\b|\bcurrent\s+(bill|billing period|period|usage|charges?)\b/i.test(text) ||
+      /\bgas\s+charges?\b|\bdelivery\s*\(/i.test(text);
+
+    return !hasCurrentContext || /\b(last|previous|prior)\s+(bill|billing period|month|period|year)\b/i.test(text);
+  }
+
+  private normalizeExtractionRole(value?: string | null) {
+    return String(value ?? '')
+      .trim()
+      .toUpperCase()
+      .replace(/[\s-]+/g, '_');
   }
 
   private isCurrencyOnlyBillingCharge(activity: ParsedActivityRaw) {
@@ -1251,6 +1347,15 @@ Return only activity rows with operational quantities as activities array.
         ]),
       ),
       unit: this.readAliasedField(activity, ['unit', 'Unit', 'units', 'Units']),
+      periodRole: this.normalizeOptionalText(
+        this.readAliasedField(activity, ['periodRole', 'Period Role', 'period role']),
+      ),
+      usageType: this.normalizeOptionalText(
+        this.readAliasedField(activity, ['usageType', 'Usage Type', 'usage type']),
+      ),
+      comparisonType: this.normalizeOptionalText(
+        this.readAliasedField(activity, ['comparisonType', 'Comparison Type', 'comparison type']),
+      ),
       jurisdictionCountry: normalizedCountry,
       jurisdictionRegion: normalizedRegion,
       facilityName: this.readAliasedField(activity, [
@@ -1317,6 +1422,13 @@ Return only activity rows with operational quantities as activities array.
       sourceFileName: this.normalizeOptionalText(
         this.readAliasedField(activity, ['sourceFileName', 'Source File Name']),
       ),
+      sourceSheetName: this.normalizeOptionalText(
+        this.readAliasedField(activity, ['sourceSheetName', 'Source Sheet Name', 'Source Sheet']),
+      ),
+      costCad: this.readOptionalNumber(activity, ['costCad', 'Cost CAD', 'Cost Cad']),
+      costCurrency: this.normalizeOptionalText(
+        this.readAliasedField(activity, ['costCurrency', 'Cost Currency', 'Currency']),
+      ),
       importBatchId: this.normalizeOptionalText(
         this.readAliasedField(activity, ['importBatchId', 'Import Batch ID']),
       ),
@@ -1335,6 +1447,8 @@ Return only activity rows with operational quantities as activities array.
       matchedFactorVerificationStatus: this.normalizeOptionalText(activity.matchedFactorVerificationStatus),
       matchedFactorConfidenceLevel: this.normalizeOptionalText(activity.matchedFactorConfidenceLevel),
       matchedFactorAssumptions: this.normalizeOptionalText(activity.matchedFactorAssumptions),
+      factorSelectionReason: this.normalizeOptionalText(activity.factorSelectionReason),
+      factorSelectionExplanation: this.normalizeOptionalText(activity.factorSelectionExplanation),
       calculatedEmissionsKgCO2e: this.readOptionalNumber(activity, ['calculatedEmissionsKgCO2e']),
       calculationStatus: this.normalizeOptionalText(activity.calculationStatus),
       calculationMessage: this.normalizeOptionalText(activity.calculationMessage),
@@ -1378,6 +1492,9 @@ Return only activity rows with operational quantities as activities array.
       notes: row.notes,
       sourceRow: row.sourceRow,
       sourceFileName: row.sourceFileName,
+      sourceSheetName: row.sourceSheetName,
+      costCad: row.costCad == null ? null : Number(row.costCad),
+      costCurrency: row.costCurrency,
       matchingStatus: row.matchingStatus,
       reportTreatment: row.reportTreatment,
       scope: row.scope,

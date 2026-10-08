@@ -249,6 +249,29 @@ describe('Spreadsheet import review rows (e2e)', () => {
       'MARCH-HOTEL-010',
       'MARCH-WATER-007',
     ]);
+
+    expect(importedRows).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          sourceReference: 'MARCH-ELEC-001',
+          sourceSheetName: 'March',
+          costCurrency: 'CAD',
+        }),
+        expect.objectContaining({
+          sourceReference: 'MARCH-WATER-007',
+          sourceSheetName: 'March',
+          costCurrency: 'CAD',
+        }),
+        expect.objectContaining({
+          sourceReference: 'MARCH-HOTEL-010',
+          sourceSheetName: 'March',
+          costCurrency: 'CAD',
+        }),
+      ]),
+    );
+    expect(Number(importedRows.find((row) => row.sourceReference === 'MARCH-ELEC-001')?.costCad)).toBe(214.55);
+    expect(Number(importedRows.find((row) => row.sourceReference === 'MARCH-WATER-007')?.costCad)).toBe(64);
+    expect(Number(importedRows.find((row) => row.sourceReference === 'MARCH-HOTEL-010')?.costCad)).toBe(720);
     expect(importedRows.find((row) => row.sourceReference === 'MARCH-WATER-007')).toMatchObject({
       activityType: 'WATER',
       unit: 'm3',
@@ -650,6 +673,8 @@ function buildNeedsReviewWorkbookPayload(sourceFileName: string) {
         sourceSheetName: 'March',
         sourceRow: 2,
         sourceReference: 'MARCH-ELEC-001',
+        costCad: 214.55,
+        costCurrency: 'CAD',
         issues: [],
         matchingStatus: 'MATCHED',
         reportTreatment: 'INCLUDED',
@@ -793,6 +818,8 @@ function buildNeedsReviewWorkbookPayload(sourceFileName: string) {
         sourceSheetName: 'March',
         sourceRow: 8,
         sourceReference: 'MARCH-WATER-007',
+        costCad: 64,
+        costCurrency: 'CAD',
         issues: [],
         matchingStatus: 'TRACKED_ONLY',
         reportTreatment: 'TRACKED_ONLY',
@@ -851,6 +878,8 @@ function buildNeedsReviewWorkbookPayload(sourceFileName: string) {
         sourceSheetName: 'March',
         sourceRow: 11,
         sourceReference: 'MARCH-HOTEL-010',
+        costCad: 720,
+        costCurrency: 'CAD',
         issues: [],
         matchingStatus: 'MATCHED',
         reportTreatment: 'INCLUDED',

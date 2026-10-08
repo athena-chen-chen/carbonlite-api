@@ -350,6 +350,7 @@ model ActivityData {
   sourceType                RecordSourceType
   sourceReference           String?
   sourceFileName            String?
+  sourceSheetName           String?
   sourceDocumentId          String?
   sourcePage                String?
   sourceRow                 String?
@@ -372,6 +373,8 @@ model ActivityData {
   matchedFactorVerificationStatus String?
   matchedFactorConfidenceLevel String?
   matchedFactorAssumptions  String?
+  factorSelectionReason     String?
+  factorSelectionExplanation String?
   calculatedEmissionsKgCO2e Float?
   calculationStatus         String?
   calculationMessage        String?
@@ -441,6 +444,8 @@ model SpreadsheetImportReviewRow {
   matchedFactorVerificationStatus String?
   matchedFactorConfidenceLevel String?
   matchedFactorAssumptions  String?
+  factorSelectionReason     String?
+  factorSelectionExplanation String?
   calculatedEmissionsKgCO2e Float?
   calculationStatus         String?
   calculationMessage        String?

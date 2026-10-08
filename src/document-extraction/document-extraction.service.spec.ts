@@ -113,6 +113,81 @@ describe('DocumentExtractionService import normalization', () => {
     );
   });
 
+  it('keeps only current FortisBC-style usage rows when period roles distinguish comparisons', () => {
+    const filtered = (service as any).filterOperationalActivityRows([
+      {
+        activityType: 'NATURAL_GAS',
+        recordDate: '2026-09-24',
+        quantity: 2.1,
+        unit: 'GJ',
+        periodRole: 'CURRENT',
+        jurisdictionCountry: 'Canada',
+        jurisdictionRegion: 'British Columbia',
+        sourceReference: 'Gas charges: Aug 25 - Sep 24, 2026',
+        notes: 'Delivery (2.1 GJ x rate).',
+      },
+      {
+        activityType: 'NATURAL_GAS',
+        recordDate: '2026-09-24',
+        quantity: 0.7,
+        unit: 'GJ',
+        periodRole: 'PREVIOUS_PERIOD',
+        jurisdictionCountry: 'Canada',
+        jurisdictionRegion: 'British Columbia',
+        sourceReference: 'Usage comparison chart',
+        notes: 'Last bill.',
+      },
+      {
+        activityType: 'NATURAL_GAS',
+        recordDate: '2026-09-24',
+        quantity: 2.2,
+        unit: 'GJ',
+        periodRole: 'PRIOR_YEAR',
+        jurisdictionCountry: 'Canada',
+        jurisdictionRegion: 'British Columbia',
+        sourceReference: 'Usage comparison chart',
+        notes: 'Last year.',
+      },
+    ]);
+
+    expect(filtered).toEqual([
+      expect.objectContaining({ activityType: 'NATURAL_GAS', quantity: 2.1, unit: 'GJ', periodRole: 'CURRENT' }),
+    ]);
+  });
+
+  it('keeps distinct current utility activities from different billing periods', () => {
+    const filtered = (service as any).filterOperationalActivityRows([
+      {
+        activityType: 'NATURAL_GAS',
+        recordDate: '2026-08-24',
+        quantity: 1.8,
+        unit: 'GJ',
+        periodRole: 'CURRENT',
+        jurisdictionCountry: 'Canada',
+        jurisdictionRegion: 'British Columbia',
+        sourceReference: 'Gas charges: Jul 25 - Aug 24, 2026',
+      },
+      {
+        activityType: 'NATURAL_GAS',
+        recordDate: '2026-09-24',
+        quantity: 2.1,
+        unit: 'GJ',
+        periodRole: 'CURRENT',
+        jurisdictionCountry: 'Canada',
+        jurisdictionRegion: 'British Columbia',
+        sourceReference: 'Gas charges: Aug 25 - Sep 24, 2026',
+      },
+    ]);
+
+    expect(filtered).toHaveLength(2);
+    expect(filtered).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ quantity: 1.8, periodRole: 'CURRENT' }),
+        expect.objectContaining({ quantity: 2.1, periodRole: 'CURRENT' }),
+      ]),
+    );
+  });
+
   it('drops charge-like rows even when currency appears in the source reference text', () => {
     const filtered = (service as any).filterOperationalActivityRows([
       {

@@ -3,7 +3,9 @@ import {
   IsString,
   IsNumber,
   IsOptional,
+  MaxLength,
 } from 'class-validator';
+import { Type } from 'class-transformer';
 
 export class ParsedActivityDto {
   @IsString()
@@ -17,6 +19,18 @@ export class ParsedActivityDto {
 
   @IsString()
   unit!: string;
+
+  @IsOptional()
+  @IsString()
+  periodRole?: string;
+
+  @IsOptional()
+  @IsString()
+  usageType?: string;
+
+  @IsOptional()
+  @IsString()
+  comparisonType?: string;
 
   @IsOptional()
   @IsString()
@@ -47,6 +61,20 @@ export class ParsedActivityDto {
   @IsOptional()
   @IsString()
   sourceFileName?: string;
+
+  @IsOptional()
+  @IsString()
+  sourceSheetName?: string;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  costCad?: number;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(12)
+  costCurrency?: string;
 
   @IsOptional()
   @IsString()

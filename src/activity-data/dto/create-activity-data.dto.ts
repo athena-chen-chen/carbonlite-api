@@ -98,6 +98,10 @@ export class CreateActivityDataDto {
 
   @IsOptional()
   @IsString()
+  sourceSheetName?: string;
+
+  @IsOptional()
+  @IsString()
   sourceDocumentId?: string;
 
   @IsOptional()
@@ -182,6 +186,15 @@ export class CreateActivityDataDto {
   @IsString()
   @MaxLength(1000)
   matchedFactorAssumptions?: string;
+
+  @IsOptional()
+  @IsString()
+  factorSelectionReason?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(1000)
+  factorSelectionExplanation?: string;
 
   @IsOptional()
   @Type(() => Number)

@@ -65,6 +65,7 @@ export class ActivityDataService {
       sourceType: dto.sourceType,
       sourceReference: dto.sourceReference ?? null,
       sourceFileName: dto.sourceFileName ?? null,
+      sourceSheetName: normalizeOptionalText(dto.sourceSheetName),
       sourceDocumentId: dto.sourceDocumentId ?? null,
       sourcePage: normalizeOptionalText(dto.sourcePage),
       sourceRow: normalizeOptionalText(dto.sourceRow),
@@ -152,10 +153,13 @@ export class ActivityDataService {
       sourceType: item.sourceType as RecordSourceType,
       sourceReference: item.sourceReference ?? null,
       sourceFileName: item.sourceFileName ?? null,
+      sourceSheetName: normalizeOptionalText(item.sourceSheetName),
       sourceDocumentId: item.sourceDocumentId ?? null,
       sourcePage: normalizeOptionalText(item.sourcePage),
       sourceRow: normalizeOptionalText(item.sourceRow),
       sourceTextSnippet: item.sourceTextSnippet ?? null,
+      costCad: normalizeOptionalCost(item.costCad),
+      costCurrency: normalizeOptionalText(item.costCurrency),
       importBatchId: item.importBatchId ?? null,
       notes: item.notes ?? null,
       ...buildCalculationFieldCreateData(item),
@@ -422,6 +426,9 @@ export class ActivityDataService {
           : {}),
         ...(dto.sourceFileName !== undefined
           ? { sourceFileName: dto.sourceFileName || null }
+          : {}),
+        ...(dto.sourceSheetName !== undefined
+          ? { sourceSheetName: normalizeOptionalText(dto.sourceSheetName) }
           : {}),
         ...(dto.sourceDocumentId !== undefined
           ? { sourceDocumentId: dto.sourceDocumentId || null }
@@ -1054,6 +1061,8 @@ function buildCalculationFieldCreateData(dto: CreateActivityDataDto) {
     matchedFactorVerificationStatus: dto.matchedFactorVerificationStatus ?? null,
     matchedFactorConfidenceLevel: dto.matchedFactorConfidenceLevel ?? null,
     matchedFactorAssumptions: dto.matchedFactorAssumptions ?? null,
+    factorSelectionReason: dto.factorSelectionReason ?? null,
+    factorSelectionExplanation: dto.factorSelectionExplanation ?? null,
     calculatedEmissionsKgCO2e: dto.calculatedEmissionsKgCO2e ?? null,
     calculationStatus: dto.calculationStatus ?? null,
     calculationMessage: dto.calculationMessage ?? null,
@@ -1093,6 +1102,12 @@ function buildCalculationFieldUpdateData(dto: UpdateActivityDataDto) {
       : {}),
     ...(dto.matchedFactorAssumptions !== undefined
       ? { matchedFactorAssumptions: dto.matchedFactorAssumptions || null }
+      : {}),
+    ...(dto.factorSelectionReason !== undefined
+      ? { factorSelectionReason: dto.factorSelectionReason || null }
+      : {}),
+    ...(dto.factorSelectionExplanation !== undefined
+      ? { factorSelectionExplanation: dto.factorSelectionExplanation || null }
       : {}),
     ...(dto.calculatedEmissionsKgCO2e !== undefined
       ? { calculatedEmissionsKgCO2e: dto.calculatedEmissionsKgCO2e ?? null }
