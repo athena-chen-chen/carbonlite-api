@@ -10,9 +10,12 @@
     "test:e2e": "jest --config ./test/jest-e2e.json --runInBand",
     "start": "node dist/main.js",
     "dev": "nest start --watch",
+    "dev:neon": "node scripts/dev-database.mjs neon",
+    "dev:localdb": "node scripts/dev-database.mjs localdb",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "seed": "tsx prisma/seed.ts",
+    "seed:alberta-egdf:neon": "node --import tsx scripts/seed-alberta-egdf-2026.mjs",
     "seed:sample-workspace": "tsx scripts/seed-sample-workspace.ts",
     "reset:user-password": "node scripts/reset-user-password.mjs"
   },
@@ -43,6 +46,7 @@
     "reflect-metadata": "^0.1.14",
     "rxjs": "^7.8.1",
     "swagger-ui-express": "^5.0.1",
+    "xlsx": "0.18.5",
     "zod": "^4.1.9"
   },
   "devDependencies": {

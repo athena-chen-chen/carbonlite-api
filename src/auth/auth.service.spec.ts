@@ -47,7 +47,7 @@ describe('AuthService login resilience', () => {
       ...originalEnv,
       LOCAL_DEMO_AUTH_ENABLED: 'true',
       LOCAL_DEMO_EMAILS: 'pilot@carbonliteapp.ca,carbonliteai@gmail.com',
-      LOCAL_DEMO_PASSWORD: 'password123',
+      LOCAL_DEMO_PASSWORD: 'Fictional-Test-Only!2026',
       LOCAL_DEMO_USER_ID: 'local-demo-user',
       LOCAL_DEMO_ORGANIZATION_ID: 'local-demo-organization',
       LOCAL_DEMO_ORGANIZATION_NAME: 'CarbonLite Pilot Demo Workspace',
@@ -80,7 +80,7 @@ describe('AuthService login resilience', () => {
     );
 
     await expect(
-      service.login('pilot@carbonliteapp.ca', 'password123'),
+      service.login('pilot@carbonliteapp.ca', 'Fictional-Test-Only!2026'),
     ).resolves.toMatchObject({
       accessToken: 'local-demo-token',
       user: {
@@ -107,7 +107,7 @@ describe('AuthService login resilience', () => {
     prisma.user.findUnique.mockResolvedValue(null);
 
     await expect(
-      service.login('missing@example.com', 'password123'),
+      service.login('missing@example.com', 'Fictional-Test-Only!2026'),
     ).rejects.toBeInstanceOf(UnauthorizedException);
   });
 
@@ -116,7 +116,7 @@ describe('AuthService login resilience', () => {
       id: 'reviewer-1',
       email: 'reviewer@example.com',
       organizationId: 'sample-workspace',
-      passwordHash: bcrypt.hashSync('password123', 10),
+      passwordHash: bcrypt.hashSync('Fictional-Test-Only!2026', 10),
       isActive: true,
       role: UserRole.USER,
       accountType: 'PILOT_REVIEWER',
@@ -130,7 +130,7 @@ describe('AuthService login resilience', () => {
     prisma.report.count.mockResolvedValue(0);
 
     await expect(
-      service.login('reviewer@example.com', 'password123'),
+      service.login('reviewer@example.com', 'Fictional-Test-Only!2026'),
     ).resolves.toMatchObject({
       accessToken: 'local-demo-token',
       user: {
@@ -165,7 +165,7 @@ describe('AuthService login resilience', () => {
       id: 'user-1',
       email: 'user@example.com',
       organizationId: 'org-1',
-      passwordHash: bcrypt.hashSync('password123', 10),
+      passwordHash: bcrypt.hashSync('Fictional-Test-Only!2026', 10),
       isActive: true,
       role: UserRole.USER,
       organization: {
@@ -180,7 +180,7 @@ describe('AuthService login resilience', () => {
     );
 
     await expect(
-      service.login('user@example.com', 'password123'),
+      service.login('user@example.com', 'Fictional-Test-Only!2026'),
     ).resolves.toMatchObject({
       accessToken: 'local-demo-token',
       user: {
@@ -800,7 +800,7 @@ describe('AuthService login resilience', () => {
       },
     });
 
-    await expect(service.login('reviewer@example.com', 'password123')).rejects.toThrow(
+    await expect(service.login('reviewer@example.com', 'Fictional-Test-Only!2026')).rejects.toThrow(
       'This account has been deactivated. Please contact hello@carbonliteapp.ca.',
     );
   });
@@ -808,7 +808,7 @@ describe('AuthService login resilience', () => {
   it('uses production-safe wording for invalid login credentials', async () => {
     prisma.user.findUnique.mockResolvedValue(null);
 
-    await expect(service.login('missing@example.com', 'password123')).rejects.toThrow(
+    await expect(service.login('missing@example.com', 'Fictional-Test-Only!2026')).rejects.toThrow(
       'The email or password is incorrect.',
     );
   });
@@ -845,7 +845,7 @@ describe('AuthService login resilience', () => {
     await expect(
       service.setPasswordFromInvite({
         token: 'invite-token',
-        password: 'password123',
+        password: 'Fictional-Test-Only!2026',
       }),
     ).resolves.toMatchObject({
       accessToken: 'local-demo-token',
@@ -878,7 +878,7 @@ describe('AuthService login resilience', () => {
     await expect(
       service.setPasswordFromInvite({
         token: 'missing-token',
-        password: 'password123',
+        password: 'Fictional-Test-Only!2026',
       }),
     ).rejects.toThrow(
       'This invite link has expired. Please contact hello@carbonliteapp.ca for a new link.',
@@ -905,7 +905,7 @@ describe('AuthService login resilience', () => {
     await expect(
       service.setPasswordFromInvite({
         token: 'used-token',
-        password: 'password123',
+        password: 'Fictional-Test-Only!2026',
       }),
     ).rejects.toThrow(
       'This invite link has already been used. Please log in or contact hello@carbonliteapp.ca.',

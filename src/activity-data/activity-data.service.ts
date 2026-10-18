@@ -1,3 +1,4 @@
+import { CalculationSnapshotsService } from '../metrics/calculation-snapshots.service';
 import {
   Injectable,
   NotFoundException,
@@ -40,6 +41,7 @@ export class ActivityDataService {
     private readonly prisma: PrismaService,
     private readonly auditLog: AuditLogService,
     private readonly activityTracking: ActivityTrackingService,
+    private readonly snapshots: CalculationSnapshotsService,
   ) {}
 
   async create(organizationId: string, dto: CreateActivityDataDto, userId?: string) {
@@ -79,7 +81,7 @@ export class ActivityDataService {
 
     let created;
     try {
-      created = await this.prisma.activityData.create({ data });
+      created = await this.prisma.activityData.create({ data: await this.snapshots.prepareCreate(this.prisma, data, userId) });
     } catch (error) {
       this.logger.error(
         [
@@ -167,9 +169,9 @@ export class ActivityDataService {
     const parseDurationMs = parseTimer.elapsedMs();
 
     const { result, durationMs: databaseInsertUpdateDurationMs } =
-      await timeAsync(() =>
+      await timeAsync(async () =>
         this.prisma.activityData.createMany({
-          data: rows,
+          data: await Promise.all(rows.map(row => this.snapshots.prepareCreate(this.prisma, row, userId))),
         }),
       );
 
@@ -380,7 +382,8 @@ export class ActivityDataService {
     const existing = await this.ensureExists(organizationId, id);
     await this.validateRelations(organizationId, dto);
 
-    const updated = await this.prisma.activityData.update({
+    const updated = await this.prisma.$transaction(async tx => {
+      const row = await tx.activityData.update({
       where: { id },
       data: {
         ...(dto.facilityId !== undefined ? { facilityId: dto.facilityId || null } : {}),
@@ -449,6 +452,8 @@ export class ActivityDataService {
         ...(dto.notes !== undefined ? { notes: dto.notes || null } : {}),
         ...buildCalculationFieldUpdateData(dto),
       },
+    });
+      return this.snapshots.recalculate(tx, row, userId);
     });
 
     await this.auditLog.log({

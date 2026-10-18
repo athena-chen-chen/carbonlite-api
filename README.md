@@ -29,80 +29,42 @@ This service handles:
 pnpm install
 ```
 
-### 2. Choose a database
+### 2. Choose a development database
 
-CarbonLite uses Prisma with `DATABASE_URL` from the root `.env` file.
+The backend runs locally on Mac, on port 3333. Its existing `dotenv/config`
+imports load `.env` for plain `npm run dev` or `npm start`.
+Use the explicit commands below to select a database without editing `.env`:
 
-Use Neon for shared/staging/production environments. Keep the Neon URL in `.env`
-when the network can reach Neon:
+| Mode | Command | Ignored environment file |
+| --- | --- | --- |
+| Daily development | `npm run dev:neon` | `.env.neon.local` |
+| Local fixtures / E2E | `npm run dev:localdb` | `.env.docker.local` |
 
-```bash
-DATABASE_URL="postgresql://USER:PASSWORD@YOUR-NEON-POOLER-HOST/neondb?sslmode=require"
-```
+Each file must contain its complete backend configuration, including
+`DATABASE_URL`, `JWT_SECRET`, `NODE_ENV=development`, and `APP_ENV=local`.
+The selected file overrides inherited variables, and dotenv is pointed at that
+same file so `.env` cannot supply a different database later.
 
-Use local Postgres when Neon is unreachable or when you want an isolated dev
-database. Copy the local example over `.env`:
+Neon mode requires `sslmode=require` and `NEON_DEVELOPMENT_HOST` matching the
+hostname of the development branch confirmed in the Neon console. Never use
+Neon main, production, or staging. Hostname validation cannot determine a Neon
+branch name; the console confirmation is required when configuring the file.
 
-```bash
-cp .env.local.example .env
-```
-
-The local development URL is:
-
-```bash
-DATABASE_URL="postgresql://carbonlite:carbonlite@localhost:5432/carbonlite_dev?schema=public"
-```
-
-Do not commit `.env`. It is intentionally ignored by git.
-
-### 3. Start local Postgres
-
-With Docker Compose:
+Local mode requires `localhost:5432/carbonlite_dev`. Keep the existing Docker
+PostgreSQL container and volume. Start it if needed:
 
 ```bash
 docker compose up -d postgres
 ```
 
-Equivalent one-off Docker command:
+Stop the backend with Ctrl+C before switching modes. Then run the other command.
+The launcher refuses to start if port 3333 is occupied and prints only a safe
+database label. Both modes use the existing Nest watch command; neither starts
+the backend in Docker, migrates, resets, or seeds a database.
 
-```bash
-docker run --name carbonlite-postgres \
-  -e POSTGRES_USER=carbonlite \
-  -e POSTGRES_PASSWORD=carbonlite \
-  -e POSTGRES_DB=carbonlite_dev \
-  -p 5432:5432 \
-  -v carbonlite_postgres_data:/var/lib/postgresql/data \
-  -d postgres:16
-```
-
-Check that local Postgres is reachable:
-
-```bash
-nc -vz localhost 5432
-```
-
-### 4. Prepare Prisma
-
-Run migrations against whichever database your `.env` points to:
-
-```bash
-pnpm exec prisma migrate dev
-pnpm exec prisma generate
-```
-
-Optional seed:
-
-```bash
-pnpm run seed
-```
-
-### 5. Start the API
-
-```bash
-pnpm dev
-```
-
-The API listens on `http://localhost:3333` by default.
+Demo authentication is disabled in both modes. Task 7 fixture opt-in is disabled
+in Neon mode. Its existing local-only seed guard remains required and unchanged.
+Keep all secrets in the ignored environment files; never commit them.
 
 ---
 
@@ -139,18 +101,6 @@ deeper optimization.
 
 ### Switching Between Neon And Local
 
-To use local Postgres:
-
-```bash
-cp .env.local.example .env
-docker compose up -d postgres
-pnpm exec prisma migrate dev
-pnpm dev
-```
-
-To switch back to Neon, replace `DATABASE_URL` in `.env` with the Neon pooled
-connection string, including `sslmode=require`, then restart the API.
-
-If migrations need a non-pooled Neon URL later, add `DIRECT_URL` locally and
-update the Prisma datasource for migration workflows only. Runtime should keep
-using `DATABASE_URL`.
+Stop the running backend with Ctrl+C, then run `npm run dev:neon` for daily
+work or `npm run dev:localdb` for isolated Docker database testing. A running
+Node process does not reload environment files; a full restart is required.

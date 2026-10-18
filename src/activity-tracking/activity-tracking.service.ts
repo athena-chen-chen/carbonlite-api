@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { ForbiddenException, Injectable, Logger } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { ActivityEventQueryDto } from './dto/activity-event-query.dto';
@@ -14,6 +14,16 @@ type ActivityTrackInput = {
   metadata?: unknown;
   userAgent?: string | null;
 };
+
+export const WORKFLOW_EVENT_NAMES = [
+  'DOCUMENT_UPLOADED', 'DOCUMENT_EXTRACT_SUCCEEDED', 'DOCUMENT_EXTRACT_FAILED',
+  'ACTIVITY_RECORD_IMPORTED', 'ACTIVITY_RECORD_CREATED', 'ACTIVITY_RECORD_UPDATED',
+  'ACTIVITY_RECORD_DELETED', 'ACTIVITY_RECORD_BULK_DELETED',
+  'ACTIVITY_RECORDS_PROVINCE_UPDATED', 'ACTIVITY_RECORDS_FACILITY_UPDATED',
+  'ACTIVITY_RECORDS_CLEARED', 'DOCUMENT_DELETED', 'DEMO_DATA_RESET',
+  'REPORT_GENERATED', 'REPORT_EXPORTED_PDF', 'REPORT_EXPORTED_CSV',
+  'IMPORT_FAILED', 'REPORT_GENERATION_FAILED', 'ACTIVITY_RECORD_RECALCULATED', 'BOUNDARY_REVIEWED', 'BOUNDARY_UPDATED',
+];
 
 const SENSITIVE_KEY_PATTERN = /password|token|secret|content|extractedtext|filedata|base64|rawtext/i;
 const TEST_USER_EMAIL_PATTERNS = [
@@ -130,8 +140,8 @@ export class ActivityTrackingService {
 
   constructor(private readonly prisma: PrismaService) {}
 
-  async track(input: ActivityTrackInput) {
-    return this.prisma.userActivityEvent.create({
+  async track(input: ActivityTrackInput, client: Pick<Prisma.TransactionClient, 'userActivityEvent'> = this.prisma) {
+    return client.userActivityEvent.create({
       data: {
         organizationId: input.organizationId ?? null,
         userId: input.userId ?? null,
@@ -148,6 +158,15 @@ export class ActivityTrackingService {
 
   async findAll(organizationId: string, query: ActivityEventQueryDto) {
     return this.findMany(this.buildWhere({ organizationId }, query), query);
+  }
+
+  async findWorkflow(organizationId: string, query: ActivityEventQueryDto) {
+    if (!organizationId) throw new ForbiddenException('Workspace membership is required.');
+    // Tenant identity comes only from the authenticated session. Filter before pagination.
+    return this.findMany({
+      organizationId,
+      eventName: { in: WORKFLOW_EVENT_NAMES },
+    }, { page: query.page, pageSize: query.pageSize });
   }
 
   async findOwn(userId: string, query: ActivityEventQueryDto) {
@@ -193,7 +212,7 @@ export class ActivityTrackingService {
             },
           },
         },
-        orderBy: { createdAt: 'desc' },
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
         skip,
         take: pageSize,
       }),

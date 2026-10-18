@@ -1,3 +1,4 @@
+import { isInventoryFactorEligible, snapshotFactorProvenance, FactorProvenanceSnapshot } from './factor-governance';
 import {
   BadRequestException,
   ForbiddenException,
@@ -36,6 +37,7 @@ type ApplicableFactorInput = {
 };
 
 type FactorMatchResult = {
+  factorProvenance?: FactorProvenanceSnapshot | null;
   factorValue: number;
   inputUnit: string;
   resultUnit: string;
@@ -344,6 +346,9 @@ export class ConversionFactorsService {
         status: 'DRAFT',
         confidenceLevel: data.confidenceLevel ?? previous?.confidenceLevel ?? 'DEMO',
         methodology: data.methodology ?? previous?.methodology ?? null,
+        applicability: data.applicability ?? previous?.applicability ?? null,
+        emissionBasis: data.emissionBasis ?? previous?.emissionBasis ?? null,
+        methodologyProvenance: (data.methodologyProvenance ?? previous?.methodologyProvenance ?? Prisma.DbNull) as Prisma.InputJsonValue,
         verificationStatus: data.verificationStatus ?? previous?.verificationStatus ?? null,
         verified: false,
         sourceId,
@@ -393,6 +398,9 @@ export class ConversionFactorsService {
         ...(dto.factorValue !== undefined ? { factorValue: new Prisma.Decimal(dto.factorValue) } : {}),
         ...(dto.inputUnit !== undefined ? { inputUnit: dto.inputUnit } : {}),
         ...(dto.resultUnit !== undefined ? { resultUnit: dto.resultUnit } : {}),
+        ...(dto.applicability !== undefined ? { applicability: dto.applicability } : {}),
+        ...(dto.emissionBasis !== undefined ? { emissionBasis: dto.emissionBasis } : {}),
+        ...(dto.methodologyProvenance !== undefined ? { methodologyProvenance: (dto.methodologyProvenance ?? Prisma.DbNull) as Prisma.InputJsonValue } : {}),
         ...(dto.jurisdictionCountry !== undefined ? { jurisdictionCountry: dto.jurisdictionCountry || null } : {}),
         ...(dto.jurisdictionRegion !== undefined ? { jurisdictionRegion: dto.jurisdictionRegion || null } : {}),
         ...(dto.factorYear !== undefined ? { factorYear: dto.factorYear ?? null } : {}),
@@ -477,7 +485,7 @@ export class ConversionFactorsService {
       ],
     });
 
-    const legacyMatches = legacyFactors.filter(
+    const legacyMatches = legacyFactors.filter(isInventoryFactorEligible).filter(
       (factor) => normalizeUnit(factor.unit) === normalizedInputUnit,
     );
     const organizationCustom = legacyMatches.find(
@@ -498,6 +506,7 @@ export class ConversionFactorsService {
         displayName: organizationCustom.name,
         sourceAuthority: organizationCustom.sourceAuthority ?? organizationCustom.sourceName,
         sourceDocument: organizationCustom.sourceDocument ?? organizationCustom.sourceReference,
+        factorProvenance: snapshotFactorProvenance(organizationCustom),
         sourceYear: organizationCustom.sourceYear,
         sourceUrl: organizationCustom.sourceUrl,
         status: organizationCustom.verified ? 'VERIFIED' : 'DRAFT',
@@ -535,6 +544,7 @@ export class ConversionFactorsService {
     });
 
     const governedCandidates = governedVersions
+      .filter(isInventoryFactorEligible)
       .filter((version) => !['DEPRECATED', 'ARCHIVED'].includes(version.status))
       .filter((version) => version.source?.isActive !== false)
       .filter((version) =>
@@ -613,6 +623,7 @@ export class ConversionFactorsService {
         displayName: legacySystemDefault.name,
         sourceAuthority: legacySystemDefault.sourceAuthority ?? legacySystemDefault.sourceName,
         sourceDocument: legacySystemDefault.sourceDocument ?? legacySystemDefault.sourceReference,
+        factorProvenance: snapshotFactorProvenance(legacySystemDefault),
         sourceYear: legacySystemDefault.sourceYear,
         sourceUrl: legacySystemDefault.sourceUrl,
         status: legacySystemDefault.verified ? 'VERIFIED' : 'DRAFT',
@@ -671,6 +682,9 @@ export class ConversionFactorsService {
         sourceYear: dto.sourceYear ?? null,
         sourceUrl: dto.sourceUrl ?? null,
         methodology: dto.methodology ?? null,
+        applicability: dto.applicability ?? null,
+        emissionBasis: dto.emissionBasis ?? null,
+        methodologyProvenance: (dto.methodologyProvenance ?? Prisma.DbNull) as Prisma.InputJsonValue,
         confidenceLevel: dto.confidenceLevel ?? null,
         verificationStatus: dto.verificationStatus ?? null,
         verified: dto.verified ?? false,
@@ -832,6 +846,9 @@ export class ConversionFactorsService {
           ? { factorValue: new Prisma.Decimal(dto.factorValue) }
           : {}),
         ...(dto.resultUnit !== undefined ? { resultUnit: dto.resultUnit } : {}),
+        ...(dto.applicability !== undefined ? { applicability: dto.applicability } : {}),
+        ...(dto.emissionBasis !== undefined ? { emissionBasis: dto.emissionBasis } : {}),
+        ...(dto.methodologyProvenance !== undefined ? { methodologyProvenance: (dto.methodologyProvenance ?? Prisma.DbNull) as Prisma.InputJsonValue } : {}),
         ...(dto.sourceName !== undefined
           ? { sourceName: dto.sourceName || null }
           : {}),
@@ -1037,6 +1054,9 @@ export class ConversionFactorsService {
       status: version.status,
       confidenceLevel: version.confidenceLevel,
       methodology: version.methodology,
+      applicability: version.applicability,
+      emissionBasis: version.emissionBasis,
+      methodologyProvenance: version.methodologyProvenance,
       verificationStatus: version.verificationStatus,
       verified: version.verified,
       reviewedBy: version.reviewedBy,
@@ -1126,7 +1146,8 @@ export class ConversionFactorsService {
 
   private isProductionReadyVersion(version: NonNullable<FactorVersionWithGovernance>) {
     return Boolean(
-      version.status === 'VERIFIED' &&
+      isInventoryFactorEligible(version) &&
+        version.status === 'VERIFIED' &&
         version.verified &&
         version.reviewedBy?.trim() &&
         version.reviewedAt &&
@@ -1381,6 +1402,7 @@ function matchedGovernedVersion(
       resultUnit: version.resultUnit,
       factorId: version.factorId,
       factorVersionId: version.id,
+      factorProvenance: snapshotFactorProvenance(version),
       displayName: version.factor.displayName,
       sourceAuthority: version.source?.sourceAuthority ?? null,
       sourceDocument: version.source?.sourceDocument ?? null,

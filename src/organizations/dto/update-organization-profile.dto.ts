@@ -128,4 +128,12 @@ export class UpdateOrganizationProfileDto {
   @IsString()
   @MaxLength(1200)
   boundaryNotes?: string;
+  @IsOptional() @IsIn(['NOT_DEFINED','DRAFT','REVIEWED'])
+  boundaryStatus?: string;
+  @IsOptional() boundaryVersion?: number;
+  @IsOptional() @IsString() boundaryReviewedBy?: string;
+  @IsOptional() @IsString() boundaryReviewedByUserId?: string;
+  @IsOptional() @IsString() boundaryReviewedAt?: string;
+  @IsOptional() @IsString() @MaxLength(1200) boundaryReviewNote?: string;
+  @IsOptional() @IsString() boundaryReviewFingerprint?: string;
 }

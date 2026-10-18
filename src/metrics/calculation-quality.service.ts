@@ -1,3 +1,5 @@
+import { persistedCalculationDetail } from './calculation-snapshot';
+import { isInventoryFactorEligible, snapshotFactorProvenance } from '../conversion-factors/factor-governance';
 import { Injectable, Logger } from '@nestjs/common';
 import {
   ActivityData,
@@ -32,6 +34,7 @@ export type CalculationStatus =
 
 type ActivityWithDocument = ActivityData & {
   document: { id: string; fileName: string } | null;
+  metricResults?: any[];
   facility?: {
     id: string;
     name: string;
@@ -99,6 +102,7 @@ export class CalculationQualityService {
         this.prisma.activityData.findMany({
           where: { organizationId },
           include: {
+            metricResults: { where: { metricType: 'CARBON_EMISSION' }, orderBy: [{ calculationDate: 'desc' }, { id: 'desc' }], take: 1 },
             document: {
               select: { id: true, fileName: true },
             },
@@ -146,7 +150,25 @@ export class CalculationQualityService {
       factors,
       governedFactors,
       query,
+      persistedOnly: true,
     }, timings);
+
+    // Project durable manual creation evidence without changing calculation/filtering semantics.
+    const manualIds = summary.calculationDetails
+      .filter((detail) => detail.sourceType === 'MANUAL')
+      .map((detail) => detail.activityDataId);
+    if (manualIds.length > 0) {
+      const audits = await this.prisma.auditLog.findMany({
+        where: { organizationId, action: 'CREATE_ACTIVITY_RECORD', entityType: 'ActivityData', entityId: { in: manualIds } },
+        select: { id: true, entityId: true, userId: true, createdAt: true, newValue: true },
+        orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+      });
+      for (const detail of summary.calculationDetails) {
+        if (detail.sourceType !== 'MANUAL') continue;
+        const audit = audits.find((item) => item.entityId === detail.activityDataId);
+        detail.manualSourceProvenance = manualSourceProvenanceFromAudit(audit, detail.activityDataId);
+      }
+    }
 
     if (options.logPerformance) {
       const totalDurationMs = totalTimer.elapsedMs();
@@ -181,6 +203,8 @@ export class CalculationQualityService {
     factors: ConversionFactor[];
     governedFactors?: GovernedFactorVersion[];
     query?: CalculationSummaryQueryDto;
+    recalculate?: boolean;
+    persistedOnly?: boolean;
   }, timings?: CalculationQualityTimings) {
     const query = input.query ?? {};
     const selectedRecordIds = parseIds(
@@ -223,6 +247,11 @@ export class CalculationQualityService {
           status: 'OUTSIDE_SCOPE',
           reason: 'Record is outside the selected date range or report scope.',
         });
+      }
+
+      if (!input.recalculate) {
+        const historical = persistedCalculationDetail(record, this.detail(record, { reportingYear, jurisdiction: organizationJurisdiction, status: 'MISSING_FACTOR', reason: null }));
+        if (historical) return historical as ReturnType<CalculationQualityService['detail']>;
       }
 
       const quantity = Number(record.quantity);
@@ -307,6 +336,13 @@ export class CalculationQualityService {
             'Electricity emissions require a province-specific factor. Please select the province where the electricity was used.',
         });
       }
+
+      if (input.persistedOnly) return this.detail(record, {
+        reportingYear, recordYear, jurisdictionCountry, jurisdictionRegion,
+        jurisdictionSource: resolvedJurisdiction.source, jurisdictionAssumed: resolvedJurisdiction.assumed,
+        jurisdiction: organizationJurisdiction, status: 'MISSING_FACTOR',
+        reason: 'No persisted calculation is available. Calculate this record explicitly.',
+      });
 
       const match = this.matchFactor({
         record,
@@ -409,6 +445,7 @@ export class CalculationQualityService {
     const conversionFactorsUsed = uniqueFactors(calculatedDetails);
 
     const response = {
+      calculationContractVersion: 1,
       totalEstimatedEmissionsKgCO2e,
       totalRecordsFound: input.records.length,
       recordsInScope: inScopeDetails.length,
@@ -485,6 +522,7 @@ export class CalculationQualityService {
               factorYear: detail.factorYear,
               sourceAuthority: detail.sourceAuthority,
               sourceDocument: detail.sourceDocument,
+              factorProvenance: detail.factorProvenance,
               sourceYear: detail.sourceYear,
               sourceUrl: detail.sourceUrl,
               factorSelectionReason: detail.factorSelectionReason,
@@ -621,11 +659,12 @@ export class CalculationQualityService {
     const activityType = input.record.activityType;
 
     const legacyCandidates = input.factors.filter((factor) => {
+      if (!isInventoryFactorEligible(factor)) return false;
       if (factor.activityType !== activityType) return false;
       if (!unitsCompatible(input.record.unit, factor.unit)) return false;
-      if (factor.sourceYear && factor.sourceYear !== input.reportingYear) return false;
+      if (factor.sourceYear && factor.sourceYear > input.reportingYear) return false;
       return Number.isFinite(Number(factor.factorValue));
-    });
+    }).sort((a, b) => Number(b.sourceYear ?? 0) - Number(a.sourceYear ?? 0));
 
     const custom = legacyCandidates.find(
       (factor) =>
@@ -646,6 +685,7 @@ export class CalculationQualityService {
     }
 
     const governedCandidates = input.governedFactors
+      .filter(isInventoryFactorEligible)
       .filter((version) => version.factor.activityType === activityType)
       .filter((version) => unitsCompatible(input.record.unit, version.inputUnit))
       .filter((version) => Number.isFinite(Number(version.factorValue)))
@@ -922,13 +962,16 @@ export class CalculationQualityService {
       jurisdictionSource: result.jurisdictionSource ?? 'unknown',
       jurisdictionAssumed: Boolean(result.jurisdictionAssumed),
       facilityId: record.facilityId,
-      facilityName: record.facilityName ?? record.facility?.name ?? null,
+      facilityName: record.facility?.name ?? record.facilityName ?? null,
       activityQuantity: Number(record.quantity),
+      calculationQuantity,
+      calculationUnit,
       activityUnit: record.unit,
       quantityUnit: record.unit,
       normalizedUnit: normalizedUnit || null,
       factorId: factor?.id ?? governedVersion?.factorId ?? null,
       factorVersionId: governedVersion?.id ?? null,
+      factorProvenance: governedVersion ? snapshotFactorProvenance(governedVersion) : factor ? snapshotFactorProvenance(factor) : null,
       factorName: factor?.name ?? governedVersion?.factor.displayName ?? null,
       factorDisplayName: factor?.name ?? governedVersion?.factor.displayName ?? null,
       factorValue,
@@ -975,6 +1018,7 @@ export class CalculationQualityService {
       reason: result.reason,
       availableUnitsForActivityType:
         result.availableUnitsForActivityType ?? [],
+      manualSourceProvenance: null as ReturnType<typeof manualSourceProvenanceFromAudit>,
       sourceType: record.sourceType,
       sourceReference: record.sourceReference,
       sourceFileName: record.sourceFileName || record.document?.fileName || null,
@@ -1234,7 +1278,7 @@ function isCountryLevel(factorRegion?: string | null, factorCountry?: string | n
 }
 
 function allowsCountryLevelFallback(activityType?: string | null) {
-  return ['DIESEL', 'GASOLINE', 'NATURAL_GAS', 'HOTEL', 'PROPANE'].includes(
+  return ['DIESEL', 'GASOLINE', 'NATURAL_GAS', 'HOTEL', 'PROPANE', 'AIR_TRAVEL', 'GROUND_TRANSPORT', 'SHIPPING'].includes(
     String(activityType ?? '').toUpperCase(),
   );
 }
@@ -1892,6 +1936,7 @@ function uniqueFactors(
       confidenceLevel: detail.factorConfidenceLevel,
       sourceAuthority: detail.sourceAuthority || detail.factorSource,
       sourceDocument: detail.sourceDocument,
+      factorProvenance: detail.factorProvenance,
       sourceUrl: detail.sourceUrl,
       sourcePage: detail.factorSourcePage,
       sourceTable: detail.factorSourceTable,
@@ -1905,4 +1950,28 @@ function uniqueFactors(
     });
   });
   return Array.from(factors.values());
+}
+
+// A creation audit is the original entered snapshot, never the current viewer or edited values.
+export function manualSourceProvenanceFromAudit(audit: {
+  id: string; entityId: string | null; userId: string | null; createdAt: Date; newValue: unknown;
+} | undefined, activityDataId: string) {
+  if (!audit || audit.entityId !== activityDataId || !audit.userId ||
+      !audit.newValue || typeof audit.newValue !== 'object' || Array.isArray(audit.newValue)) return null;
+  const original = audit.newValue as Record<string, unknown>;
+  const quantity = Number(original.quantity);
+  if (original.id !== activityDataId || original.sourceType !== 'MANUAL' ||
+      typeof original.activityType !== 'string' || !original.activityType ||
+      typeof original.unit !== 'string' || !original.unit ||
+      typeof original.recordDate !== 'string' || !Number.isFinite(Date.parse(original.recordDate)) ||
+      !Number.isFinite(quantity) || quantity <= 0) return null;
+  return {
+    auditId: audit.id, actorId: audit.userId, createdAt: audit.createdAt.toISOString(),
+    activityDataId, activityType: original.activityType, recordDate: original.recordDate,
+    quantity, unit: original.unit,
+    jurisdictionCountry: typeof original.jurisdictionCountry === 'string' ? original.jurisdictionCountry : null,
+    jurisdictionRegion: typeof original.jurisdictionRegion === 'string' ? original.jurisdictionRegion : null,
+    facilityId: typeof original.facilityId === 'string' ? original.facilityId : null,
+    facilityName: typeof original.facilityName === 'string' ? original.facilityName : null,
+  };
 }

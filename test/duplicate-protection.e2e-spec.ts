@@ -27,7 +27,7 @@ describe('Document duplicate protection (e2e)', () => {
     await app.close();
   });
 
-  async function upload(
+  function upload(
     accessToken: string,
     fileName: string,
     allowDuplicate = false,
@@ -134,9 +134,10 @@ describe('Document duplicate protection (e2e)', () => {
       .post('/api/document-extraction/confirm')
       .set(authHeader(user.accessToken))
       .send(payload)
-      .expect(409)
+      .expect(201)
       .expect(({ body }) => {
-        expect(body.message).toBe('This document has already been imported.');
+        expect(body.count).toBe(0);
+        expect(body.createdIds).toEqual([]);
       });
 
     const importedRecords = await prisma.activityData.findMany({

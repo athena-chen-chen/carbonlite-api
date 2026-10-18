@@ -5,6 +5,7 @@ import {
   SpreadsheetReviewRowStatus,
 } from '@prisma/client';
 import { parseDateOnlyUtc } from '../common/date-only';
+import { ActivityTrackingService } from '../activity-tracking/activity-tracking.service';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   SaveSpreadsheetReviewRowsDto,
@@ -14,7 +15,7 @@ import { SpreadsheetReviewRowQueryDto } from './dto/spreadsheet-review-row-query
 
 @Injectable()
 export class SpreadsheetImportService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(private readonly prisma: PrismaService, private readonly activityTracking: ActivityTrackingService) {}
 
   async findReviewRows(
     organizationId: string,
@@ -191,6 +192,13 @@ export class SpreadsheetImportService {
         });
       }
 
+      if (!existingSource) {
+        await this.activityTracking.track({
+          organizationId, userId,
+          eventName: 'DOCUMENT_UPLOADED', entityType: 'Document', entityId: document.id,
+          metadata: { sourceFileName, sourceDocumentId: document.id, importBatchId, sourceType: dto.sourceType, reviewableRowCount: dto.rows.length },
+        }, tx);
+      }
       return document;
     });
 

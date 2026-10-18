@@ -1,3 +1,4 @@
+import { CalculationModule } from '../metrics/calculation.module';
 import { Module } from '@nestjs/common';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { AdminActivityRecordsController } from './admin-activity-records.controller';
@@ -6,7 +7,7 @@ import { ActivityDataService } from './activity-data.service';
 import { PrismaModule } from '../prisma/prisma.module';
 
 @Module({
-  imports: [PrismaModule],
+  imports: [PrismaModule, CalculationModule],
   controllers: [ActivityDataController, AdminActivityRecordsController],
   providers: [ActivityDataService, RolesGuard],
   exports: [ActivityDataService],

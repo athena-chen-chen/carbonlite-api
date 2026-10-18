@@ -307,7 +307,7 @@ describe('Document delete (e2e)', () => {
       .get('/api/metrics/summary')
       .set(authHeader(user.accessToken))
       .expect(200);
-    expect(summaryAfterDelete.body.totalsByMetric).toEqual([]);
+    expect(summaryAfterDelete.body.totalsByMetric).toEqual([{ metricType: 'CARBON_EMISSION', unit: 'kgCO2e', totalValue: '0', count: 0 }]);
 
     const reportAfterDelete = await request(app.getHttpServer())
       .get(`/api/reports/${report.body.id}`)

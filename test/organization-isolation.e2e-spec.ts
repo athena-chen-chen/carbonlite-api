@@ -38,12 +38,12 @@ describe('Organization data isolation (e2e)', () => {
     const userA = await createTestUser(app, {
       organizationName: `${testRunId} Organization A`,
       email: `user-a-${testRunId}@carbonlite-e2e.test`,
-      password: 'password123',
+      password: 'Fictional-Test-Only!2026',
     });
     const userB = await createTestUser(app, {
       organizationName: `${testRunId} Organization B`,
       email: `user-b-${testRunId}@carbonlite-e2e.test`,
-      password: 'password123',
+      password: 'Fictional-Test-Only!2026',
     });
 
     expect(userA.user.organizationId).toEqual(expect.any(String));
@@ -53,12 +53,12 @@ describe('Organization data isolation (e2e)', () => {
     const tokenA = await loginAndGetToken(
       app,
       userA.user.email,
-      'password123',
+      'Fictional-Test-Only!2026',
     );
     const tokenB = await loginAndGetToken(
       app,
       userB.user.email,
-      'password123',
+      'Fictional-Test-Only!2026',
     );
     const authA = authHeader(tokenA);
     const authB = authHeader(tokenB);
@@ -218,7 +218,7 @@ describe('Organization data isolation (e2e)', () => {
       .get('/api/metrics/summary')
       .set(authB)
       .expect(200);
-    expect(summaryB.body.totalsByMetric).toEqual([]);
+    expect(summaryB.body.totalsByMetric).toEqual([{ metricType: 'CARBON_EMISSION', unit: 'kgCO2e', totalValue: '0', count: 0 }]);
     expect(summaryB.body.totalsByFacility).toEqual([]);
 
     const reportsA = await request(app.getHttpServer())

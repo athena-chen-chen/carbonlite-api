@@ -1,10 +1,18 @@
 import { DocumentExtractionService } from './document-extraction.service';
 
 describe('DocumentExtractionService import normalization', () => {
-  const service = new DocumentExtractionService(null as never, null as never, null as never);
+  const service = new DocumentExtractionService(null as never, null as never, null as never, null as never);
 
   function normalize(activity: Record<string, unknown>) {
     return (service as any).normalizeActivityForImport(activity);
+  }
+
+  function buildContent(mimeType: string) {
+    return (service as any).buildExtractionUserContent({
+      fileName: mimeType === 'application/pdf' ? 'bill.pdf' : `bill.${mimeType.split('/')[1]}`,
+      mimeType,
+      base64: 'ZmFrZS1maXh0dXJl',
+    });
   }
 
   it('maps province aliases into normalized jurisdiction fields', () => {
@@ -209,6 +217,146 @@ describe('DocumentExtractionService import normalization', () => {
     expect(filtered).toEqual([
       expect.objectContaining({ activityType: 'WATER', quantity: 6, unit: 'm3' }),
     ]);
+  });
+
+  it('routes JPEG extraction through OpenAI image input instead of generic file input', () => {
+    const content = buildContent('image/jpeg');
+
+    expect(content).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: 'input_text' }),
+        expect.objectContaining({
+          type: 'input_image',
+          image_url: expect.stringMatching(/^data:image\/jpeg;base64,/),
+          detail: 'high',
+        }),
+      ]),
+    );
+    expect(content).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ type: 'input_file' })]),
+    );
+  });
+
+  it('routes PNG extraction through OpenAI image input', () => {
+    const content = buildContent('image/png');
+
+    expect(content).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'input_image',
+          image_url: expect.stringMatching(/^data:image\/png;base64,/),
+          detail: 'high',
+        }),
+      ]),
+    );
+  });
+
+  it('keeps PDF extraction on the existing OpenAI file input path', () => {
+    const content = buildContent('application/pdf');
+
+    expect(content).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: 'input_text' }),
+        expect.objectContaining({
+          type: 'input_file',
+          filename: 'bill.pdf',
+          file_data: expect.stringMatching(/^data:application\/pdf;base64,/),
+        }),
+      ]),
+    );
+    expect(content).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ type: 'input_image' })]),
+    );
+  });
+
+  it('uses image signatures to keep OpenAI MIME aligned with the actual image format', () => {
+    const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xe0]);
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+
+    expect(
+      (service as any).resolveOpenAiMimeType(
+        { fileName: 'upload.bin', mimeType: 'application/octet-stream' },
+        jpeg,
+      ),
+    ).toBe('image/jpeg');
+    expect(
+      (service as any).resolveOpenAiMimeType(
+        { fileName: 'upload.bin', mimeType: 'application/octet-stream' },
+        png,
+      ),
+    ).toBe('image/png');
+  });
+
+  it('keeps the sanitized Manitoba Hydro current electricity row and preserves period dates', () => {
+    const filtered = (service as any).filterOperationalActivityRows([
+      {
+        activityType: 'ELECTRICITY',
+        recordDate: '2026-03-10',
+        periodStart: '2026-02-09',
+        periodEnd: '2026-03-10',
+        quantity: 3721,
+        unit: 'kWh',
+        periodRole: 'CURRENT',
+        jurisdictionCountry: 'Canada',
+        jurisdictionRegion: 'Manitoba',
+        sourceReference: 'Manitoba Hydro actual reading current billing period',
+        notes: 'Actual reading.',
+      },
+      {
+        activityType: 'ELECTRICITY',
+        recordDate: '2026-03-10',
+        quantity: 7965,
+        unit: 'kWh',
+        periodRole: 'HISTORICAL_COMPARISON',
+        sourceReference: 'Consumption history',
+      },
+      {
+        activityType: 'ELECTRICITY',
+        recordDate: '2026-03-10',
+        quantity: 8896,
+        unit: 'kWh',
+        periodRole: 'PRIOR_YEAR',
+        sourceReference: 'Consumption history',
+      },
+      {
+        activityType: 'CUSTOM',
+        recordDate: '2026-03-10',
+        quantity: 23.42,
+        unit: 'CAD',
+        sourceReference: 'Basic charge',
+      },
+      {
+        activityType: 'CUSTOM',
+        recordDate: '2026-03-10',
+        quantity: 180.12,
+        unit: 'CAD',
+        sourceReference: 'Energy charge',
+      },
+      {
+        activityType: 'CUSTOM',
+        recordDate: '2026-03-10',
+        quantity: 9.31,
+        unit: 'CAD',
+        sourceReference: 'Tax',
+      },
+    ]);
+    const previewRows = filtered.map((row: Record<string, unknown>) =>
+      (service as any).addConfidence(row),
+    );
+
+    expect(filtered).toHaveLength(1);
+    expect(previewRows[0]).toMatchObject({
+      activityType: { value: 'ELECTRICITY' },
+      quantity: { value: 3721 },
+      unit: { value: 'kWh' },
+      jurisdictionCountry: { value: 'Canada' },
+      jurisdictionRegion: { value: 'Manitoba' },
+      periodStart: '2026-02-09',
+      periodEnd: '2026-03-10',
+    });
+    expect(filtered.map((row: Record<string, unknown>) => row.quantity)).not.toEqual(
+      expect.arrayContaining([7965, 8896, 30946]),
+    );
   });
 
   it('accepts JSON uploads as supported extraction files', () => {

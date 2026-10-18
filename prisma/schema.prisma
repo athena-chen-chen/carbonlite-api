@@ -44,6 +44,9 @@ enum ActivityType {
   HOTEL
   GROUND_TRANSPORT
   SHIPPING
+  // Legacy stored values retained for existing rows; not new pilot activities.
+  BUSINESS_TRAVEL
+  FREIGHT
   CUSTOM
 }
 
@@ -242,6 +245,13 @@ model Organization {
   scope3CoverageNote              String?
   exclusionsAndLimitations        String?
   boundaryNotes                   String?
+  boundaryStatus                  String @default("DRAFT")
+  boundaryVersion                 Int @default(1)
+  boundaryReviewedBy              String?
+  boundaryReviewedByUserId        String?
+  boundaryReviewedAt              DateTime?
+  boundaryReviewNote              String?
+  boundaryReviewFingerprint       String?
   timezone                        String?
   defaultReportingYear            Int?
   allowDemoFactorsForCalculations Boolean  @default(false)
@@ -378,6 +388,9 @@ model ActivityData {
   calculatedEmissionsKgCO2e Float?
   calculationStatus         String?
   calculationMessage        String?
+  calculationSnapshot       Json?
+  calculationVersion        Int @default(0)
+  calculatedAt              DateTime?
   createdAt                 DateTime         @default(now())
   updatedAt                 DateTime         @updatedAt
 
@@ -455,7 +468,7 @@ model SpreadsheetImportReviewRow {
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   sourceDocument Document? @relation(fields: [sourceDocumentId], references: [id], onDelete: Cascade)
 
-  @@unique([organizationId, idempotencyKey], name: "SpreadsheetImportReviewRow_idempotency_key")
+  @@unique([organizationId, idempotencyKey], name: "SpreadsheetImportReviewRow_idempotency_key", map: "SpreadsheetImportReviewRow_idempotency_key")
   @@index([organizationId])
   @@index([sourceDocumentId])
   @@index([organizationId, status])
@@ -472,7 +485,7 @@ model Factor {
   isSystem     Boolean        @default(true)
   isActive     Boolean        @default(true)
   createdAt    DateTime       @default(now())
-  updatedAt    DateTime       @updatedAt
+  updatedAt    DateTime       @default(now()) @updatedAt
 
   versions   FactorVersion[]
   changeLogs FactorChangeLog[]
@@ -482,6 +495,20 @@ model Factor {
   @@index([isSystem])
   @@index([isActive])
   @@index([activityType, isActive])
+}
+
+enum FactorApplicability {
+  CORPORATE_INVENTORY
+  ALBERTA_OFFSET_PROJECT
+  ALBERTA_TIER_SGRR
+  REFERENCE_ONLY
+}
+
+enum EmissionBasis {
+  DIRECT_CO2E
+  CO2_COMPONENT
+  CH4_COMPONENT
+  N2O_COMPONENT
 }
 
 model FactorVersion {
@@ -514,7 +541,7 @@ model FactorVersion {
   citationText        String?
   notes               String?
   createdAt           DateTime              @default(now())
-  updatedAt           DateTime              @updatedAt
+  updatedAt           DateTime              @default(now()) @updatedAt
 
   factor        Factor            @relation(fields: [factorId], references: [id], onDelete: Cascade)
   source        FactorSource      @relation(fields: [sourceId], references: [id], onDelete: Restrict)
@@ -534,6 +561,11 @@ model FactorVersion {
   @@index([factorId, version])
   @@index([factorId, inputUnit, jurisdictionCountry, jurisdictionRegion, factorYear])
   @@index([status, factorYear])
+  // Nullable governance: legacy eligibility is unchanged.
+  applicability          FactorApplicability?
+  emissionBasis          EmissionBasis?
+  methodologyProvenance  Json?
+
 }
 
 model FactorSource {
@@ -557,7 +589,7 @@ model FactorSource {
   isOfficial         Boolean       @default(false)
   isActive           Boolean       @default(true)
   createdAt          DateTime      @default(now())
-  updatedAt          DateTime      @updatedAt
+  updatedAt          DateTime      @default(now()) @updatedAt
 
   versions FactorVersion[]
 
@@ -657,6 +689,11 @@ model ConversionFactor {
   @@index([type, activityType, isSystemDefault])
   @@index([activityType, unit, country, region, sourceYear])
   @@index([activityType, unit, country, jurisdiction, sourceYear])
+  // Nullable governance: legacy eligibility is unchanged.
+  applicability          FactorApplicability?
+  emissionBasis          EmissionBasis?
+  methodologyProvenance  Json?
+
 }
 
 model MetricResult {

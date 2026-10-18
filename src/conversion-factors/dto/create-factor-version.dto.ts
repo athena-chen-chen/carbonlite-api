@@ -1,3 +1,4 @@
+import { FactorGovernanceDto } from './factor-governance.dto';
 import {
   IsEnum,
   IsInt,
@@ -8,7 +9,7 @@ import {
 } from 'class-validator';
 import { FactorConfidenceLevel } from '@prisma/client';
 
-export class CreateFactorVersionDto {
+export class CreateFactorVersionDto extends FactorGovernanceDto {
   @IsOptional()
   @IsString()
   @MaxLength(80)

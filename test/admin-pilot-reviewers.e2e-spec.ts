@@ -45,7 +45,7 @@ describe('Admin pilot reviewers (e2e)', () => {
         name: 'Test Reviewer',
         email: reviewerEmail,
         workspace: `${testRunId} CarbonLite Sample Workspace`,
-        expires: '2026-09-14',
+        expires: new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10),
       })
       .expect(201);
 
@@ -109,7 +109,7 @@ describe('Admin pilot reviewers (e2e)', () => {
 
     const passwordResponse = await request(app.getHttpServer())
       .post('/api/auth/password-reset/confirm')
-      .send({ token: inviteToken, password: 'password123' })
+      .send({ token: inviteToken, password: 'Fictional-Test-Only!2026' })
       .expect(201);
 
     expect(passwordResponse.body.user).toMatchObject({
@@ -118,7 +118,7 @@ describe('Admin pilot reviewers (e2e)', () => {
       organizationName: `${testRunId} CarbonLite Sample Workspace`,
     });
 
-    const token = await loginAndGetToken(app, reviewerEmail, 'password123');
+    const token = await loginAndGetToken(app, reviewerEmail, 'Fictional-Test-Only!2026');
     expect(token).toEqual(expect.any(String));
 
     const recordsResponse = await request(app.getHttpServer())
@@ -352,7 +352,7 @@ describe('Admin pilot reviewers (e2e)', () => {
     const inviteToken = new URL(createResponse.body.inviteLink).searchParams.get('token');
     await request(app.getHttpServer())
       .post('/api/auth/password-reset/confirm')
-      .send({ token: inviteToken, password: 'password123' })
+      .send({ token: inviteToken, password: 'Fictional-Test-Only!2026' })
       .expect(401);
   });
 

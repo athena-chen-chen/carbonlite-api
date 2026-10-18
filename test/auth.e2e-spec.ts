@@ -31,7 +31,7 @@ describe('Auth MVP (e2e)', () => {
       .send({
         organizationName: `${testRunId} Register Org`,
         email: `register-${testRunId}@carbonlite-e2e.test`,
-        password: 'password123',
+        password: 'Fictional-Test-Only!2026',
       })
       .expect(201);
 
@@ -57,14 +57,14 @@ describe('Auth MVP (e2e)', () => {
       .send({
         organizationName: `${testRunId} Duplicate Org 2`,
         email,
-        password: 'password123',
+        password: 'Fictional-Test-Only!2026',
       })
       .expect(409);
   });
 
   it('logs in with valid credentials', async () => {
     const email = `login-${testRunId}@carbonlite-e2e.test`;
-    const password = 'password123';
+    const password = 'Fictional-Test-Only!2026';
 
     await createTestUser(app, {
       organizationName: `${testRunId} Login Org`,
@@ -83,7 +83,7 @@ describe('Auth MVP (e2e)', () => {
     await createTestUser(app, {
       organizationName: `${testRunId} Invalid Password Org`,
       email,
-      password: 'password123',
+      password: 'Fictional-Test-Only!2026',
     });
 
     await request(app.getHttpServer())

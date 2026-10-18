@@ -3,6 +3,7 @@ import {
   ForbiddenException,
   Injectable,
   NotFoundException,
+  ConflictException,
 } from '@nestjs/common';
 import { UserRole } from '@prisma/client';
 import { AuthenticatedUser } from '../auth/auth.service';
@@ -32,6 +33,13 @@ export type OrganizationProfileResponse = {
   scope3CoverageNote: string;
   exclusionsAndLimitations: string;
   boundaryNotes: string;
+  boundaryStatus?: string;
+  boundaryVersion?: number;
+  boundaryReviewedBy?: string;
+  boundaryReviewedByUserId?: string;
+  boundaryReviewedAt?: string;
+  boundaryReviewNote?: string;
+  boundaryReviewFingerprint?: string;
 };
 
 const SAMPLE_WORKSPACE_NAME = 'CarbonLite Sample Workspace';
@@ -90,10 +98,29 @@ export class OrganizationsService {
     }
 
     const profile = this.normalizeAndValidate(dto);
+    const existing = await this.prisma.organization.findFirst({ where: { id: user.organizationId, isActive: true } });
+    if (!existing) throw new NotFoundException('Workspace profile was not found.');
+    const previous = this.toProfileResponse(existing);
+    const fingerprint = boundaryFingerprint(profile);
+    const changed = fingerprint !== boundaryFingerprint(previous);
+    if (dto.boundaryVersion !== undefined && dto.boundaryVersion !== (existing.boundaryVersion ?? 1)) throw new ConflictException('Reporting boundary changed. Reload before reviewing.');
+    const review = dto.boundaryStatus === 'REVIEWED';
+    if (review && ['reportingPeriodStart','reportingPeriodEnd','geographicBoundary','includedFacilitiesOrLocations','includedScopes','exclusionsAndLimitations'].some(key => !String((profile as any)[key] ?? '').trim())) throw new BadRequestException('Complete the reporting boundary before marking it reviewed.');
+    const attestation = review ? {
+      boundaryStatus: 'REVIEWED', boundaryVersion: (existing.boundaryVersion ?? 1) + (changed ? 1 : 0),
+      boundaryReviewedBy: user.email, boundaryReviewedByUserId: user.id, boundaryReviewedAt: new Date(),
+      boundaryReviewNote: clean(dto.boundaryReviewNote), boundaryReviewFingerprint: fingerprint,
+    } : changed ? {
+      boundaryStatus: 'DRAFT', boundaryVersion: (existing.boundaryVersion ?? 1) + 1,
+      boundaryReviewedBy: null, boundaryReviewedByUserId: null, boundaryReviewedAt: null,
+      boundaryReviewNote: null, boundaryReviewFingerprint: null,
+    } : {};
+
 
     const organization = await this.prisma.organization.update({
       where: { id: user.organizationId },
       data: {
+        ...attestation,
         name: profile.organizationName,
         industry: profile.industry,
         otherIndustry: profile.otherIndustry || null,
@@ -116,6 +143,13 @@ export class OrganizationsService {
       },
     });
 
+    await this.prisma.auditLog.create({ data: { organizationId: user.organizationId, userId: user.id,
+      action: review ? 'BOUNDARY_REVIEWED' : 'BOUNDARY_UPDATED', entityType: 'Organization', entityId: user.organizationId,
+      description: review ? 'Reporting boundary reviewed by authenticated actor.' : 'Reporting boundary updated.',
+      oldValue: JSON.parse(JSON.stringify(previous)), newValue: JSON.parse(JSON.stringify(this.toProfileResponse(organization))) } });
+    await this.prisma.userActivityEvent.create({ data: { organizationId: user.organizationId, userId: user.id,
+      eventName: review ? 'BOUNDARY_REVIEWED' : 'BOUNDARY_UPDATED', entityType: 'Organization', entityId: user.organizationId,
+      metadata: { version: organization.boundaryVersion, status: organization.boundaryStatus } } });
     return this.toProfileResponse(organization);
   }
 
@@ -137,6 +171,9 @@ export class OrganizationsService {
     scope3CoverageNote: string | null;
     exclusionsAndLimitations: string | null;
     boundaryNotes: string | null;
+    boundaryStatus?: string; boundaryVersion?: number; boundaryReviewedBy?: string | null;
+    boundaryReviewedByUserId?: string | null; boundaryReviewedAt?: Date | null;
+    boundaryReviewNote?: string | null; boundaryReviewFingerprint?: string | null;
   }): OrganizationProfileResponse {
     const defaults =
       organization.name === SAMPLE_WORKSPACE_NAME
@@ -151,6 +188,10 @@ export class OrganizationsService {
           };
 
     return {
+      boundaryStatus: organization.boundaryStatus ?? 'DRAFT', boundaryVersion: organization.boundaryVersion ?? 1,
+      boundaryReviewedBy: organization.boundaryReviewedBy ?? '', boundaryReviewedByUserId: organization.boundaryReviewedByUserId ?? '',
+      boundaryReviewedAt: organization.boundaryReviewedAt?.toISOString() ?? '', boundaryReviewNote: organization.boundaryReviewNote ?? '',
+      boundaryReviewFingerprint: organization.boundaryReviewFingerprint ?? '',
       organizationName: clean(organization.name) || defaults.organizationName,
       industry: clean(organization.industry) || defaults.industry,
       otherIndustry: clean(organization.otherIndustry),
@@ -272,4 +313,9 @@ function isValidPrimaryContactEmail(email: string) {
   return /^[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9-]+(?:\.[a-z0-9-]+)+$/.test(
     normalized,
   );
+}
+
+function boundaryFingerprint(profile: OrganizationProfileResponse) {
+  return ['organizationName','country','provinceOrState','reportingPeriodStart','reportingPeriodEnd','geographicBoundary','includedFacilitiesOrLocations','excludedFacilitiesOrLocations','includedScopes','scope3CoverageNote','exclusionsAndLimitations','boundaryNotes']
+    .map(key => String((profile as any)[key] ?? '').trim().replace(/\s+/g, ' ').toLowerCase()).join('|');
 }

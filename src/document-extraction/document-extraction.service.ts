@@ -1,3 +1,4 @@
+import { CalculationSnapshotsService } from '../metrics/calculation-snapshots.service';
 import {
   BadRequestException,
   Injectable,
@@ -5,6 +6,7 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
+import type { ResponseInputContent } from 'openai/resources/responses/responses';
 import { PrismaService } from '../prisma/prisma.service';
 import { openai } from '../openai/openai.client';
 import { access, readFile } from 'fs/promises';
@@ -17,6 +19,7 @@ import {
   normalizeJurisdictionCountry,
   normalizeJurisdictionRegion,
 } from '../metrics/metrics.utils';
+import { parseSpreadsheetActivityRows } from './spreadsheet-activity-rows';
 import { parseJsonActivityPayload } from '../activity-data/json-activity-records';
 import {
   addAppBreadcrumb,
@@ -35,6 +38,8 @@ type ConfidenceLevel = 'high' | 'medium' | 'low';
 type ParsedActivityRaw = {
   activityType: string;
   recordDate: string;
+  periodStart?: string | null;
+  periodEnd?: string | null;
   quantity: number;
   unit: string;
   periodRole?: string | null;
@@ -43,6 +48,8 @@ type ParsedActivityRaw = {
   jurisdictionCountry?: string | null;
   jurisdictionRegion?: string | null;
   facilityName?: string | null;
+  costCad?: number | null;
+  costCurrency?: string | null;
   sourceReference?: string | null;
   notes?: string | null;
 };
@@ -86,6 +93,8 @@ type ConfidenceField<T> = {
 type ParsedActivityWithConfidence = {
   activityType: ConfidenceField<string>;
   recordDate: ConfidenceField<string>;
+  periodStart?: string | null;
+  periodEnd?: string | null;
   quantity: ConfidenceField<number>;
   unit: ConfidenceField<string>;
   periodRole?: string | null;
@@ -94,6 +103,8 @@ type ParsedActivityWithConfidence = {
   jurisdictionCountry: ConfidenceField<string>;
   jurisdictionRegion: ConfidenceField<string>;
   facilityName: ConfidenceField<string>;
+  costCad?: number | null;
+  costCurrency?: string | null;
   sourceReference: ConfidenceField<string>;
   notes: ConfidenceField<string>;
 };
@@ -103,11 +114,13 @@ export class DocumentExtractionService {
   private readonly logger = new Logger(DocumentExtractionService.name);
   private readonly fileMissingMessage =
     'Uploaded file is no longer available. Please upload it again.';
+  private readonly extractionModel = 'gpt-4o-mini';
 
   constructor(
     private readonly prisma: PrismaService,
     private readonly auditLog: AuditLogService,
     private readonly activityTracking: ActivityTrackingService,
+    private readonly snapshots: CalculationSnapshotsService,
   ) {}
 
   async extract(
@@ -207,7 +220,10 @@ export class DocumentExtractionService {
       }
 
       const fileBuffer = await readFile(absolutePath);
-      const mimeType = document.mimeType || 'application/octet-stream';
+      if (/\.xlsx?$/i.test(document.fileName)) {
+        return this.extractStructuredActivityRecords({ organizationId, userId, documentId, fileName: document.fileName, fileBuffer }, parseSpreadsheetActivityRows(fileBuffer), 'EXCEL');
+      }
+      const mimeType = this.resolveOpenAiMimeType(document, fileBuffer);
       const base64 = fileBuffer.toString('base64');
 
       let localText = '';
@@ -226,8 +242,18 @@ export class DocumentExtractionService {
         localText = fileBuffer.toString('utf-8');
       }
 
+      const inputModality = this.getOpenAiInputModality(mimeType);
+      const userContent = this.buildExtractionUserContent({
+        fileName: document.fileName,
+        mimeType,
+        base64,
+      });
+      this.logger.log(
+        `[DocumentExtraction] OpenAI request prepared documentId=${documentId} model=${this.extractionModel} mimeType=${mimeType} inputModality=${inputModality} fileSize=${fileBuffer.length}`,
+      );
+
       const response = await openai.responses.create({
-        model: 'gpt-4o-mini',
+        model: this.extractionModel,
         input: [
           {
             role: 'system',
@@ -240,6 +266,8 @@ export class DocumentExtractionService {
                   'For utility bills, return only current billing-period consumption as activity rows. ' +
                   'Do not return comparison chart values such as Last bill, Last month, Last year, same period last year, or past usage as current activities. ' +
                   'Ignore CAD, dollar amounts, taxes, service charges, delivery charges, rate riders, and totals unless a supported spend-based category is explicitly requested. ' +
+                  'Preserve source site/facility text (including Location Name) in facilityName. ' +
+                  'Preserve optional costCad only when explicitly supplied for that activity; never infer it from invoice totals or charges. Missing cost must be null; explicit zero is valid. ' +
                   'If a value is missing, return null where allowed. ' +
                   'Supported activityType values: ELECTRICITY, NATURAL_GAS, DIESEL, GASOLINE, AIR_TRAVEL, STEAM, WATER, WASTE, HOTEL, SHIPPING, CUSTOM. ' +
                   'Prefer consumption units such as kWh, MWh, GJ, m3, liters, km, and nights.',
@@ -248,55 +276,7 @@ export class DocumentExtractionService {
           },
           {
             role: 'user',
-            content: [
-              {
-                type: 'input_text',
-                text:
-                  `
-Extract operational activity quantities from the document.
-
-IMPORTANT:
-- For utility bills, extract consumption or usage quantities only.
-- Prefer lines with units such as USE(kWh), USE(GJ), USE(m3), kWh @, GJ @, or m3 @.
-- Prefer current billing detail/current usage lines over chart or comparison values.
-- If a bill includes comparison labels such as This bill, Last bill, Last month, Last year, Same period last year, or Past usage, return only the current billing-period quantity as an activity.
-- Set periodRole to CURRENT for current billing-period activity rows. Do not return PREVIOUS_PERIOD, PRIOR_YEAR, or HISTORICAL_COMPARISON rows unless they are needed as non-current evidence.
-- Do not create activity rows for currency-only billing lines, CAD amounts, GST, subtotals, totals, delivery charges, service charges, administration charges, franchise fees, rate riders, or cart program charges.
-- Waste and recycling dollar charges should be ignored unless the document provides a physical activity quantity such as mass or volume.
-- Wastewater derived from water usage should be ignored for this pilot unless it has a distinct supported activity quantity.
-
-For CSV or tabular data:
-- Each row = one activity
-- Map columns to fields:
-  - ActivityType → activityType
-  - Date → recordDate
-  - Quantity → quantity
-  - Unit → unit
-  - Province, Jurisdiction, Jurisdiction Region, Region, State, State/Province, Facility Province → jurisdictionRegion
-  - Country → jurisdictionCountry
-
-Normalize activity types:
-- Hotel, Hotels, Hotel Stay, Accommodation, Lodging → HOTEL
-- Electricity → ELECTRICITY
-- Diesel → DIESEL
-- Gasoline → GASOLINE
-- Natural Gas → NATURAL_GAS
-- Water → WATER
-- Natural gas usage in GJ → NATURAL_GAS with unit GJ
-- Water usage in m3 → WATER and note that it is tracked only
-- CAD, $, GST, total amount due, and service charge rows → ignore, do not return
-
-Return only activity rows with operational quantities as activities array.
-` +
-                  'If the document contains a fuel invoice, prefer DIESEL or GASOLINE. ' +
-                  'If it contains a utility bill, prefer ELECTRICITY or NATURAL_GAS.',
-              },
-              {
-                type: 'input_file',
-                filename: document.fileName,
-                file_data: `data:${mimeType};base64,${base64}`,
-              },
-            ],
+            content: userContent,
           },
         ],
         text: {
@@ -331,6 +311,12 @@ Return only activity rows with operational quantities as activities array.
                         ],
                       },
                       recordDate: { type: 'string' },
+                      periodStart: {
+                        anyOf: [{ type: 'string' }, { type: 'null' }],
+                      },
+                      periodEnd: {
+                        anyOf: [{ type: 'string' }, { type: 'null' }],
+                      },
                       quantity: { type: 'number' },
                       unit: { type: 'string' },
                       periodRole: {
@@ -349,6 +335,9 @@ Return only activity rows with operational quantities as activities array.
                       jurisdictionRegion: {
                         anyOf: [{ type: 'string' }, { type: 'null' }],
                       },
+                      facilityName: { anyOf: [{ type: 'string' }, { type: 'null' }] },
+                      costCad: { anyOf: [{ type: 'number' }, { type: 'null' }] },
+                      costCurrency: { anyOf: [{ type: 'string' }, { type: 'null' }] },
                       sourceReference: {
                         anyOf: [{ type: 'string' }, { type: 'null' }],
                       },
@@ -359,11 +348,16 @@ Return only activity rows with operational quantities as activities array.
                     required: [
                       'activityType',
                       'recordDate',
+                      'periodStart',
+                      'periodEnd',
                       'quantity',
                       'unit',
                       'periodRole',
                       'jurisdictionCountry',
                       'jurisdictionRegion',
+                      'facilityName',
+                      'costCad',
+                      'costCurrency',
                       'sourceReference',
                       'notes',
                     ],
@@ -377,7 +371,18 @@ Return only activity rows with operational quantities as activities array.
       });
 
       const rawText = response.output_text;
-      const parsed = JSON.parse(rawText) as { activities: ParsedActivityRaw[] };
+      this.logger.log(
+        `[DocumentExtraction] OpenAI response returned documentId=${documentId} model=${this.extractionModel} inputModality=${inputModality} responseStatus=${response.status ?? 'unknown'}`,
+      );
+      let parsed: { activities: ParsedActivityRaw[] };
+      try {
+        parsed = JSON.parse(rawText) as { activities: ParsedActivityRaw[] };
+      } catch (parseError) {
+        this.logger.warn(
+          `[DocumentExtraction] structured output parse failed documentId=${documentId} model=${this.extractionModel} inputModality=${inputModality} parseErrorCategory=INVALID_JSON`,
+        );
+        throw parseError;
+      }
       const activityRows = this.filterOperationalActivityRows(parsed.activities ?? []);
 
       const parsedActivities = activityRows.map((activity) =>
@@ -403,7 +408,7 @@ Return only activity rows with operational quantities as activities array.
 
       if (extractedRowCount === 0) {
         this.logger.warn(
-          `[DocumentExtraction] no data found documentId=${documentId} sourceRowCount=${sourceRowCount}`,
+          `[DocumentExtraction] no data found documentId=${documentId} sourceRowCount=${sourceRowCount} inputModality=${inputModality} model=${this.extractionModel}`,
         );
         addAppBreadcrumb('No emissions data found', {
           feature: 'document-extraction',
@@ -648,6 +653,138 @@ Return only activity rows with operational quantities as activities array.
     }
   }
 
+  private buildExtractionUserContent(input: {
+    fileName: string;
+    mimeType: string;
+    base64: string;
+  }): ResponseInputContent[] {
+    const content: ResponseInputContent[] = [
+      {
+        type: 'input_text',
+        text: this.getExtractionInstructions(),
+      },
+    ];
+
+    if (this.isSupportedImageMimeType(input.mimeType)) {
+      content.push({
+        type: 'input_image',
+        image_url: `data:${input.mimeType};base64,${input.base64}`,
+        detail: 'high',
+      });
+      return content;
+    }
+
+    content.push({
+      type: 'input_file',
+      filename: input.fileName,
+      file_data: `data:${input.mimeType};base64,${input.base64}`,
+    });
+    return content;
+  }
+
+  private getExtractionInstructions() {
+    return `
+Extract operational activity quantities from the document.
+
+IMPORTANT:
+- For utility bills, including photographed utility bills, extract consumption or usage quantities only.
+- Prefer lines with units such as USE(kWh), USE(GJ), USE(m3), kWh @, GJ @, or m3 @.
+- Prefer current billing detail/current usage lines over chart or comparison values.
+- If a bill includes comparison labels such as This bill, Last bill, Last month, Last year, Same period last year, Past usage, or consumption history, return only the current billing-period quantity as an activity.
+- Set periodRole to CURRENT for current billing-period activity rows. Do not return PREVIOUS_PERIOD, PRIOR_YEAR, or HISTORICAL_COMPARISON rows unless they are needed as non-current evidence.
+- If service period start and end dates are visible, return them as periodStart and periodEnd using YYYY-MM-DD.
+- Do not create activity rows for currency-only billing lines, CAD amounts, GST, subtotals, totals, basic charges, energy charges, delivery charges, service charges, administration charges, franchise fees, rate riders, or cart program charges.
+- Waste and recycling dollar charges should be ignored unless the document provides a physical activity quantity such as mass or volume.
+- Wastewater derived from water usage should be ignored for this pilot unless it has a distinct supported activity quantity.
+
+For CSV or tabular data:
+- Each row = one activity
+- Map columns to fields:
+  - ActivityType -> activityType
+  - Date -> recordDate
+  - Quantity -> quantity
+  - Unit -> unit
+  - Province, Jurisdiction, Jurisdiction Region, Region, State, State/Province, Facility Province -> jurisdictionRegion
+  - Country -> jurisdictionCountry
+
+Normalize activity types:
+- Hotel, Hotels, Hotel Stay, Accommodation, Lodging -> HOTEL
+- Electricity -> ELECTRICITY
+- Diesel -> DIESEL
+- Gasoline -> GASOLINE
+- Natural Gas -> NATURAL_GAS
+- Water -> WATER
+- Natural gas usage in GJ -> NATURAL_GAS with unit GJ
+- Water usage in m3 -> WATER and note that it is tracked only
+- CAD, $, GST, total amount due, and service charge rows -> ignore, do not return
+
+Return only activity rows with operational quantities as activities array.
+If the document contains a fuel invoice, prefer DIESEL or GASOLINE.
+If it contains a utility bill, prefer ELECTRICITY or NATURAL_GAS.
+`;
+  }
+
+  private getOpenAiInputModality(mimeType: string) {
+    return this.isSupportedImageMimeType(mimeType) ? 'input_image' : 'input_file';
+  }
+
+  private isSupportedImageMimeType(mimeType: string) {
+    return ['image/jpeg', 'image/png'].includes(mimeType.toLowerCase());
+  }
+
+  private resolveOpenAiMimeType(
+    document: { fileName: string; mimeType: string | null },
+    fileBuffer: Buffer,
+  ) {
+    const detectedMimeType = this.detectMimeTypeFromSignature(fileBuffer);
+    if (detectedMimeType) return detectedMimeType;
+
+    const fileName = document.fileName.toLowerCase();
+    if (fileName.endsWith('.jpg') || fileName.endsWith('.jpeg')) return 'image/jpeg';
+    if (fileName.endsWith('.png')) return 'image/png';
+    if (fileName.endsWith('.pdf')) return 'application/pdf';
+    if (fileName.endsWith('.csv')) return 'text/csv';
+    if (fileName.endsWith('.json')) return 'application/json';
+    if (fileName.endsWith('.xlsx')) {
+      return 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+    }
+    if (fileName.endsWith('.xls')) return 'application/vnd.ms-excel';
+
+    return document.mimeType || 'application/octet-stream';
+  }
+
+  private detectMimeTypeFromSignature(fileBuffer: Buffer) {
+    if (fileBuffer.length >= 4) {
+      if (
+        fileBuffer[0] === 0xff &&
+        fileBuffer[1] === 0xd8 &&
+        fileBuffer[2] === 0xff
+      ) {
+        return 'image/jpeg';
+      }
+
+      if (
+        fileBuffer[0] === 0x89 &&
+        fileBuffer[1] === 0x50 &&
+        fileBuffer[2] === 0x4e &&
+        fileBuffer[3] === 0x47
+      ) {
+        return 'image/png';
+      }
+
+      if (
+        fileBuffer[0] === 0x25 &&
+        fileBuffer[1] === 0x50 &&
+        fileBuffer[2] === 0x44 &&
+        fileBuffer[3] === 0x46
+      ) {
+        return 'application/pdf';
+      }
+    }
+
+    return null;
+  }
+
   private async extractStructuredJsonDocument(input: {
     organizationId: string;
     userId?: string;
@@ -658,9 +795,27 @@ Return only activity rows with operational quantities as activities array.
     const records = parseJsonActivityPayload({
       jsonContent: input.fileBuffer.toString('utf-8'),
     });
-    const parsedActivities = records.map((record) =>
-      this.addConfidence(this.normalizeActivityForExtraction(record, input.fileName)),
-    );
+    return this.extractStructuredActivityRecords(input, records, 'JSON');
+  }
+
+  private async extractStructuredActivityRecords(
+    input: { organizationId: string; userId?: string; documentId: string; fileName: string; fileBuffer: Buffer },
+    records: Record<string, unknown>[],
+    sourceFormat: 'JSON' | 'EXCEL',
+  ) {
+    const parsedActivities = records.map((record) => {
+      const parsed = this.addConfidence(this.normalizeActivityForExtraction(record, input.fileName));
+      if (sourceFormat === 'JSON') return parsed;
+      return {
+        ...parsed,
+        // Blank/nonnumeric quantities remain review errors, never inferred consumption.
+        quantity: { value: typeof record.quantity === 'number' && Number.isFinite(record.quantity) ? record.quantity : null, confidence: parsed.quantity.confidence },
+        sourceFileName: input.fileName, sourceSheetName: record.sourceSheetName, sourceRow: record.sourceRow,
+        rawQuantity: record.rawQuantity, rawRecordDate: record.rawRecordDate,
+        rawActivityType: record.rawActivityType, rawSourceRow: record.rawSourceRow,
+        costCad: record.costCad, costCurrency: record.costCurrency,
+      } as typeof parsed;
+    });
     const extractedRowCount = parsedActivities.length;
     const status = extractedRowCount > 0 ? 'REVIEW_REQUIRED' : 'NO_DATA_FOUND';
     const extractionResponse = {
@@ -698,8 +853,8 @@ Return only activity rows with operational quantities as activities array.
       entityId: input.documentId,
       description:
         status === 'NO_DATA_FOUND'
-          ? 'Extracted JSON document but no activity records were detected'
-          : 'Extracted JSON document',
+          ? `Extracted ${sourceFormat} document but no activity records were detected`
+          : `Extracted ${sourceFormat} document`,
       newValue: {
         status,
         sourceRowCount: records.length,
@@ -722,7 +877,7 @@ Return only activity rows with operational quantities as activities array.
         extractedRowCount,
         possibleMissingRows: false,
         reason: extractedRowCount > 0 ? undefined : 'NO_DATA_FOUND',
-        sourceFormat: 'JSON',
+        sourceFormat,
       },
     });
 
@@ -763,6 +918,26 @@ Return only activity rows with operational quantities as activities array.
         'startDate',
         'Start Date',
       ]),
+      periodStart: this.normalizeOptionalText(
+        this.readAliasedField(activity, [
+          'periodStart',
+          'Period Start',
+          'period start',
+          'servicePeriodStart',
+          'Service Period Start',
+        ]),
+      ),
+      periodEnd: this.normalizeOptionalText(
+        this.readAliasedField(activity, [
+          'periodEnd',
+          'Period End',
+          'period end',
+          'servicePeriodEnd',
+          'Service Period End',
+          'endDate',
+          'End Date',
+        ]),
+      ),
       quantity: Number.isFinite(quantity) ? quantity : NaN,
       unit: this.readAliasedField(activity, ['unit', 'Unit', 'units', 'Units']),
       periodRole: this.normalizeOptionalText(
@@ -806,6 +981,8 @@ Return only activity rows with operational quantities as activities array.
         'Site Name',
         'location',
         'Location',
+        'locationName',
+        'Location Name',
         'branch',
         'Branch',
         'factory',
@@ -886,6 +1063,7 @@ Return only activity rows with operational quantities as activities array.
       await timeAsync(async () => {
         const document = await this.prisma.document.findFirst({
           where: { id: documentId, organizationId },
+          include: { extractions: { select: { extractedRows: true }, take: 1 } },
         });
 
         if (!document) {
@@ -905,6 +1083,7 @@ Return only activity rows with operational quantities as activities array.
       await timeAsync(() =>
         this.prisma.$transaction(async (tx) => {
           const ids: string[] = [];
+          let trackedMetricCount = 0;
           const spreadsheetReviewRows = await tx.spreadsheetImportReviewRow.findMany({
             where: {
               organizationId,
@@ -916,9 +1095,30 @@ Return only activity rows with operational quantities as activities array.
             ],
           });
 
+          // Legacy callers may confirm the staged ready set without resending rows.
+          // Revalidate that set server-side before the same record-level dedupe.
+          const confirmationActivities = normalizedActivities.length ? normalizedActivities : spreadsheetReviewRows
+            .map(row => this.buildImportActivityFromReviewRow(row))
+            .filter((row): row is NormalizedImportActivity => Boolean(row));
+          for (const activity of confirmationActivities) {
+            if (activity.quantity <= 0) throw new BadRequestException('Quantity must be a positive number.');
+            const staged = spreadsheetReviewRows.find(row => String(row.sourceRow ?? '') === String(activity.sourceRow ?? '') && (!activity.sourceSheetName || row.sourceSheetName === activity.sourceSheetName));
+            if (!staged) continue;
+            // Omitted optional context keeps the staged value. An explicit empty value remains a correction.
+            const original = activities[normalizedActivities.indexOf(activity)] ?? {};
+            const supplied = (keys: string[]) => keys.some(key => Object.prototype.hasOwnProperty.call(original, key));
+            activity.jurisdictionCountry = supplied(['jurisdictionCountry','country','Country']) ? activity.jurisdictionCountry : staged.jurisdictionCountry;
+            activity.jurisdictionRegion = supplied(['jurisdictionRegion','province','region','Province']) ? activity.jurisdictionRegion : staged.jurisdictionRegion;
+            activity.facilityName = supplied(['facilityName','facility','site','location']) ? activity.facilityName : staged.facilityName;
+            const fields = await this.snapshots.fields(tx, { ...activity, id: staged.id, organizationId, quantity: new Prisma.Decimal(activity.quantity), recordDate: new Date(activity.recordDate), createdAt: staged.createdAt, document: null }, userId, 1);
+            const editable = { activityType: activity.activityType, quantity: new Prisma.Decimal(activity.quantity), unit: activity.unit, recordDate: new Date(activity.recordDate), jurisdictionCountry: activity.jurisdictionCountry, jurisdictionRegion: activity.jurisdictionRegion, facilityName: activity.facilityName };
+            const { calculationSnapshot, calculationVersion, calculatedAt, ...stagedFields } = fields;
+            const updated = await tx.spreadsheetImportReviewRow.update({ where: { id: staged.id, organizationId }, data: { ...editable, ...stagedFields, status: fields.calculationStatus === 'CALCULATED' ? 'READY' : fields.calculationStatus === 'TRACKED_ONLY' ? 'TRACKED_ONLY' : 'NEEDS_REVIEW', issues: [] } });
+            Object.assign(staged, updated);
+          }
           const activitiesForImport = this.mergeImportActivities(
-            normalizedActivities,
-            spreadsheetReviewRows,
+            confirmationActivities,
+            spreadsheetReviewRows.filter(row => confirmationActivities.some(activity => String(row.sourceRow ?? '') === String(activity.sourceRow ?? '') && (!activity.sourceSheetName || row.sourceSheetName === activity.sourceSheetName))),
           );
           const existingActivities = await tx.activityData.findMany({
             where: {
@@ -945,13 +1145,7 @@ Return only activity rows with operational quantities as activities array.
                 unit: activity.unit,
               };
 
-              return [
-                this.buildImportActivityRecordKey(documentId, keyInput),
-                this.buildImportActivityRecordKey(documentId, {
-                  ...keyInput,
-                  sourceRow: null,
-                }),
-              ];
+              return [this.buildImportActivityRecordKey(documentId, keyInput)];
             }),
           );
 
@@ -961,9 +1155,11 @@ Return only activity rows with operational quantities as activities array.
               ...normalized,
               sourceRow: null,
             });
+            // Older provider extractions had no physical source row. Retain their
+            // existing content identity when deterministic extraction adds it.
             if (importedKeys.has(key) || importedKeys.has(fallbackKey)) continue;
             const row = await tx.activityData.create({
-              data: {
+              data: await this.snapshots.prepareCreate(tx, {
                 organizationId,
                 documentId,
                 activityType: normalized.activityType as any,
@@ -1005,17 +1201,36 @@ Return only activity rows with operational quantities as activities array.
                 calculatedEmissionsKgCO2e: normalized.calculatedEmissionsKgCO2e ?? null,
                 calculationStatus: normalized.calculationStatus ?? null,
                 calculationMessage: normalized.calculationMessage ?? null,
-              },
+              }, userId),
             });
 
             ids.push(row.id);
+            if (normalized.reportTreatment === 'TRACKED_ONLY' || normalized.calculationStatus === 'TRACKED_ONLY' || normalized.activityType === 'WATER') trackedMetricCount += 1;
             importedKeys.add(key);
-            importedKeys.add(fallbackKey);
+
           }
 
-          const remainingReviewCount = spreadsheetReviewRows.filter(
-            (row) => row.status === 'NEEDS_REVIEW',
-          ).length;
+          // Uploaded tables have extraction rows but no spreadsheet staging
+          // entities. A partial import must keep those unresolved rows reachable.
+          const extractionRows = document.extractions?.[0]?.extractedRows;
+          const remainingExtractedCount = Array.isArray(extractionRows)
+            ? extractionRows.filter((row) => {
+                if (!row || typeof row !== 'object' || Array.isArray(row)) return false;
+                const identity = {
+                  sourceRow: this.normalizeOptionalText(this.unwrapField(row.sourceRow)),
+                  sourceReference: this.normalizeOptionalText(this.unwrapField(row.sourceReference)),
+                  activityType: this.normalizeActivityType(this.unwrapField(row.activityType)),
+                  recordDate: String(this.unwrapField(row.recordDate) ?? ''),
+                  quantity: Number(this.unwrapField(row.quantity)),
+                  unit: String(this.unwrapField(row.unit) ?? ''),
+                };
+                return !importedKeys.has(this.buildImportActivityRecordKey(documentId, identity)) &&
+                  !importedKeys.has(this.buildImportActivityRecordKey(documentId, { ...identity, sourceRow: null }));
+              }).length
+            : 0;
+          const remainingReviewCount = spreadsheetReviewRows.length
+            ? spreadsheetReviewRows.filter(row => row.status === 'NEEDS_REVIEW').length
+            : remainingExtractedCount;
           const documentStatus = remainingReviewCount > 0 ? 'REVIEW_REQUIRED' : 'IMPORTED';
           await tx.document.update({
             where: { id: documentId },
@@ -1026,24 +1241,28 @@ Return only activity rows with operational quantities as activities array.
             },
           });
 
+          if (ids.length > 0) {
+            await this.activityTracking.track({
+              organizationId, userId,
+              eventName: 'ACTIVITY_RECORD_IMPORTED',
+              entityType: 'Document', entityId: documentId,
+              metadata: {
+                sourceDocumentId: documentId,
+                sourceFileName: document.fileName,
+                importBatchId: stableImportBatchId,
+                sourceType: 'DOCUMENT_AI',
+                reviewableRowCount: spreadsheetReviewRows.length || normalizedActivities.length,
+                createdRecordCount: ids.length,
+                count: ids.length,
+                trackedMetricCount,
+                unresolvedRowCount: remainingReviewCount,
+                skippedCount: Math.max(0, normalizedActivities.length - ids.length),
+              },
+            }, tx);
+          }
           return ids;
-        }),
+        }, { maxWait: 10000, timeout: 60000 }),
       );
-
-    if (createdIds.length > 0) {
-      await this.activityTracking.track({
-        organizationId,
-        userId,
-        eventName: 'ACTIVITY_RECORD_IMPORTED',
-        entityType: 'Document',
-        entityId: documentId,
-        metadata: {
-          count: createdIds.length,
-          sourceType: 'DOCUMENT_AI',
-          importBatchId: stableImportBatchId,
-        },
-      });
-    }
 
     this.logImportPerformance('documentExtractionConfirmImport', {
       totalDurationMs: totalTimer.elapsedMs(),
@@ -1184,6 +1403,8 @@ Return only activity rows with operational quantities as activities array.
         value: activity.recordDate ?? null,
         confidence: this.isValidDate(activity.recordDate) ? 'high' : 'low',
       },
+      periodStart: activity.periodStart ?? null,
+      periodEnd: activity.periodEnd ?? null,
       quantity: {
         value: typeof activity.quantity === 'number' ? activity.quantity : null,
         confidence:
@@ -1206,6 +1427,8 @@ Return only activity rows with operational quantities as activities array.
         value: activity.jurisdictionRegion ?? null,
         confidence: activity.jurisdictionRegion ? 'high' : 'low',
       },
+      costCad: activity.costCad ?? null,
+      costCurrency: activity.costCurrency ?? null,
       facilityName: {
         value: activity.facilityName ?? null,
         confidence: activity.facilityName ? 'high' : 'low',
@@ -1291,7 +1514,7 @@ Return only activity rows with operational quantities as activities array.
 
     const hasCurrencyUnit = /^(cad|\$|dollar|dollars|currency|amount due|cr)$/i.test(unit);
     const mentionsCurrencyAmount = /(?:cad|\$)\s*-?\d|\d[\d,]*(?:\.\d{2})?\s*(?:cad|\$)/i.test(text);
-    const isBillingLine = /\b(subtotal|total current charges|total amount due|amount due|gst|administration charge|delivery charge|service charge|franchise fee|transaction fee|rate rider|rate riders|cart program charge|blue cart|black cart|green cart|waste and recycling|charge|charges|fee|fees)\b/i.test(text);
+    const isBillingLine = /\b(subtotal|total current charges|total amount due|amount due|gst|tax|taxes|basic charge|energy charge|administration charge|delivery charge|service charge|franchise fee|transaction fee|rate rider|rate riders|cart program charge|blue cart|black cart|green cart|waste and recycling|charge|charges|fee|fees)\b/i.test(text);
 
     return hasCurrencyUnit || (mentionsCurrencyAmount && isBillingLine);
   }
@@ -1369,6 +1592,8 @@ Return only activity rows with operational quantities as activities array.
         'Site Name',
         'location',
         'Location',
+        'locationName',
+        'Location Name',
         'branch',
         'Branch',
         'factory',
@@ -1578,6 +1803,7 @@ Return only activity rows with operational quantities as activities array.
 
   private readOptionalNumber(activity: any, keys: string[]) {
     const rawValue = this.readAliasedField(activity, keys);
+    if (rawValue === null || rawValue === undefined || String(rawValue).trim() === '') return null;
     const value = Number(rawValue);
     return Number.isFinite(value) ? value : null;
   }
@@ -1662,6 +1888,9 @@ Return only activity rows with operational quantities as activities array.
     HOTEL_STAY: 'HOTEL',
     HOTEL_STAYS: 'HOTEL',
     ACCOMMODATION: 'HOTEL',
+    BUSINESS_TRAVEL_ACCOMMODATION: 'HOTEL',
+    BUSINESS_TRAVEL_HOTEL: 'HOTEL',
+    BUSINESS_TRAVEL_HOTEL_STAY: 'HOTEL',
     LODGING: 'HOTEL',
     SHIPPING: 'SHIPPING',
     FREIGHT: 'SHIPPING',

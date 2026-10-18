@@ -41,7 +41,7 @@ export async function createTestUser(
     password?: string;
   } = {},
 ): Promise<TestUser> {
-  const password = options.password ?? 'password123';
+  const password = options.password ?? 'Fictional-Test-Only!2026';
   const email =
     options.email ?? `${uniqueTestId('user')}@carbonlite-e2e.test`;
   const organizationName =

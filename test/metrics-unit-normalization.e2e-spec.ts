@@ -49,7 +49,7 @@ describe('Metrics unit normalization (e2e)', () => {
         recordDate: '2026-01-01',
         quantity: 2,
         unit: 'night',
-        sourceType: 'MANUAL',
+        sourceType: 'MANUAL', jurisdictionCountry: 'Canada', jurisdictionRegion: 'Alberta',
         sourceReference: testRunId,
       })
       .expect(201);
@@ -85,7 +85,7 @@ describe('Metrics unit normalization (e2e)', () => {
         type: 'EMISSION',
         activityType: 'DIESEL',
         unit: 'litres',
-        factorValue: 7,
+        factorValue: 7, verified: true, country: 'Canada', region: 'Alberta',
         resultUnit: 'kgCO2e',
       })
       .expect(201);
@@ -98,7 +98,7 @@ describe('Metrics unit normalization (e2e)', () => {
         recordDate: '2026-01-01',
         quantity: 3,
         unit: 'liter',
-        sourceType: 'MANUAL',
+        sourceType: 'MANUAL', jurisdictionCountry: 'Canada', jurisdictionRegion: 'Alberta',
         sourceReference: testRunId,
       })
       .expect(201);
@@ -147,7 +147,7 @@ describe('Metrics unit normalization (e2e)', () => {
         recordDate: '2026-01-01',
         quantity: 10,
         unit: 'kilometers',
-        sourceType: 'MANUAL',
+        sourceType: 'MANUAL', jurisdictionCountry: 'Canada', jurisdictionRegion: 'Alberta',
         sourceReference: testRunId,
       })
       .expect(201);
@@ -159,7 +159,7 @@ describe('Metrics unit normalization (e2e)', () => {
         recordDate: '2026-01-01',
         quantity: 2,
         unit: 'kwh',
-        sourceType: 'MANUAL',
+        sourceType: 'MANUAL', jurisdictionCountry: 'Canada', jurisdictionRegion: 'Alberta',
         sourceReference: testRunId,
       })
       .expect(201);
@@ -182,7 +182,7 @@ describe('Metrics unit normalization (e2e)', () => {
         }),
         expect.objectContaining({
           activityDataId: electricity.body.id,
-          factorId: electricityFactor.id,
+          factorId: electricity.body.matchedFactorId,
           value: '1.06',
         }),
       ]),

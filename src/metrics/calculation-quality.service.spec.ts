@@ -946,4 +946,55 @@ describe('CalculationQualityService', () => {
     expect(result.records).toEqual([]);
     expect(result.activities).toEqual([]);
   });
+  describe('inventory applicability foundation', () => {
+    it.each(['ALBERTA_OFFSET_PROJECT', 'ALBERTA_TIER_SGRR', 'REFERENCE_ONLY'])('excludes %s before ranking both legacy and governed candidates', (applicability) => {
+      const result = service.evaluate({ organization, records: [record()],
+        factors: [factor({ id: 'restricted', applicability }), factor({ id: 'inventory', applicability: 'CORPORATE_INVENTORY' })],
+        governedFactors: [governedFactor({ applicability, factor: { ...governedFactor().factor, activityType: 'DIESEL' }, inputUnit: 'L' })],
+      });
+      expect(result.calculationDetails[0].factorId).toBe('inventory');
+      expect(result.totalEstimatedEmissionsKgCO2e).toBe(268);
+    });
+    it.each(['CO2_COMPONENT', 'CH4_COMPONENT', 'N2O_COMPONENT'])('rejects %s even with misleading kgCO2e units', (emissionBasis) => {
+      const result = service.evaluate({ organization, records: [record()], factors: [factor({ emissionBasis })] });
+      expect(result.calculationDetails[0].status).toBe('MISSING_FACTOR');
+      expect(result.calculationDetails[0].calculatedEmissionsKgCO2e).toBeNull();
+    });
+    it('does not treat diesel 2681 g CO2/L or gasoline 2307 g CO2/L as direct CO2e', () => {
+      for (const [activityType, value] of [['DIESEL', 2681], ['GASOLINE', 2307]] as const) {
+        const result = service.evaluate({ organization, records: [record({ activityType })],
+          factors: [factor({ activityType, factorValue: new Prisma.Decimal(value), resultUnit: 'g CO2/L' })] });
+        expect(result.calculationDetails[0].status).toBe('MISSING_FACTOR');
+      }
+    });
+    it('does not infer a required sector', () => {
+      const result = service.evaluate({ organization, records: [record()], factors: [factor({ methodologyProvenance: { sectorApplicability: ['Industrial'] } })] });
+      expect(result.calculationDetails[0].status).toBe('MISSING_FACTOR');
+    });
+    it('keeps 980 kWh corporate electricity at 0.53 when newer convertible EGDF is present', () => {
+      const result = service.evaluate({ organization, records: [record({ activityType: 'ELECTRICITY', unit: 'kWh', quantity: new Prisma.Decimal(980), recordDate: new Date('2026-01-01'), jurisdictionCountry: 'Canada', jurisdictionRegion: 'Alberta' })],
+        factors: [factor({ activityType: 'ELECTRICITY', unit: 'kWh', factorValue: new Prisma.Decimal(.53), sourceYear: 2026, country: 'Canada', region: 'Alberta' })],
+        governedFactors: [governedFactor({ applicability: 'ALBERTA_OFFSET_PROJECT', inputUnit: 'MWh', factorValue: new Prisma.Decimal(.4303), resultUnit: 'tCO2e', factorYear: 2026 })] });
+      expect(result.totalEstimatedEmissionsKgCO2e).toBe(519.4);
+      expect(result.calculationDetails[0].factorValue).toBe(.53);
+    });
+    it('keeps ENMAX direct GJ and refuses ungoverned m3 to GJ conversion', () => {
+      const gas = factor({ activityType: 'NATURAL_GAS', unit: 'GJ', factorValue: new Prisma.Decimal(49.44), sourceYear: null, country: 'Canada', jurisdiction: 'Canada (Generic)', sourceAuthority: 'Environment and Climate Change Canada', methodologyProvenance: { quantityBasis: 'ENERGY_HHV' } });
+      const component = factor({ id: 'component', activityType: 'NATURAL_GAS', unit: 'm3', emissionBasis: 'CO2_COMPONENT', applicability: 'ALBERTA_TIER_SGRR' });
+      const evaluate = (unit: string, quantity: number) => service.evaluate({ organization, records: [record({ activityType: 'NATURAL_GAS', unit, quantity: new Prisma.Decimal(quantity) })], factors: [component, gas] });
+      const detail = evaluate('GJ', 3).calculationDetails[0];
+      expect(detail.factorValue).toBe(49.44);
+      expect(detail.calculatedEmissionsKgCO2e).toBe(148.32);
+      expect(detail.sourceAuthority).toBe('Environment and Climate Change Canada');
+      expect(detail.factorSelectionReason).toBe('GENERIC_JURISDICTION_FALLBACK');
+      expect(evaluate('m3', 100).calculationDetails[0].status).toBe('MISSING_FACTOR');
+    });
+    it('legacy null governance remains valid, direct basis remains matchable', () => {
+      for (const emissionBasis of [undefined, null, 'DIRECT_CO2E']) {
+        const result = service.evaluate({ organization, records: [record()], factors: [factor({ applicability: null, emissionBasis })] });
+        expect(result.totalEstimatedEmissionsKgCO2e).toBe(268);
+      }
+    });
+  });
+
 });

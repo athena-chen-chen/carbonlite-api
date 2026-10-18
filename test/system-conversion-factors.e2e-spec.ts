@@ -134,7 +134,7 @@ describe('System and custom conversion factors (e2e)', () => {
         type: 'EMISSION',
         activityType: 'DIESEL',
         unit: 'liters',
-        factorValue: 9.99,
+        factorValue: 9.99, verified: true, country: 'Canada', region: 'Alberta',
         resultUnit: 'kgCO2e',
       })
       .expect(201);
@@ -147,7 +147,7 @@ describe('System and custom conversion factors (e2e)', () => {
         recordDate: '2026-01-01',
         quantity: 10,
         unit: 'liters',
-        sourceType: 'MANUAL',
+        sourceType: 'MANUAL', jurisdictionCountry: 'Canada', jurisdictionRegion: 'Alberta',
         sourceReference: testRunId,
       })
       .expect(201);

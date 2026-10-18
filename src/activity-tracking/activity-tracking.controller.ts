@@ -41,6 +41,11 @@ export class ActivityTrackingController {
     return this.activityTracking.findOwn(user.id, query);
   }
 
+  @Get('workflow')
+  workflow(@CurrentUser() user: AuthenticatedUser, @Query() query: ActivityEventQueryDto) {
+    return this.activityTracking.findWorkflow(user.organizationId, query);
+  }
+
   @Get('summary')
   summary(
     @CurrentUser() user: AuthenticatedUser,

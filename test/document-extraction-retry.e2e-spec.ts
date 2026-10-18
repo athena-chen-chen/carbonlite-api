@@ -185,7 +185,7 @@ describe('Document extraction retry (e2e)', () => {
       .expect(400);
 
     expect(response.body.message).toBe(
-      'Unsupported file type. Please upload a PDF, CSV, XLSX, PNG, or JPG file.',
+      'Unsupported file type. Please upload a PDF, CSV, XLSX, PNG, JPG, or JSON file.',
     );
   });
 

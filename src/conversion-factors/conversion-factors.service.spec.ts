@@ -73,6 +73,17 @@ describe('ConversionFactorsService Factor Library adapter', () => {
     return new ConversionFactorsService(prisma, auditLog, activityTracking);
   }
 
+
+  it.each([
+    { applicability: 'ALBERTA_OFFSET_PROJECT' }, { applicability: 'ALBERTA_TIER_SGRR' },
+    { applicability: 'REFERENCE_ONLY' }, { emissionBasis: 'CO2_COMPONENT' },
+    { emissionBasis: 'CH4_COMPONENT' }, { emissionBasis: 'N2O_COMPONENT' },
+    { resultUnit: 'g CO2/L' }, { methodologyProvenance: { sectorApplicability: ['Industrial'] } },
+  ])('excludes restricted metadata %j from the applicable-factor API', async (metadata) => {
+    const adapter = service({ legacy: [legacyFactor(metadata)], governed: [governedVersion(metadata)] });
+    await expect(adapter.getApplicableFactor({ activityType: 'DIESEL', inputUnit: 'L', jurisdictionCountry: 'Canada', jurisdictionRegion: 'Alberta', factorYear: 2025, organizationId: 'org-1' })).resolves.toMatchObject({ matched: false, factor: null });
+  });
+
   it('prefers organization custom conversion factors over governed system factors', async () => {
     const adapter = service({
       legacy: [

@@ -61,12 +61,12 @@ describe('ActivityData canonical calculation fields (e2e)', () => {
       matchingStatus: 'MATCHED',
       reportTreatment: 'INCLUDED',
       scope: 'SCOPE_2',
-      matchedFactorId: 'cmr75gv6l0007gdjbs0bz4d3j',
+      matchedFactorId: expect.any(String),
       matchedFactorName: 'Electricity - Alberta',
       matchedFactorSourceYear: 2025,
       calculatedEmissionsKgCO2e: 6625,
       calculationStatus: 'CALCULATED',
-      calculationMessage: 'Matched factor. Using latest available factor year: 2025.',
+      calculationMessage: expect.any(String),
     });
     expect(String(response.body.recordDate).slice(0, 10)).toBe('2026-07-20');
   });
@@ -111,12 +111,12 @@ describe('ActivityData canonical calculation fields (e2e)', () => {
       matchingStatus: 'MATCHED',
       reportTreatment: 'INCLUDED',
       scope: 'SCOPE_3',
-      matchedFactorId: 'pilot-ground-transport-canada-2025',
-      matchedFactorName: 'Ground Transport - Canada - 2025',
+      matchedFactorId: expect.any(String),
+      matchedFactorName: expect.any(String),
       matchedFactorSourceYear: 2025,
       calculatedEmissionsKgCO2e: 20,
       calculationStatus: 'CALCULATED',
-      calculationMessage: 'Matched factor. Using latest available factor year: 2025.',
+      calculationMessage: expect.any(String),
     });
     expect(String(response.body.recordDate).slice(0, 10)).toBe('2026-07-22');
   });

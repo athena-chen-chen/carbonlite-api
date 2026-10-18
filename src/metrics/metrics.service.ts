@@ -1,3 +1,4 @@
+import { CalculationSnapshotsService } from './calculation-snapshots.service';
 import {
   BadRequestException,
   Injectable,
@@ -28,6 +29,7 @@ export class MetricsService {
     private readonly prisma: PrismaService,
     private readonly auditLog: AuditLogService,
     private readonly calculationQuality: CalculationQualityService,
+    private readonly snapshots: CalculationSnapshotsService,
   ) {}
 
   async calculate(organizationId: string, dto: CalculateMetricsDto, userId?: string) {
@@ -38,20 +40,6 @@ export class MetricsService {
     }
 
     const requestedMetricTypes = dto.metricTypes as MetricType[];
-    const qualitySummary = requestedMetricTypes.includes('CARBON_EMISSION')
-      ? await this.calculationQuality.buildSummary(organizationId, {
-          selectedActivityRecordIds: activityRecords
-            .map((record) => record.id)
-            .join(','),
-        })
-      : null;
-    const carbonDetailsByActivityId = new Map(
-      (qualitySummary?.calculationDetails ?? []).map((detail) => [
-        detail.activityDataId,
-        detail,
-      ]),
-    );
-
     const factors = await this.prisma.conversionFactor.findMany({
       where: {
         OR: [{ isSystemDefault: true }, { organizationId }],
@@ -78,21 +66,25 @@ export class MetricsService {
           continue;
         }
 
-        const carbonDetail =
-          metricType === 'CARBON_EMISSION'
-            ? carbonDetailsByActivityId.get(record.id)
-            : undefined;
-        const factor =
-          metricType === 'CARBON_EMISSION'
-            ? factors.find((item) => item.id === carbonDetail?.factorId) ?? null
-            : matchBestFactor({
-                activityType: record.activityType,
-                unit: record.unit,
-                factors,
-                metricType,
-                organizationId,
-              });
-
+        if (metricType === 'CARBON_EMISSION') {
+          const saved = await this.prisma.$transaction(async tx => {
+            const current = await tx.activityData.findFirstOrThrow({ where: { id: record.id, organizationId } });
+            const updated = await this.snapshots.recalculate(tx, current, userId);
+            const snapshot: any = updated.calculationSnapshot;
+            if (updated.calculationStatus !== 'CALCULATED' || !snapshot) return null;
+            const detail = snapshot.detail;
+            const factor = detail.factorId ? await tx.conversionFactor.findFirst({ where: { id: detail.factorId, OR: [{ organizationId }, { isSystemDefault: true }] } }) : null;
+            await tx.metricResult.deleteMany({ where: { organizationId, activityDataId: record.id, metricType } });
+            return tx.metricResult.create({ data: { organizationId, activityDataId: record.id, facilityId: record.facilityId,
+              factorId: factor?.id ?? null, factorVersionId: detail.factorVersionId ?? null, metricType,
+              value: new Prisma.Decimal(snapshot.result.value), unit: 'kgCO2e', periodStart: record.periodStart, periodEnd: record.periodEnd,
+              detailsJson: { ...snapshot, ...detail, factorValue: String(detail.factorValue), factorUnit: detail.factorInputUnit, resultUnit: 'kgCO2e', sourceUnit: record.unit, factorProvenance: detail.factorProvenance } } });
+          });
+          if (saved) createdResults.push({ activityDataId: record.id, metricType, metricResultId: saved.id, factorId: saved.factorId, value: saved.value.toString(), unit: saved.unit });
+          continue;
+        }
+        const carbonDetail: any = undefined;
+        const factor = matchBestFactor({ activityType: record.activityType, unit: record.unit, factors, metricType, organizationId });
         if (!factor) {
           this.logger.warn(
             `No conversion factor match organizationId=${organizationId} activityDataId=${record.id} activityType=${record.activityType} unit=${record.unit} metricType=${metricType}`,
@@ -112,12 +104,7 @@ export class MetricsService {
           continue;
         }
 
-        const value =
-          metricType === 'CARBON_EMISSION' &&
-          carbonDetail?.calculatedEmissionsKgCO2e !== null &&
-          carbonDetail?.calculatedEmissionsKgCO2e !== undefined
-            ? new Prisma.Decimal(carbonDetail.calculatedEmissionsKgCO2e)
-            : this.calculateMetricValue(record.quantity, factor.factorValue);
+        const value = this.calculateMetricValue(record.quantity, factor.factorValue);
 
         // 关键：先删旧结果，避免重复计算后 summary 翻倍
         await this.prisma.metricResult.deleteMany({
@@ -133,29 +120,30 @@ export class MetricsService {
             organizationId,
             facilityId: record.facilityId,
             activityDataId: record.id,
-            factorId: factor.id,
+            factorId: factor?.id ?? null,
             factorVersionId: (carbonDetail as { factorVersionId?: string } | undefined)?.factorVersionId ?? null,
             metricType,
             value,
-            unit: factor.resultUnit,
+            unit: carbonDetail?.factorResultUnit ?? factor!.resultUnit,
             periodStart: record.periodStart,
             periodEnd: record.periodEnd,
             detailsJson: {
               activityType: record.activityType,
               sourceUnit: record.unit,
-              factorType: factor.type,
+              factorType: factor?.type ?? 'EMISSION',
               factorVersionId: (carbonDetail as { factorVersionId?: string } | undefined)?.factorVersionId ?? null,
-              factorValue: factor.factorValue.toString(),
-              factorUnit: factor.unit,
-              resultUnit: factor.resultUnit,
+              factorValue: String(carbonDetail?.factorValue ?? factor!.factorValue),
+              factorUnit: carbonDetail?.factorInputUnit ?? factor!.unit,
+              resultUnit: carbonDetail?.factorResultUnit ?? factor!.resultUnit,
               calculationStatus: carbonDetail?.status ?? 'CALCULATED',
               jurisdiction: carbonDetail?.jurisdiction ?? null,
               reportingYear: carbonDetail?.reportingYear ?? null,
               sourceAuthority: carbonDetail?.sourceAuthority ?? null,
               sourceDocument: carbonDetail?.sourceDocument ?? null,
+              factorProvenance: carbonDetail?.factorProvenance as Prisma.InputJsonValue ?? null,
               sourceUrl: carbonDetail?.sourceUrl ?? null,
               sourceYear: carbonDetail?.sourceYear ?? null,
-              verified: carbonDetail?.factorVerified ?? factor.verified,
+              verified: carbonDetail?.factorVerified ?? factor?.verified ?? false,
             },
           },
         });
@@ -164,7 +152,7 @@ export class MetricsService {
           activityDataId: record.id,
           metricType,
           metricResultId: result.id,
-          factorId: factor.id,
+          factorId: factor?.id ?? null,
           value: result.value.toString(),
           unit: result.unit,
         });

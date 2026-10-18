@@ -1,3 +1,4 @@
+import { FactorGovernanceDto } from './factor-governance.dto';
 import {
   IsBoolean,
   IsEnum,
@@ -16,7 +17,7 @@ export enum FactorTypeDto {
   CUSTOM = 'CUSTOM',
 }
 
-export class CreateConversionFactorDto {
+export class CreateConversionFactorDto extends FactorGovernanceDto {
   @IsString()
   @MaxLength(120)
   name!: string;

@@ -1,3 +1,4 @@
+import { isInventoryFactorEligible } from '../conversion-factors/factor-governance';
 import { ActivityType, ConversionFactor, MetricType } from '@prisma/client';
 
 type MatchFactorInput = {
@@ -147,7 +148,8 @@ export function matchBestFactor(input: MatchFactorInput): ConversionFactor | nul
       (metricType === 'COST_ESTIMATE' && factor.type === 'COST') ||
       (metricType === 'CUSTOM' && factor.type === 'CUSTOM');
 
-    return activityMatches && unitMatches && factorMatchesMetric;
+    return activityMatches && unitMatches && factorMatchesMetric &&
+      (metricType !== 'CARBON_EMISSION' || isInventoryFactorEligible(factor));
   });
 
   const organizationCandidates = candidates.filter(

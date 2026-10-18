@@ -82,6 +82,8 @@ export class DocumentsService {
       entityType: 'Document',
       entityId: created.id,
       metadata: {
+        sourceFileName: created.fileName,
+        sourceDocumentId: created.id,
         fileType: created.type,
         mimeType: created.mimeType,
         fileSize: created.fileSize,

@@ -34,33 +34,13 @@ SET
   "updatedAt" = NOW()
 FROM "ConversionFactor" cf
 WHERE ad."activityType" = 'ELECTRICITY'
-  AND LOWER(TRIM(ad."unit")) = 'kwh'
+  AND ad."unit" = 'kWh'
   AND ad."jurisdictionCountry" = 'Canada'
-  AND ad."jurisdictionRegion" = 'Alberta'
   AND ad."jurisdictionRegion" = cf."jurisdiction"
   AND COALESCE(ad."matchingStatus", '') = 'MISSING_FACTOR'
-  AND COALESCE(ad."calculationStatus", '') = 'MISSING_FACTOR'
-  AND ad."quantity" IS NOT NULL
-  AND ad."quantity"::double precision > 0
-  AND COALESCE(ad."reportTreatment", '') NOT IN ('EXCLUDED', 'TRACKED_ONLY')
-  AND ad."matchedFactorId" IS NULL
-  AND ad."matchedFactorName" IS NULL
-  AND ad."matchedFactorValue" IS NULL
-  AND ad."calculatedEmissionsKgCO2e" IS NULL
-  AND NOT EXISTS (
-    SELECT 1
-    FROM "MetricResult" mr
-    WHERE mr."activityDataId" = ad."id"
-  )
-  AND NOT EXISTS (
-    SELECT 1
-    FROM "Document" d
-    WHERE d."id" = COALESCE(ad."sourceDocumentId", ad."documentId")
-      AND d."reportId" IS NOT NULL
-  )
   AND cf."isSystemDefault" = true
   AND cf."activityType" = 'ELECTRICITY'
   AND cf."type" = 'EMISSION'
-  AND LOWER(TRIM(cf."unit")) = 'kwh'
-  AND cf."jurisdiction" = 'Alberta'
+  AND cf."unit" = 'kWh'
+  AND COALESCE(cf."jurisdiction", '') <> 'Province Required'
   AND cf."factorValue" IS NOT NULL;

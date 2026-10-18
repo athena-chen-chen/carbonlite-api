@@ -72,6 +72,7 @@ describe('ActivityDataService canonical calculation persistence', () => {
       prisma as never,
       auditLog as never,
       activityTracking as never,
+      { prepareCreate: jest.fn(async (_client, data) => data), recalculate: jest.fn(async (_client, row) => row) } as never,
     );
   });
 

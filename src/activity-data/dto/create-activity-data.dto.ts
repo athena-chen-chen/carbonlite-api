@@ -3,6 +3,7 @@ import {
   IsDateString,
   IsEnum,
   IsNumber,
+  IsPositive,
   IsOptional,
   IsString,
   MaxLength,
@@ -74,6 +75,7 @@ export class CreateActivityDataDto {
   periodEnd?: string;
 
   @IsNumber()
+  @IsPositive({ message: 'Quantity must be a positive number.' })
   quantity!: number;
 
   @IsString()

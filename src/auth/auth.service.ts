@@ -719,7 +719,7 @@ export class AuthService {
   private normalizePilotReviewerEmail(email: string) {
     const normalized = String(email ?? '').trim().toLowerCase();
     if (
-      /[\[\]()"']|mailto:/i.test(normalized) ||
+      /[[\]()"']|mailto:/i.test(normalized) ||
       !/^[^\s@()[\]"']+@[^\s@()[\]"']+\.[^\s@()[\]"']+$/.test(normalized) ||
       this.isKnownEmailDomainTypo(normalized)
     ) {
