@@ -88,7 +88,7 @@ describe('Audit Log (e2e)', () => {
       .post('/api/documents/upload')
       .set(authHeader(user.accessToken))
       .field('type', 'PDF')
-      .attach('file', Buffer.from('sample invoice'), {
+      .attach('file', Buffer.from('%PDF-1.4\n% Synthetic audit fixture\n%%EOF\n'), {
         filename: `${testRunId}-invoice.pdf`,
         contentType: 'application/pdf',
       })

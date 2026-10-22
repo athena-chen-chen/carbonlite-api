@@ -25,6 +25,7 @@ const reviewerUser = {
 
 describe('OrganizationsService organization profile', () => {
   const prisma = {
+    $transaction: jest.fn(),
     auditLog: { create: jest.fn() }, userActivityEvent: { create: jest.fn() },
     organization: {
       findFirst: jest.fn(),
@@ -35,6 +36,7 @@ describe('OrganizationsService organization profile', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    prisma.$transaction.mockImplementation(callback => callback(prisma));
     prisma.organization.findFirst.mockResolvedValue({ id: 'org-1', name: 'CarbonLite Sample Workspace', boundaryVersion: 1 });
     service = new OrganizationsService(prisma as never);
   });

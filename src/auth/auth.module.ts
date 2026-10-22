@@ -1,3 +1,4 @@
+import { resolveJwtSecret } from './jwt-config';
 import { Module } from '@nestjs/common';
 import { JwtModule } from '@nestjs/jwt';
 import { PassportModule } from '@nestjs/passport';
@@ -20,7 +21,7 @@ import { GoldenSampleDataService } from '../sample-data/golden-sample-data.servi
       imports: [ConfigModule],
       inject: [ConfigService],
       useFactory: (cfg: ConfigService) => ({
-        secret: cfg.get<string>('JWT_SECRET') || 'dev-secret',
+        secret: resolveJwtSecret(cfg),
         signOptions: { expiresIn: '7d' },
       }),
     }),

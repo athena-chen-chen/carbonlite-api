@@ -12,7 +12,7 @@ import {
 import { UserRole } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
-import { RolesGuard } from '../auth/guards/roles.guard';
+import { PlatformAdminGuard } from '../auth/guards/platform-admin.guard';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { AuthenticatedUser } from '../auth/auth.service';
 import { CreateFactorSourceDto } from './dto/create-factor-source.dto';
@@ -36,7 +36,7 @@ export class FactorSourcesController {
 
   @Post()
   @Roles(UserRole.ADMIN)
-  @UseGuards(RolesGuard)
+  @UseGuards(PlatformAdminGuard)
   create(@CurrentUser() user: AuthenticatedUser, @Body() dto: CreateFactorSourceDto) {
     return this.factorSourcesService.create(dto, {
       userId: user.id,
@@ -46,7 +46,7 @@ export class FactorSourcesController {
 
   @Patch(':id')
   @Roles(UserRole.ADMIN)
-  @UseGuards(RolesGuard)
+  @UseGuards(PlatformAdminGuard)
   update(
     @CurrentUser() user: AuthenticatedUser,
     @Param('id') id: string,
@@ -60,7 +60,7 @@ export class FactorSourcesController {
 
   @Delete(':id')
   @Roles(UserRole.ADMIN)
-  @UseGuards(RolesGuard)
+  @UseGuards(PlatformAdminGuard)
   remove(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
     return this.factorSourcesService.remove(id, {
       userId: user.id,

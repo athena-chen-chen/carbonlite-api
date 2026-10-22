@@ -6,7 +6,7 @@ import { ActivityTrackingService } from './activity-tracking.service';
 import { ActivityEventQueryDto } from './dto/activity-event-query.dto';
 import { CreateActivityEventDto } from './dto/create-activity-event.dto';
 import { Roles } from '../auth/decorators/roles.decorator';
-import { RolesGuard } from '../auth/guards/roles.guard';
+import { PlatformAdminGuard } from '../auth/guards/platform-admin.guard';
 import { UserRole } from '@prisma/client';
 
 @UseGuards(JwtAuthGuard)
@@ -62,21 +62,21 @@ export class AdminActivityTrackingController {
 
   @Get()
   @Roles(UserRole.ADMIN)
-  @UseGuards(RolesGuard)
+  @UseGuards(PlatformAdminGuard)
   findAll(@Query() query: ActivityEventQueryDto) {
     return this.activityTracking.findAllAdmin(query);
   }
 
   @Get('summary')
   @Roles(UserRole.ADMIN)
-  @UseGuards(RolesGuard)
+  @UseGuards(PlatformAdminGuard)
   summary(@Query() query: ActivityEventQueryDto) {
     return this.activityTracking.getAdminSummary(query);
   }
 
   @Get('active-users')
   @Roles(UserRole.ADMIN)
-  @UseGuards(RolesGuard)
+  @UseGuards(PlatformAdminGuard)
   activeUsers(@Query() query: ActivityEventQueryDto) {
     return this.activityTracking.getAdminActiveUsers(query);
   }

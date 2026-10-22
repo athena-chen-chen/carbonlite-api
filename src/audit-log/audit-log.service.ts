@@ -21,8 +21,8 @@ type AuditLogInput = {
 export class AuditLogService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async log(input: AuditLogInput) {
-    return this.prisma.auditLog.create({
+  async log(input: AuditLogInput, client: Pick<Prisma.TransactionClient, 'auditLog'> = this.prisma) {
+    return client.auditLog.create({
       data: {
         organizationId: input.organizationId ?? null,
         userId: input.userId ?? null,

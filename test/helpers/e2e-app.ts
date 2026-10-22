@@ -7,11 +7,13 @@ import {
 import { Test } from '@nestjs/testing';
 import { AppModule } from '../../src/app.module';
 import { PrismaService } from '../../src/prisma/prisma.service';
+import { assertSafeTestDatabaseTarget } from './database-safety';
 
 export async function createE2eApp(options?: {
   globalFilters?: ExceptionFilter[];
   enableSentryDebugRoute?: boolean;
 }) {
+  assertSafeTestDatabaseTarget();
   const moduleRef = await Test.createTestingModule({
     imports: [AppModule],
   }).compile();

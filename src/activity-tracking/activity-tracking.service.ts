@@ -1,3 +1,4 @@
+import { writeSafeError } from '../common/logging/safe-log';
 import { ForbiddenException, Injectable, Logger } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
@@ -478,9 +479,7 @@ export class ActivityTrackingService {
   private logAdminActivityError(operation: string, error: unknown) {
     if (process.env.NODE_ENV === 'production') return;
 
-    const message = error instanceof Error ? error.message : String(error);
-    const stack = error instanceof Error ? error.stack : undefined;
-    this.logger.error(`[AdminActivity] ${operation} failed: ${message}`, stack);
+    writeSafeError(this.logger, operation, error);
   }
 
   private toActivityDto(
@@ -590,4 +589,22 @@ function describeEvent(eventName: string, entityType?: string | null) {
     .join(' ');
 
   return entityType ? `${label} for ${entityType}` : label;
+}
+
+// Activity-feed decoration is optional only when explicitly called after commit.
+// Transactional workflow evidence continues to use track(input, tx) directly.
+const optionalActivityLogger = new Logger('OptionalActivity');
+export async function trackOptionalActivity(tracker: Pick<ActivityTrackingService, 'track'>, input: ActivityTrackInput): Promise<void> {
+  try {
+    await tracker.track(input);
+  } catch {
+    try {
+      optionalActivityLogger.warn('Optional activity write failed ' + JSON.stringify({
+        operation: String(input.eventName).slice(0, 100),
+        organizationId: String(input.organizationId ?? '').slice(0, 100),
+        entityType: String(input.entityType ?? '').slice(0, 100),
+        entityId: String(input.entityId ?? '').slice(0, 100),
+      }));
+    } catch { /* A logger failure must not change a committed business outcome. */ }
+  }
 }

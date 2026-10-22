@@ -89,6 +89,7 @@ describe('AuthService login resilience', () => {
         organizationId: 'local-demo-organization',
         organizationName: 'CarbonLite Pilot Demo Workspace',
         role: UserRole.ADMIN,
+        platformRole: UserRole.ADMIN,
       },
     });
   });
@@ -239,6 +240,7 @@ describe('AuthService login resilience', () => {
         organizationId: 'admin-org',
         organizationName: 'Admin Org',
         role: UserRole.ADMIN,
+        platformRole: UserRole.ADMIN,
       },
       {
         name: 'Test Reviewer',
@@ -363,6 +365,7 @@ describe('AuthService login resilience', () => {
         organizationId: 'admin-org',
         organizationName: 'Admin Org',
         role: UserRole.ADMIN,
+        platformRole: UserRole.ADMIN,
       },
       {
         name: 'Test Reviewer',
@@ -388,6 +391,7 @@ describe('AuthService login resilience', () => {
           organizationId: 'admin-org',
           organizationName: 'Admin Org',
           role: UserRole.ADMIN,
+          platformRole: UserRole.ADMIN,
         },
         {
           name: 'Test Reviewer',
@@ -413,6 +417,7 @@ describe('AuthService login resilience', () => {
           organizationId: 'admin-org',
           organizationName: 'Admin Org',
           role: UserRole.ADMIN,
+          platformRole: UserRole.ADMIN,
         },
         {
           name: 'Test Reviewer',
@@ -436,6 +441,7 @@ describe('AuthService login resilience', () => {
     ).resolves.toMatchObject({
       id: 'admin-script',
       role: UserRole.ADMIN,
+      platformRole: UserRole.ADMIN,
       organizationName: 'CarbonLite Admin Script',
     });
   });
@@ -451,6 +457,7 @@ describe('AuthService login resilience', () => {
       email: 'admin@example.com',
       organizationId: 'admin-org',
       role: UserRole.ADMIN,
+      platformRole: UserRole.ADMIN,
       isActive: true,
       organization: {
         id: 'admin-org',
@@ -464,11 +471,12 @@ describe('AuthService login resilience', () => {
     ).resolves.toMatchObject({
       id: 'admin-1',
       role: UserRole.ADMIN,
+      platformRole: UserRole.ADMIN,
       organizationName: 'Admin Org',
     });
   });
 
-  it('authenticates pilot reviewer creation with an admin membership JWT', async () => {
+  it('keeps workspace admin JWT identity separate from platform privilege', async () => {
     jwt.verifyAsync.mockResolvedValue({
       sub: 'membership-admin-1',
       email: 'membership-admin@example.com',
@@ -499,6 +507,7 @@ describe('AuthService login resilience', () => {
     ).resolves.toMatchObject({
       id: 'membership-admin-1',
       role: UserRole.ADMIN,
+      platformRole: UserRole.USER,
       organizationName: 'Admin Org',
     });
   });
@@ -541,6 +550,7 @@ describe('AuthService login resilience', () => {
             organizationId: 'admin-org',
             organizationName: 'Admin Org',
             role: UserRole.ADMIN,
+            platformRole: UserRole.ADMIN,
           },
           {
             name: 'Test Reviewer',
@@ -593,6 +603,7 @@ describe('AuthService login resilience', () => {
           organizationId: 'admin-org',
           organizationName: 'Admin Org',
           role: UserRole.ADMIN,
+          platformRole: UserRole.ADMIN,
         },
         { email: ' Reviewer@Example.com ' },
       ),
@@ -662,6 +673,7 @@ describe('AuthService login resilience', () => {
         organizationId: 'admin-org',
         organizationName: 'Admin Org',
         role: UserRole.ADMIN,
+        platformRole: UserRole.ADMIN,
       },
       { email: ' Reviewer@Example.com ' },
     );
@@ -725,6 +737,7 @@ describe('AuthService login resilience', () => {
           organizationId: 'admin-org',
           organizationName: 'Admin Org',
           role: UserRole.ADMIN,
+          platformRole: UserRole.ADMIN,
         },
         { email: 'reviewer@example.com' },
       ),
@@ -738,6 +751,7 @@ describe('AuthService login resilience', () => {
       id: 'admin-1',
       email: 'admin@example.com',
       role: UserRole.ADMIN,
+      platformRole: UserRole.ADMIN,
       accountType: null,
       isActive: true,
       organization: { id: 'admin-org', name: 'Admin Org' },
@@ -751,6 +765,7 @@ describe('AuthService login resilience', () => {
           organizationId: 'admin-org',
           organizationName: 'Admin Org',
           role: UserRole.ADMIN,
+          platformRole: UserRole.ADMIN,
         },
         { email: 'admin@example.com' },
       ),
@@ -777,6 +792,7 @@ describe('AuthService login resilience', () => {
           organizationId: 'admin-org',
           organizationName: 'Admin Org',
           role: UserRole.ADMIN,
+          platformRole: UserRole.ADMIN,
         },
         { email: 'customer@example.com' },
       ),

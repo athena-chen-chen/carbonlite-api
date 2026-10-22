@@ -1,3 +1,4 @@
+import { writeSafeError } from '../common/logging/safe-log';
 import { CalculationSnapshotsService } from '../metrics/calculation-snapshots.service';
 import {
   Injectable,
@@ -13,7 +14,7 @@ import { ActivityDataQueryDto } from './dto/activity-data-query.dto';
 import { BulkImportActivityDataDto } from './dto/bulk-import-activity-data.dto';
 import { JsonActivityDataPreviewDto } from './dto/json-activity-data-preview.dto';
 import { AuditLogService } from '../audit-log/audit-log.service';
-import { ActivityTrackingService } from '../activity-tracking/activity-tracking.service';
+import { ActivityTrackingService, trackOptionalActivity } from '../activity-tracking/activity-tracking.service';
 import {
   buildJsonActivityPreview,
   parseJsonActivityPayload,
@@ -81,31 +82,25 @@ export class ActivityDataService {
 
     let created;
     try {
-      created = await this.prisma.activityData.create({ data: await this.snapshots.prepareCreate(this.prisma, data, userId) });
+      created = await this.prisma.$transaction(async tx => {
+        const created = await tx.activityData.create({ data: await this.snapshots.prepareCreate(tx, data, userId) });
+        await this.auditLog.log({
+          organizationId,
+          userId,
+          action: 'CREATE_ACTIVITY_RECORD',
+          entityType: 'ActivityData',
+          entityId: created.id,
+          description: 'Created activity record',
+          newValue: created,
+        }, tx);
+        return created;
+      });
     } catch (error) {
-      this.logger.error(
-        [
-          'ActivityData create failed.',
-          `dto=${JSON.stringify(sanitizeActivityDataCreateDto(dto))}`,
-          `prismaData=${JSON.stringify(sanitizePrismaDataForLog(data))}`,
-          getErrorMessage(error),
-        ].join(' '),
-        getErrorStack(error),
-      );
+      writeSafeError(this.logger, 'activity-data-create', error, { organizationId });
       throw error;
     }
 
-    await this.auditLog.log({
-      organizationId,
-      userId,
-      action: 'CREATE_ACTIVITY_RECORD',
-      entityType: 'ActivityData',
-      entityId: created.id,
-      description: 'Created activity record',
-      newValue: created,
-    });
-
-    await this.activityTracking.track({
+    await trackOptionalActivity(this.activityTracking, {
       organizationId,
       userId,
       eventName: 'ACTIVITY_RECORD_CREATED',
@@ -175,7 +170,7 @@ export class ActivityDataService {
         }),
       );
 
-    await this.activityTracking.track({
+    await trackOptionalActivity(this.activityTracking, {
       organizationId,
       userId,
       eventName: 'ACTIVITY_RECORD_IMPORTED',
@@ -336,15 +331,7 @@ export class ActivityDataService {
         this.prisma.activityData.count({ where }),
       ]);
     } catch (error) {
-      this.logger.error(
-        [
-          'ActivityData findAll failed.',
-          `query=${JSON.stringify(query)}`,
-          `where=${JSON.stringify(sanitizePrismaDataForLog(where))}`,
-          getErrorMessage(error),
-        ].join(' '),
-        getErrorStack(error),
-      );
+      writeSafeError(this.logger, 'activity-data-list', error, { organizationId });
       throw error;
     }
 
@@ -384,90 +371,91 @@ export class ActivityDataService {
 
     const updated = await this.prisma.$transaction(async tx => {
       const row = await tx.activityData.update({
-      where: { id },
-      data: {
-        ...(dto.facilityId !== undefined ? { facilityId: dto.facilityId || null } : {}),
-        ...(dto.facility !== undefined || dto.facilityName !== undefined
-          ? { facilityName: resolveFacilityName(dto) }
-          : {}),
-        ...(dto.assetId !== undefined ? { assetId: dto.assetId || null } : {}),
-        ...(dto.documentId !== undefined ? { documentId: dto.documentId || null } : {}),
-        ...(dto.activityType !== undefined
-          ? { activityType: dto.activityType as ActivityType }
-          : {}),
-        ...(dto.customTypeLabel !== undefined
-          ? { customTypeLabel: dto.customTypeLabel || null }
-          : {}),
-        ...(dto.recordDate !== undefined ? { recordDate: parseDateOnlyUtc(dto.recordDate) } : {}),
-        ...(dto.dateEstimated !== undefined
-          ? { dateEstimated: dto.dateEstimated }
-          : {}),
-        ...(dto.jurisdictionCountry !== undefined
-          ? { jurisdictionCountry: dto.jurisdictionCountry || null }
-          : {}),
-        ...(dto.jurisdictionRegion !== undefined
-          ? { jurisdictionRegion: dto.jurisdictionRegion || null }
-          : {}),
-        ...(dto.recordYear !== undefined
-          ? { recordYear: dto.recordYear || null }
-          : dto.recordDate !== undefined
-            ? { recordYear: getDateOnlyYear(dto.recordDate) }
+        where: { id },
+        data: {
+          ...(dto.facilityId !== undefined ? { facilityId: dto.facilityId || null } : {}),
+          ...(dto.facility !== undefined || dto.facilityName !== undefined
+            ? { facilityName: resolveFacilityName(dto) }
             : {}),
-        ...(dto.periodStart !== undefined
-          ? { periodStart: dto.periodStart ? new Date(dto.periodStart) : null }
-          : {}),
-        ...(dto.periodEnd !== undefined
-          ? { periodEnd: dto.periodEnd ? new Date(dto.periodEnd) : null }
-          : {}),
-        ...(dto.quantity !== undefined ? { quantity: new Prisma.Decimal(dto.quantity) } : {}),
-        ...(dto.unit !== undefined ? { unit: dto.unit } : {}),
-        ...(dto.sourceType !== undefined
-          ? { sourceType: dto.sourceType as RecordSourceType }
-          : {}),
-        ...(dto.sourceReference !== undefined
-          ? { sourceReference: dto.sourceReference || null }
-          : {}),
-        ...(dto.sourceFileName !== undefined
-          ? { sourceFileName: dto.sourceFileName || null }
-          : {}),
-        ...(dto.sourceSheetName !== undefined
-          ? { sourceSheetName: normalizeOptionalText(dto.sourceSheetName) }
-          : {}),
-        ...(dto.sourceDocumentId !== undefined
-          ? { sourceDocumentId: dto.sourceDocumentId || null }
-          : {}),
-        ...(dto.sourcePage !== undefined
-          ? { sourcePage: normalizeOptionalText(dto.sourcePage) }
-          : {}),
-        ...(dto.sourceRow !== undefined
-          ? { sourceRow: normalizeOptionalText(dto.sourceRow) }
-          : {}),
-        ...(dto.sourceTextSnippet !== undefined
-          ? { sourceTextSnippet: dto.sourceTextSnippet || null }
-          : {}),
-        ...(dto.costCad !== undefined ? { costCad: normalizeOptionalCost(dto.costCad) } : {}),
-        ...(dto.costCurrency !== undefined
-          ? { costCurrency: normalizeOptionalText(dto.costCurrency) }
-          : {}),
-        ...(dto.notes !== undefined ? { notes: dto.notes || null } : {}),
-        ...buildCalculationFieldUpdateData(dto),
-      },
-    });
-      return this.snapshots.recalculate(tx, row, userId);
+          ...(dto.assetId !== undefined ? { assetId: dto.assetId || null } : {}),
+          ...(dto.documentId !== undefined ? { documentId: dto.documentId || null } : {}),
+          ...(dto.activityType !== undefined
+            ? { activityType: dto.activityType as ActivityType }
+            : {}),
+          ...(dto.customTypeLabel !== undefined
+            ? { customTypeLabel: dto.customTypeLabel || null }
+            : {}),
+          ...(dto.recordDate !== undefined ? { recordDate: parseDateOnlyUtc(dto.recordDate) } : {}),
+          ...(dto.dateEstimated !== undefined
+            ? { dateEstimated: dto.dateEstimated }
+            : {}),
+          ...(dto.jurisdictionCountry !== undefined
+            ? { jurisdictionCountry: dto.jurisdictionCountry || null }
+            : {}),
+          ...(dto.jurisdictionRegion !== undefined
+            ? { jurisdictionRegion: dto.jurisdictionRegion || null }
+            : {}),
+          ...(dto.recordYear !== undefined
+            ? { recordYear: dto.recordYear || null }
+            : dto.recordDate !== undefined
+              ? { recordYear: getDateOnlyYear(dto.recordDate) }
+              : {}),
+          ...(dto.periodStart !== undefined
+            ? { periodStart: dto.periodStart ? new Date(dto.periodStart) : null }
+            : {}),
+          ...(dto.periodEnd !== undefined
+            ? { periodEnd: dto.periodEnd ? new Date(dto.periodEnd) : null }
+            : {}),
+          ...(dto.quantity !== undefined ? { quantity: new Prisma.Decimal(dto.quantity) } : {}),
+          ...(dto.unit !== undefined ? { unit: dto.unit } : {}),
+          ...(dto.sourceType !== undefined
+            ? { sourceType: dto.sourceType as RecordSourceType }
+            : {}),
+          ...(dto.sourceReference !== undefined
+            ? { sourceReference: dto.sourceReference || null }
+            : {}),
+          ...(dto.sourceFileName !== undefined
+            ? { sourceFileName: dto.sourceFileName || null }
+            : {}),
+          ...(dto.sourceSheetName !== undefined
+            ? { sourceSheetName: normalizeOptionalText(dto.sourceSheetName) }
+            : {}),
+          ...(dto.sourceDocumentId !== undefined
+            ? { sourceDocumentId: dto.sourceDocumentId || null }
+            : {}),
+          ...(dto.sourcePage !== undefined
+            ? { sourcePage: normalizeOptionalText(dto.sourcePage) }
+            : {}),
+          ...(dto.sourceRow !== undefined
+            ? { sourceRow: normalizeOptionalText(dto.sourceRow) }
+            : {}),
+          ...(dto.sourceTextSnippet !== undefined
+            ? { sourceTextSnippet: dto.sourceTextSnippet || null }
+            : {}),
+          ...(dto.costCad !== undefined ? { costCad: normalizeOptionalCost(dto.costCad) } : {}),
+          ...(dto.costCurrency !== undefined
+            ? { costCurrency: normalizeOptionalText(dto.costCurrency) }
+            : {}),
+          ...(dto.notes !== undefined ? { notes: dto.notes || null } : {}),
+          ...buildCalculationFieldUpdateData(dto),
+        },
+      });
+      const updated = await (this.snapshots.recalculate(tx, row, userId));
+
+      await this.auditLog.log({
+        organizationId,
+        userId,
+        action: 'UPDATE_ACTIVITY_RECORD',
+        entityType: 'ActivityData',
+        entityId: id,
+        description: 'Updated activity record',
+        oldValue: existing,
+        newValue: updated,
+      }, tx);
+      return updated;
     });
 
-    await this.auditLog.log({
-      organizationId,
-      userId,
-      action: 'UPDATE_ACTIVITY_RECORD',
-      entityType: 'ActivityData',
-      entityId: id,
-      description: 'Updated activity record',
-      oldValue: existing,
-      newValue: updated,
-    });
-
-    await this.activityTracking.track({
+    await trackOptionalActivity(this.activityTracking, {
       organizationId,
       userId,
       eventName: 'ACTIVITY_RECORD_UPDATED',
@@ -483,28 +471,31 @@ export class ActivityDataService {
 
   async remove(organizationId: string, id: string, userId?: string) {
     const existing = await this.ensureExists(organizationId, id);
-    const result = await this.prisma.activityData.deleteMany({
-      where: {
-        id,
+    const result = await this.prisma.$transaction(async tx => {
+      const result = await tx.activityData.deleteMany({
+        where: {
+          id,
+          organizationId,
+        },
+      });
+
+      if (result.count === 0) {
+        throw new NotFoundException(`ActivityData ${id} not found.`);
+      }
+
+      await this.auditLog.log({
         organizationId,
-      },
+        userId,
+        action: 'DELETE_ACTIVITY_RECORD',
+        entityType: 'ActivityData',
+        entityId: id,
+        description: 'Deleted activity record',
+        oldValue: existing,
+      }, tx);
+      return result;
     });
 
-    if (result.count === 0) {
-      throw new NotFoundException(`ActivityData ${id} not found.`);
-    }
-
-    await this.auditLog.log({
-      organizationId,
-      userId,
-      action: 'DELETE_ACTIVITY_RECORD',
-      entityType: 'ActivityData',
-      entityId: id,
-      description: 'Deleted activity record',
-      oldValue: existing,
-    });
-
-    await this.activityTracking.track({
+    await trackOptionalActivity(this.activityTracking, {
       organizationId,
       userId,
       eventName: 'ACTIVITY_RECORD_DELETED',
@@ -532,28 +523,31 @@ export class ActivityDataService {
       },
     });
 
-    const result = await this.prisma.activityData.deleteMany({
-      where: {
-        id: { in: uniqueIds },
+    const result = await this.prisma.$transaction(async tx => {
+      const result = await tx.activityData.deleteMany({
+        where: {
+          id: { in: uniqueIds },
+          organizationId,
+        },
+      });
+
+      if (result.count === 0) {
+        throw new NotFoundException('No activity data records were deleted.');
+      }
+
+      await this.auditLog.log({
         organizationId,
-      },
+        userId,
+        action: 'BULK_DELETE_ACTIVITY_RECORDS',
+        entityType: 'ActivityData',
+        description: `Bulk deleted ${result.count} activity records`,
+        oldValue: existing,
+        newValue: { ids: uniqueIds, deletedCount: result.count },
+      }, tx);
+      return result;
     });
 
-    if (result.count === 0) {
-      throw new NotFoundException('No activity data records were deleted.');
-    }
-
-    await this.auditLog.log({
-      organizationId,
-      userId,
-      action: 'BULK_DELETE_ACTIVITY_RECORDS',
-      entityType: 'ActivityData',
-      description: `Bulk deleted ${result.count} activity records`,
-      oldValue: existing,
-      newValue: { ids: uniqueIds, deletedCount: result.count },
-    });
-
-    await this.activityTracking.track({
+    await trackOptionalActivity(this.activityTracking, {
       organizationId,
       userId,
       eventName: 'ACTIVITY_RECORD_BULK_DELETED',
@@ -603,7 +597,7 @@ export class ActivityDataService {
     }
 
     const eligibleIds = eligibleRecords.map((record) => record.id);
-    const updated = await this.prisma.$transaction(async (tx) => {
+    const updated = await this.prisma.$transaction(async tx => {
       await tx.activityData.updateMany({
         where: {
           id: { in: eligibleIds },
@@ -631,30 +625,30 @@ export class ActivityDataService {
             'Province changed. Recalculate to refresh factor matching and emissions.',
         },
       });
-
-      return tx.activityData.findMany({
+      const updated = await (tx.activityData.findMany({
         where: {
           id: { in: eligibleIds },
           organizationId,
         },
-      });
+      }));
+
+      await this.auditLog.log({
+        organizationId,
+        userId,
+        action: 'BULK_UPDATE_ACTIVITY_RECORD_PROVINCE',
+        entityType: 'ActivityData',
+        description: `Set province on ${updated.length} electricity activity records`,
+        oldValue: eligibleRecords,
+        newValue: {
+          ids: eligibleIds,
+          province: normalizedProvince,
+          updatedCount: updated.length,
+        },
+      }, tx);
+      return updated;
     });
 
-    await this.auditLog.log({
-      organizationId,
-      userId,
-      action: 'BULK_UPDATE_ACTIVITY_RECORD_PROVINCE',
-      entityType: 'ActivityData',
-      description: `Set province on ${updated.length} electricity activity records`,
-      oldValue: eligibleRecords,
-      newValue: {
-        ids: eligibleIds,
-        province: normalizedProvince,
-        updatedCount: updated.length,
-      },
-    });
-
-    await this.activityTracking.track({
+    await trackOptionalActivity(this.activityTracking, {
       organizationId,
       userId,
       eventName: 'ACTIVITY_RECORDS_PROVINCE_UPDATED',
@@ -705,7 +699,7 @@ export class ActivityDataService {
     }
 
     const eligibleIds = eligibleRecords.map((record) => record.id);
-    const updated = await this.prisma.$transaction(async (tx) => {
+    const updated = await this.prisma.$transaction(async tx => {
       await tx.activityData.updateMany({
         where: {
           id: { in: eligibleIds },
@@ -716,30 +710,30 @@ export class ActivityDataService {
           facilityName: normalizedFacilityName,
         },
       });
-
-      return tx.activityData.findMany({
+      const updated = await (tx.activityData.findMany({
         where: {
           id: { in: eligibleIds },
           organizationId,
         },
-      });
+      }));
+
+      await this.auditLog.log({
+        organizationId,
+        userId,
+        action: 'BULK_UPDATE_ACTIVITY_RECORD_FACILITY',
+        entityType: 'ActivityData',
+        description: `Set facility on ${updated.length} activity records`,
+        oldValue: eligibleRecords,
+        newValue: {
+          ids: eligibleIds,
+          facilityName: normalizedFacilityName,
+          updatedCount: updated.length,
+        },
+      }, tx);
+      return updated;
     });
 
-    await this.auditLog.log({
-      organizationId,
-      userId,
-      action: 'BULK_UPDATE_ACTIVITY_RECORD_FACILITY',
-      entityType: 'ActivityData',
-      description: `Set facility on ${updated.length} activity records`,
-      oldValue: eligibleRecords,
-      newValue: {
-        ids: eligibleIds,
-        facilityName: normalizedFacilityName,
-        updatedCount: updated.length,
-      },
-    });
-
-    await this.activityTracking.track({
+    await trackOptionalActivity(this.activityTracking, {
       organizationId,
       userId,
       eventName: 'ACTIVITY_RECORDS_FACILITY_UPDATED',
@@ -768,42 +762,40 @@ export class ActivityDataService {
       throw new BadRequestException('Confirmation text is invalid.');
     }
 
-    const result = await this.prisma.$transaction(async (tx) => {
+    const result = await this.prisma.$transaction(async tx => {
       const activityRecords = await tx.activityData.findMany({
         where: { organizationId },
         select: { id: true },
       });
       const activityRecordIds = activityRecords.map((record) => record.id);
-
       const deletedCalculationResults = activityRecordIds.length
         ? await tx.metricResult.deleteMany({
-            where: {
-              organizationId,
-              activityDataId: { in: activityRecordIds },
-            },
-          })
+          where: {
+            organizationId,
+            activityDataId: { in: activityRecordIds },
+          },
+        })
         : { count: 0 };
-
       const deletedActivityRecords = await tx.activityData.deleteMany({
         where: { organizationId },
       });
-
-      return {
+      const result = await ({
         deletedActivityRecords: deletedActivityRecords.count,
         deletedCalculationResults: deletedCalculationResults.count,
-      };
+      });
+
+      await this.auditLog.log({
+        organizationId,
+        userId,
+        action: 'CLEAR_ACTIVITY_RECORDS',
+        entityType: 'ActivityData',
+        description: 'Cleared activity records for organization',
+        newValue: result,
+      }, tx);
+      return result;
     });
 
-    await this.auditLog.log({
-      organizationId,
-      userId,
-      action: 'CLEAR_ACTIVITY_RECORDS',
-      entityType: 'ActivityData',
-      description: 'Cleared activity records for organization',
-      newValue: result,
-    });
-
-    await this.activityTracking.track({
+    await trackOptionalActivity(this.activityTracking, {
       organizationId,
       userId,
       eventName: 'ACTIVITY_RECORDS_CLEARED',
@@ -831,7 +823,7 @@ export class ActivityDataService {
       throw new BadRequestException('Confirmation text is invalid.');
     }
 
-    const result = await this.prisma.$transaction(async (tx) => {
+    const result = await this.prisma.$transaction(async tx => {
       const [activityRecords, documents, extractions] = await Promise.all([
         tx.activityData.findMany({
           where: { organizationId },
@@ -846,7 +838,6 @@ export class ActivityDataService {
           select: { extractedRowCount: true, sourceRowCount: true },
         }),
       ]);
-
       const activityRecordIds = activityRecords.map((record) => record.id);
       const documentIds = documents.map((document) => document.id);
       const importBatchIds = new Set(
@@ -860,33 +851,28 @@ export class ActivityDataService {
           (extraction.extractedRowCount || extraction.sourceRowCount || 0),
         0,
       );
-
       const metricsCacheCleared = activityRecordIds.length
         ? await tx.metricResult.deleteMany({
-            where: {
-              organizationId,
-              activityDataId: { in: activityRecordIds },
-            },
-          })
+          where: {
+            organizationId,
+            activityDataId: { in: activityRecordIds },
+          },
+        })
         : { count: 0 };
-
       const activityRecordsDeleted = await tx.activityData.deleteMany({
         where: { organizationId },
       });
-
       const stagedRowsCleared = documentIds.length
         ? await tx.documentExtraction.deleteMany({
-            where: {
-              organizationId,
-              documentId: { in: documentIds },
-            },
-          })
+          where: {
+            organizationId,
+            documentId: { in: documentIds },
+          },
+        })
         : { count: 0 };
-
       const uploadedDocumentsDeleted = await tx.document.deleteMany({
         where: { organizationId },
       });
-
       const resetReports = await tx.report.updateMany({
         where: {
           organizationId,
@@ -898,8 +884,7 @@ export class ActivityDataService {
           generatedPdfUrl: null,
         },
       });
-
-      return {
+      const result = await ({
         activityRecordsDeleted: activityRecordsDeleted.count,
         importBatchesDeleted: importBatchIds.size,
         uploadedDocumentsDeleted: uploadedDocumentsDeleted.count,
@@ -907,19 +892,20 @@ export class ActivityDataService {
         stagedExtractionRecordsDeleted: stagedRowsCleared.count,
         metricsCacheCleared: metricsCacheCleared.count,
         resetReports: resetReports.count,
-      };
+      });
+
+      await this.auditLog.log({
+        organizationId,
+        userId,
+        action: 'RESET_DEMO_DATA',
+        entityType: 'Organization',
+        description: 'Reset demo data for organization',
+        newValue: result,
+      }, tx);
+      return result;
     });
 
-    await this.auditLog.log({
-      organizationId,
-      userId,
-      action: 'RESET_DEMO_DATA',
-      entityType: 'Organization',
-      description: 'Reset demo data for organization',
-      newValue: result,
-    });
-
-    await this.activityTracking.track({
+    await trackOptionalActivity(this.activityTracking, {
       organizationId,
       userId,
       eventName: 'DEMO_DATA_RESET',
@@ -1164,30 +1150,4 @@ function normalizeProvinceInput(value: string) {
   };
 
   return provinceMap[normalized] ?? null;
-}
-
-function sanitizeActivityDataCreateDto(dto: CreateActivityDataDto) {
-  return sanitizeForLog(dto);
-}
-
-function sanitizePrismaDataForLog(data: object) {
-  return sanitizeForLog(data);
-}
-
-function sanitizeForLog(value: object) {
-  return Object.fromEntries(
-    Object.entries(value as Record<string, unknown>).map(([key, fieldValue]) => [
-      key,
-      fieldValue instanceof Prisma.Decimal ? fieldValue.toString() : fieldValue,
-    ]),
-  );
-}
-
-function getErrorMessage(error: unknown) {
-  if (error instanceof Error) return error.message;
-  return String(error);
-}
-
-function getErrorStack(error: unknown) {
-  return error instanceof Error ? error.stack : undefined;
 }

@@ -5,7 +5,7 @@ import { CreateReportDto } from './dto/create-report.dto';
 import { ReportQueryDto } from './dto/report-query.dto';
 import { UpdateReportDto } from './dto/update-report.dto';
 import { AuditLogService } from '../audit-log/audit-log.service';
-import { ActivityTrackingService } from '../activity-tracking/activity-tracking.service';
+import { ActivityTrackingService, trackOptionalActivity } from '../activity-tracking/activity-tracking.service';
 
 @Injectable()
 export class ReportsService {
@@ -18,29 +18,32 @@ export class ReportsService {
   async create(organizationId: string, userId: string, dto: CreateReportDto) {
     await this.validateFacility(organizationId, dto.facilityId);
 
-    const created = await this.prisma.report.create({
-      data: {
+    const created = await this.prisma.$transaction(async tx => {
+      const created = await tx.report.create({
+        data: {
+          organizationId,
+          createdById: userId,
+          title: dto.title,
+          facilityId: dto.facilityId ?? null,
+          reportingYear: dto.reportingYear ?? null,
+          periodStart: dto.periodStart ? new Date(dto.periodStart) : null,
+          periodEnd: dto.periodEnd ? new Date(dto.periodEnd) : null,
+        },
+      });
+
+      await this.auditLog.log({
         organizationId,
-        createdById: userId,
-        title: dto.title,
-        facilityId: dto.facilityId ?? null,
-        reportingYear: dto.reportingYear ?? null,
-        periodStart: dto.periodStart ? new Date(dto.periodStart) : null,
-        periodEnd: dto.periodEnd ? new Date(dto.periodEnd) : null,
-      },
+        userId,
+        action: 'GENERATE_REPORT',
+        entityType: 'Report',
+        entityId: created.id,
+        description: `Generated report ${created.title}`,
+        newValue: created,
+      }, tx);
+      return created;
     });
 
-    await this.auditLog.log({
-      organizationId,
-      userId,
-      action: 'GENERATE_REPORT',
-      entityType: 'Report',
-      entityId: created.id,
-      description: `Generated report ${created.title}`,
-      newValue: created,
-    });
-
-    await this.activityTracking.track({
+    await trackOptionalActivity(this.activityTracking, {
       organizationId,
       userId,
       eventName: 'REPORT_GENERATED',

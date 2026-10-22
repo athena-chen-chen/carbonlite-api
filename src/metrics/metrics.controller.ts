@@ -1,3 +1,4 @@
+import { WorkspaceMutationGuard } from '../auth/guards/workspace-mutation.guard';
 import {
   Body,
   Controller,
@@ -17,7 +18,7 @@ import { throwCapturedAppError } from '../common/monitoring/capture-app-error';
 import { CalculationQualityService } from './calculation-quality.service';
 import { CalculationSummaryQueryDto } from './dto/calculation-summary-query.dto';
 
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, WorkspaceMutationGuard)
 @Controller('metrics')
 export class MetricsController {
   constructor(

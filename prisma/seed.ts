@@ -6,7 +6,7 @@ const systemFactorMetadata = {
   default: {
     jurisdiction: 'Canada (Generic)',
     sourceAuthority: 'CarbonLite System Defaults',
-    sourceDocument: 'CarbonLite MVP Default Factors v1.0',
+    sourceDocument: 'CarbonLite Default Factor Library v1.0',
     sourceYear: 2025,
     sourceUrl: 'https://carbonlite.ai/methodology/default-factors',
     confidenceLevel: 'Medium (Engineering Estimate)',
@@ -19,7 +19,7 @@ const systemFactorMetadata = {
   electricity: {
     jurisdiction: 'Province Required',
     sourceAuthority: 'CarbonLite System Defaults',
-    sourceDocument: 'CarbonLite MVP Default Factors v1.0',
+    sourceDocument: 'CarbonLite Default Factor Library v1.0',
     sourceYear: 2025,
     sourceUrl: 'https://carbonlite.ai/methodology/default-factors',
     confidenceLevel: 'Low',
@@ -33,7 +33,7 @@ const systemFactorMetadata = {
   scope3: {
     jurisdiction: 'Canada (Generic)',
     sourceAuthority: 'CarbonLite System Defaults',
-    sourceDocument: 'CarbonLite MVP Default Factors v1.0',
+    sourceDocument: 'CarbonLite Default Factor Library v1.0',
     sourceYear: 2025,
     sourceUrl: 'https://carbonlite.ai/methodology/default-factors',
     confidenceLevel: 'Low',

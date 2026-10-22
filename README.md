@@ -42,6 +42,10 @@ Use the explicit commands below to select a database without editing `.env`:
 
 Each file must contain its complete backend configuration, including
 `DATABASE_URL`, `JWT_SECRET`, `NODE_ENV=development`, and `APP_ENV=local`.
+`JWT_SECRET` must be nonblank in every environment, including development and
+test. There is no built-in fallback; startup fails before serving requests if
+it is missing or blank. Supply a private environment-specific secret; never
+use example placeholders in a deployed environment.
 The selected file overrides inherited variables, and dotenv is pointed at that
 same file so `.env` cannot supply a different database later.
 
@@ -104,3 +108,33 @@ deeper optimization.
 Stop the running backend with Ctrl+C, then run `npm run dev:neon` for daily
 work or `npm run dev:localdb` for isolated Docker database testing. A running
 Node process does not reload environment files; a full restart is required.
+
+## Backend database test safety (F20)
+
+Backend database E2E tests require a disposable PostgreSQL database on
+`localhost`, `127.0.0.1`, or `::1`, named exactly `carbonlite_e2e`,
+`carbonlite_test`, or `carbonlite_ci_test`. `carbonlite_e2e` matches the frontend
+CI PostgreSQL service convention; this backend has no separate CI workflow.
+The persistent Docker database `carbonlite_dev` is refused. Hosted databases,
+including Neon, are refused; no hosted test branch has been verified.
+Connection query options and fragments are refused to prevent destination or
+schema overrides. `NODE_ENV`, `APP_ENV`, and reset/override flags cannot authorize
+an unsafe database. Safety errors never include the supplied URL or credentials.
+
+Create a separate empty database with one of these names, set `DATABASE_URL`
+explicitly in your shell, and apply the existing migrations to that disposable
+database before running `npm run test:e2e -- --runTestsByPath test/auth.e2e-spec.ts`.
+Factor-dependent integration suites also need the existing baseline seed in that
+disposable database. Validate the target before manually running migrations or
+seeds; the general-purpose Prisma CLI and seed commands are not E2E wrappers.
+Do not use the development environment file as your test target. The harness
+neither migrates nor resets databases automatically. The guard runs before Nest
+compiles the application, including when a single E2E file is run. Any new test
+that compiles the database application directly must call
+`assertSafeTestDatabaseTarget()` before compilation or destructive setup.
+
+Run the guard and bootstrap regression tests without any database:
+`node_modules/.bin/jest --config test/jest-safety.json --runInBand`.
+Pure unit tests and the database-free logging E2E remain independent of this guard.
+The sibling frontend helper retains its frontend fixture/reset flags; the backend
+uses the same test database naming convention with stricter target validation.

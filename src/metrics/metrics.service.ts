@@ -51,133 +51,139 @@ export class MetricsService {
       ],
     });
 
-    const createdResults: Array<{
-      activityDataId: string;
-      metricType: MetricType;
-      metricResultId: string;
-      factorId: string | null;
-      value: string;
-      unit: string;
-    }> = [];
+    return this.prisma.$transaction(async tx => {
+      const createdResults: Array<{
+        activityDataId: string;
+        metricType: MetricType;
+        metricResultId: string;
+        factorId: string | null;
+        value: string;
+        unit: string;
+      }> = [];
 
-    for (const record of activityRecords) {
-      for (const metricType of requestedMetricTypes) {
-        if (metricType === 'ENERGY_INTENSITY') {
-          continue;
-        }
+      for (const record of activityRecords) {
+        for (const metricType of requestedMetricTypes) {
+          if (metricType === 'ENERGY_INTENSITY') {
+            continue;
+          }
 
-        if (metricType === 'CARBON_EMISSION') {
-          const saved = await this.prisma.$transaction(async tx => {
-            const current = await tx.activityData.findFirstOrThrow({ where: { id: record.id, organizationId } });
-            const updated = await this.snapshots.recalculate(tx, current, userId);
-            const snapshot: any = updated.calculationSnapshot;
-            if (updated.calculationStatus !== 'CALCULATED' || !snapshot) return null;
-            const detail = snapshot.detail;
-            const factor = detail.factorId ? await tx.conversionFactor.findFirst({ where: { id: detail.factorId, OR: [{ organizationId }, { isSystemDefault: true }] } }) : null;
-            await tx.metricResult.deleteMany({ where: { organizationId, activityDataId: record.id, metricType } });
-            return tx.metricResult.create({ data: { organizationId, activityDataId: record.id, facilityId: record.facilityId,
-              factorId: factor?.id ?? null, factorVersionId: detail.factorVersionId ?? null, metricType,
-              value: new Prisma.Decimal(snapshot.result.value), unit: 'kgCO2e', periodStart: record.periodStart, periodEnd: record.periodEnd,
-              detailsJson: { ...snapshot, ...detail, factorValue: String(detail.factorValue), factorUnit: detail.factorInputUnit, resultUnit: 'kgCO2e', sourceUnit: record.unit, factorProvenance: detail.factorProvenance } } });
-          });
-          if (saved) createdResults.push({ activityDataId: record.id, metricType, metricResultId: saved.id, factorId: saved.factorId, value: saved.value.toString(), unit: saved.unit });
-          continue;
-        }
-        const carbonDetail: any = undefined;
-        const factor = matchBestFactor({ activityType: record.activityType, unit: record.unit, factors, metricType, organizationId });
-        if (!factor) {
-          this.logger.warn(
-            `No conversion factor match organizationId=${organizationId} activityDataId=${record.id} activityType=${record.activityType} unit=${record.unit} metricType=${metricType}`,
-          );
-          addAppBreadcrumb('No conversion factor match', {
-            feature: 'metrics',
-            operation: 'factor-match-missing',
-            organizationId,
-            entityType: 'ActivityData',
-            entityId: record.id,
-            metadata: {
-              activityType: record.activityType,
-              unit: record.unit,
+          if (metricType === 'CARBON_EMISSION') {
+            const saved = await (async () => {
+              const current = await tx.activityData.findFirstOrThrow({ where: { id: record.id, organizationId } });
+              const updated = await this.snapshots.recalculate(tx, current, userId);
+              const snapshot: any = updated.calculationSnapshot;
+              if (updated.calculationStatus !== 'CALCULATED' || !snapshot) return null;
+              const detail = snapshot.detail;
+              const factor = detail.factorId ? await tx.conversionFactor.findFirst({ where: { id: detail.factorId, OR: [{ organizationId }, { isSystemDefault: true }] } }) : null;
+              return tx.metricResult.create({
+                data: {
+                  organizationId, activityDataId: record.id, facilityId: record.facilityId,
+                  factorId: factor?.id ?? null, factorVersionId: detail.factorVersionId ?? null, metricType,
+                  value: new Prisma.Decimal(snapshot.result.value), unit: 'kgCO2e', periodStart: record.periodStart, periodEnd: record.periodEnd,
+                  detailsJson: { ...snapshot, ...detail, factorValue: String(detail.factorValue), factorUnit: detail.factorInputUnit, resultUnit: 'kgCO2e', sourceUnit: record.unit, factorProvenance: detail.factorProvenance }
+                }
+              });
+            })();
+            if (saved) createdResults.push({ activityDataId: record.id, metricType, metricResultId: saved.id, factorId: saved.factorId, value: saved.value.toString(), unit: saved.unit });
+            continue;
+          }
+          const carbonDetail: any = undefined;
+          const factor = matchBestFactor({ activityType: record.activityType, unit: record.unit, factors, metricType, organizationId });
+          if (!factor) {
+            this.logger.warn(
+              `No conversion factor match organizationId=${organizationId} activityDataId=${record.id} activityType=${record.activityType} unit=${record.unit} metricType=${metricType}`,
+            );
+            addAppBreadcrumb('No conversion factor match', {
+              feature: 'metrics',
+              operation: 'factor-match-missing',
+              organizationId,
+              entityType: 'ActivityData',
+              entityId: record.id,
+              metadata: {
+                activityType: record.activityType,
+                unit: record.unit,
+                metricType,
+              },
+            });
+            continue;
+          }
+
+          const value = this.calculateMetricValue(record.quantity, factor.factorValue);
+
+          // 关键：先删旧结果，避免重复计算后 summary 翻倍
+          await tx.metricResult.deleteMany({
+            where: {
+              organizationId,
+              activityDataId: record.id,
               metricType,
             },
           });
-          continue;
-        }
 
-        const value = this.calculateMetricValue(record.quantity, factor.factorValue);
-
-        // 关键：先删旧结果，避免重复计算后 summary 翻倍
-        await this.prisma.metricResult.deleteMany({
-          where: {
-            organizationId,
-            activityDataId: record.id,
-            metricType,
-          },
-        });
-
-        const result = await this.prisma.metricResult.create({
-          data: {
-            organizationId,
-            facilityId: record.facilityId,
-            activityDataId: record.id,
-            factorId: factor?.id ?? null,
-            factorVersionId: (carbonDetail as { factorVersionId?: string } | undefined)?.factorVersionId ?? null,
-            metricType,
-            value,
-            unit: carbonDetail?.factorResultUnit ?? factor!.resultUnit,
-            periodStart: record.periodStart,
-            periodEnd: record.periodEnd,
-            detailsJson: {
-              activityType: record.activityType,
-              sourceUnit: record.unit,
-              factorType: factor?.type ?? 'EMISSION',
+          const result = await tx.metricResult.create({
+            data: {
+              organizationId,
+              facilityId: record.facilityId,
+              activityDataId: record.id,
+              factorId: factor?.id ?? null,
               factorVersionId: (carbonDetail as { factorVersionId?: string } | undefined)?.factorVersionId ?? null,
-              factorValue: String(carbonDetail?.factorValue ?? factor!.factorValue),
-              factorUnit: carbonDetail?.factorInputUnit ?? factor!.unit,
-              resultUnit: carbonDetail?.factorResultUnit ?? factor!.resultUnit,
-              calculationStatus: carbonDetail?.status ?? 'CALCULATED',
-              jurisdiction: carbonDetail?.jurisdiction ?? null,
-              reportingYear: carbonDetail?.reportingYear ?? null,
-              sourceAuthority: carbonDetail?.sourceAuthority ?? null,
-              sourceDocument: carbonDetail?.sourceDocument ?? null,
-              factorProvenance: carbonDetail?.factorProvenance as Prisma.InputJsonValue ?? null,
-              sourceUrl: carbonDetail?.sourceUrl ?? null,
-              sourceYear: carbonDetail?.sourceYear ?? null,
-              verified: carbonDetail?.factorVerified ?? factor?.verified ?? false,
+              metricType,
+              value,
+              unit: carbonDetail?.factorResultUnit ?? factor!.resultUnit,
+              periodStart: record.periodStart,
+              periodEnd: record.periodEnd,
+              detailsJson: {
+                activityType: record.activityType,
+                sourceUnit: record.unit,
+                factorType: factor?.type ?? 'EMISSION',
+                factorVersionId: (carbonDetail as { factorVersionId?: string } | undefined)?.factorVersionId ?? null,
+                factorValue: String(carbonDetail?.factorValue ?? factor!.factorValue),
+                factorUnit: carbonDetail?.factorInputUnit ?? factor!.unit,
+                resultUnit: carbonDetail?.factorResultUnit ?? factor!.resultUnit,
+                calculationStatus: carbonDetail?.status ?? 'CALCULATED',
+                jurisdiction: carbonDetail?.jurisdiction ?? null,
+                reportingYear: carbonDetail?.reportingYear ?? null,
+                sourceAuthority: carbonDetail?.sourceAuthority ?? null,
+                sourceDocument: carbonDetail?.sourceDocument ?? null,
+                factorProvenance: carbonDetail?.factorProvenance as Prisma.InputJsonValue ?? null,
+                sourceUrl: carbonDetail?.sourceUrl ?? null,
+                sourceYear: carbonDetail?.sourceYear ?? null,
+                verified: carbonDetail?.factorVerified ?? factor?.verified ?? false,
+              },
             },
-          },
-        });
+          });
 
-        createdResults.push({
-          activityDataId: record.id,
-          metricType,
-          metricResultId: result.id,
-          factorId: factor?.id ?? null,
-          value: result.value.toString(),
-          unit: result.unit,
-        });
+          createdResults.push({
+            activityDataId: record.id,
+            metricType,
+            metricResultId: result.id,
+            factorId: factor?.id ?? null,
+            value: result.value.toString(),
+            unit: result.unit,
+          });
+        }
       }
-    }
 
-    const response = {
-      count: createdResults.length,
-      items: createdResults,
-    };
-
-    await this.auditLog.log({
-      organizationId,
-      userId,
-      action: 'GENERATE_METRICS_SUMMARY',
-      entityType: 'MetricResult',
-      description: `Generated metrics summary with ${createdResults.length} metric results`,
-      newValue: {
-        request: dto,
+      const response = {
         count: createdResults.length,
-        activityRecordCount: activityRecords.length,
-      },
-    });
+        items: createdResults,
+      };
 
-    return response;
+      await this.auditLog.log({
+        organizationId,
+        userId,
+        action: 'GENERATE_METRICS_SUMMARY',
+        entityType: 'MetricResult',
+        description: `Generated metrics summary with ${createdResults.length} metric results`,
+        newValue: {
+          request: dto,
+          count: createdResults.length,
+          activityRecordCount: activityRecords.length,
+        },
+      }, tx);
+
+      return response;
+
+    }, { maxWait: 10000, timeout: 60000 });
   }
 
   async findAll(organizationId: string, query: MetricQueryDto) {

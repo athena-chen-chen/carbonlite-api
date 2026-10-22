@@ -1,3 +1,4 @@
+import { WorkspaceMutationGuard } from '../auth/guards/workspace-mutation.guard';
 import { Body, Controller, Delete, Post, UseGuards } from '@nestjs/common';
 import { UserRole } from '@prisma/client';
 import { AuthenticatedUser } from '../auth/auth.service';
@@ -9,7 +10,7 @@ import { ActivityDataService } from './activity-data.service';
 import { ClearActivityRecordsDto } from './dto/clear-activity-records.dto';
 import { ResetDemoDataDto } from './dto/reset-demo-data.dto';
 
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, WorkspaceMutationGuard)
 @Controller('admin')
 export class AdminActivityRecordsController {
   constructor(private readonly activityDataService: ActivityDataService) {}

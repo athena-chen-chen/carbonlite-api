@@ -173,10 +173,12 @@ describe('Document extraction retry (e2e)', () => {
     });
     const document = await uploadTestDocument(
       user.accessToken,
-      `${testRunId}-unsupported.txt`,
+      `${testRunId}-unsupported.csv`,
       'plain text',
       'text/plain',
     );
+    // Simulate metadata accepted before early upload filtering existed.
+    await prisma.document.update({ where: { id: document.id }, data: { fileName: `${testRunId}-unsupported.txt` } });
 
     const response = await request(app.getHttpServer())
       .post('/api/document-extraction/extract')
@@ -185,7 +187,7 @@ describe('Document extraction retry (e2e)', () => {
       .expect(400);
 
     expect(response.body.message).toBe(
-      'Unsupported file type. Please upload a PDF, CSV, XLSX, PNG, JPG, or JSON file.',
+      'Unsupported file type. Please upload a PDF, CSV, XLSX, XLS, PNG, JPG, or JSON file.',
     );
   });
 

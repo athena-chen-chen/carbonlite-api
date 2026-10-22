@@ -1,3 +1,4 @@
+import { WorkspaceMutationGuard } from '../auth/guards/workspace-mutation.guard';
 import {
   Body,
   Controller,
@@ -19,7 +20,7 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { throwCapturedAppError } from '../common/monitoring/capture-app-error';
 
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, WorkspaceMutationGuard)
 @Controller('conversion-factors')
 export class ConversionFactorsController {
   constructor(

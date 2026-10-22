@@ -30,7 +30,7 @@ describe('Document delete (e2e)', () => {
       .post('/api/documents/upload')
       .set(authHeader(token))
       .field('type', 'SPREADSHEET')
-      .attach('file', Buffer.from('activityType,recordDate,quantity,unit\n'), {
+      .attach('file', Buffer.from(`activityType,recordDate,quantity,unit\n# ${name}\n`), {
         filename: name,
         contentType: 'text/csv',
       })
@@ -91,47 +91,74 @@ describe('Document delete (e2e)', () => {
     expect(stillExists).not.toBeNull();
   });
 
-  it('deletes related imported ActivityData records when deleting a document', async () => {
+  it('preserves imported IDs, snapshots, metrics, provenance and Golden A totals after source deletion', async () => {
     const user = await createTestUser(app, {
-      organizationName: `${testRunId} Activity Org`,
-      email: `activity-${testRunId}@carbonlite-e2e.test`,
+      organizationName: `${testRunId} Preservation Org`,
+      email: `preservation-${testRunId}@carbonlite-e2e.test`,
     });
-    const document = await uploadTestDocument(
-      user.accessToken,
-      `${testRunId}-activity.csv`,
-    );
-
-    const activity = await request(app.getHttpServer())
-      .post('/api/activity-data')
-      .set(authHeader(user.accessToken))
-      .send({
-        documentId: document.id,
-        activityType: 'DIESEL',
-        recordDate: '2026-05-17',
-        quantity: 12,
-        unit: 'liters',
-        sourceType: 'DOCUMENT_AI',
-        sourceReference: testRunId,
-        sourceDocumentId: document.id,
-        sourceFileName: document.fileName,
-      })
+    const auth = authHeader(user.accessToken);
+    const document = await uploadTestDocument(user.accessToken, `${testRunId}-golden-a.csv`);
+    const confirm = await request(app.getHttpServer())
+      .post('/api/document-extraction/confirm').set(auth)
+      .send({ documentId: document.id, importBatchId: `${testRunId}-batch`, activities: [
+        { activityType: 'ELECTRICITY', quantity: 980, unit: 'kWh', jurisdictionCountry: 'Canada', jurisdictionRegion: 'Alberta' },
+        { activityType: 'HOTEL', quantity: 4, unit: 'nights', jurisdictionCountry: 'Canada' },
+        { activityType: 'WATER', quantity: 18, unit: 'm3', jurisdictionCountry: 'Canada' },
+      ].map((row, index) => ({ ...row, recordDate: '2026-03-07', sourceReference: `${testRunId}-row-${index}`,
+        sourceSheetName: 'March', sourceRow: index + 2, sourcePage: 1, sourceTextSnippet: `Original row ${index + 2}`,
+        sourceFileName: document.fileName, notes: 'Preserve source evidence' })) })
       .expect(201);
+    expect(confirm.body.count).toBe(3);
+    const ids: string[] = confirm.body.createdIds;
+    await request(app.getHttpServer()).post('/api/metrics/calculate').set(auth)
+      .send({ activityDataIds: ids, metricTypes: ['CARBON_EMISSION'] }).expect(201);
 
-    const deleteResponse = await request(app.getHttpServer())
-      .delete(`/api/documents/${document.id}`)
-      .set(authHeader(user.accessToken))
-      .expect(200);
+    const before = await prisma.activityData.findMany({ where: { id: { in: ids } }, orderBy: { id: 'asc' } });
+    const metricsBefore = await prisma.metricResult.findMany({ where: { activityDataId: { in: ids } }, orderBy: { id: 'asc' } });
+    const historyBefore = await prisma.auditLog.findMany({ where: { entityId: { in: ids } }, orderBy: { id: 'asc' } });
+    expect(metricsBefore).toHaveLength(2);
+    expect(historyBefore.some(row => row.action === 'RECALCULATE_ACTIVITY_RECORD' && row.oldValue !== null)).toBe(true);
+    const electricity = before.find(row => row.activityType === 'ELECTRICITY')!;
+    expect(electricity.calculationSnapshot).toMatchObject({ version: 2,
+      factor: { value: 0.53 }, result: { value: 519.4, scope: 'SCOPE_2' } });
+    expect(electricity.matchedFactorId).toBeTruthy();
+    expect(electricity.matchedFactorName).toBeTruthy();
+    expect(electricity.matchedFactorSourceAuthority).toBeTruthy();
+    expect(electricity.matchedFactorSourceDocument).toBeTruthy();
+    const water = before.find(row => row.activityType === 'WATER')!;
+    expect(Number(water.quantity)).toBe(18);
+    expect(water.calculationStatus).toBe('TRACKED_ONLY');
 
-    expect(deleteResponse.body).toEqual({
-      deletedDocument: true,
-      deletedActivityRecords: 1,
-    });
+    const summaryBefore = await request(app.getHttpServer()).get('/api/metrics/summary').set(auth).expect(200);
+    const scopedBefore = await request(app.getHttpServer()).get('/api/metrics/calculation-summary')
+      .query({ selectedDocumentIds: document.id }).set(auth).expect(200);
+    expect(summaryBefore.body.totalEstimatedEmissionsKgCO2e).toBeCloseTo(579.4, 2);
+    expect(scopedBefore.body.totalEstimatedEmissionsKgCO2e).toBeCloseTo(579.4, 2);
 
-    const activityAfterDelete = await prisma.activityData.findUnique({
-      where: { id: activity.body.id },
-    });
-
-    expect(activityAfterDelete).toBeNull();
+    await request(app.getHttpServer()).delete(`/api/documents/${document.id}`).set(auth)
+      .expect(200, { deletedDocument: true, deletedActivityRecords: 0 });
+    expect(await prisma.document.findUnique({ where: { id: document.id } })).toBeNull();
+    const documents = await request(app.getHttpServer()).get('/api/documents').set(auth).expect(200);
+    expect(documents.body.items.some((row: { id: string }) => row.id === document.id)).toBe(false);
+    await request(app.getHttpServer()).get(`/api/documents/${document.id}/download`).set(auth).expect(404);
+    const after = await prisma.activityData.findMany({ where: { id: { in: ids } }, orderBy: { id: 'asc' } });
+    expect(after).toEqual(before.map(row => ({ ...row, documentId: null })));
+    expect(await prisma.metricResult.findMany({ where: { activityDataId: { in: ids } }, orderBy: { id: 'asc' } })).toEqual(metricsBefore);
+    expect(await prisma.auditLog.findMany({ where: { entityId: { in: ids } }, orderBy: { id: 'asc' } })).toEqual(historyBefore);
+    for (const id of ids) await request(app.getHttpServer()).get(`/api/activity-data/${id}`).set(auth).expect(200);
+    const summaryAfter = await request(app.getHttpServer()).get('/api/metrics/summary').set(auth).expect(200);
+    const scopedAfter = await request(app.getHttpServer()).get('/api/metrics/calculation-summary')
+      .query({ selectedDocumentIds: document.id }).set(auth).expect(200);
+    expect(summaryAfter.body.totalsByMetric).toEqual(summaryBefore.body.totalsByMetric);
+    expect(summaryAfter.body.totalEstimatedEmissionsKgCO2e).toBeCloseTo(579.4, 2);
+    expect(scopedAfter.body.totalEstimatedEmissionsKgCO2e).toBeCloseTo(579.4, 2);
+    const detailsById = (rows: Array<{ activityDataId: string }>) =>
+      rows.slice().sort((a, b) => a.activityDataId.localeCompare(b.activityDataId));
+    expect(detailsById(scopedAfter.body.calculationDetails)).toEqual(detailsById(scopedBefore.body.calculationDetails));
+    expect(await prisma.userActivityEvent.findFirst({ where: { entityId: document.id, eventName: 'DOCUMENT_DELETED' } }))
+      .toMatchObject({ metadata: { deletedActivityRecords: 0, preservedActivityRecords: 3 } });
+    expect(await prisma.auditLog.findFirst({ where: { entityId: document.id, action: 'DELETE_DOCUMENT' } }))
+      .toMatchObject({ oldValue: { deletedActivityRecords: 0, preservedActivityRecords: 3 } });
   });
 
   it('stores source document metadata during document import', async () => {
@@ -244,7 +271,7 @@ describe('Document delete (e2e)', () => {
     expect(otherOrgRecord).not.toBeNull();
   });
 
-  it('updates metrics summary and report document counts after deleting imported document data', async () => {
+  it('preserves metrics and report calculation totals while removing the report source link', async () => {
     const user = await createTestUser(app, {
       organizationName: `${testRunId} Metrics Org`,
       email: `metrics-${testRunId}@carbonlite-e2e.test`,
@@ -307,13 +334,102 @@ describe('Document delete (e2e)', () => {
       .get('/api/metrics/summary')
       .set(authHeader(user.accessToken))
       .expect(200);
-    expect(summaryAfterDelete.body.totalsByMetric).toEqual([{ metricType: 'CARBON_EMISSION', unit: 'kgCO2e', totalValue: '0', count: 0 }]);
+    expect(summaryAfterDelete.body.totalsByMetric).toEqual(summaryBeforeDelete.body.totalsByMetric);
+    expect(summaryAfterDelete.body.totalEstimatedEmissionsKgCO2e).toBeCloseTo(26.8, 2);
+    expect(await prisma.metricResult.count({ where: { activityDataId: activity.body.id } })).toBe(1);
 
     const reportAfterDelete = await request(app.getHttpServer())
       .get(`/api/reports/${report.body.id}`)
       .set(authHeader(user.accessToken))
       .expect(200);
     expect(reportAfterDelete.body.documents).toEqual([]);
+  });
+
+  it('removes unimported extraction and staging artifacts without accounting or audit loss', async () => {
+    const user = await createTestUser(app, {
+      organizationName: `${testRunId} Draft Org`, email: `draft-${testRunId}@carbonlite-e2e.test`,
+    });
+    const document = await uploadTestDocument(user.accessToken, `${testRunId}-draft.csv`);
+    const extraction = await prisma.documentExtraction.create({ data: {
+      organizationId: user.user.organizationId, documentId: document.id,
+      status: 'REVIEW_REQUIRED', extractedJson: {}, extractedRows: [{ quantity: null }],
+    } });
+    const staged = await prisma.spreadsheetImportReviewRow.create({ data: {
+      organizationId: user.user.organizationId, sourceDocumentId: document.id, rowId: 'draft',
+      idempotencyKey: `${testRunId}-draft`, issues: [], status: 'NEEDS_REVIEW', sourceType: 'EXCEL',
+      activityType: 'ELECTRICITY', unit: 'kWh', sourceFileName: document.fileName,
+    } });
+    const priorAudit = await prisma.auditLog.findFirstOrThrow({ where: { entityId: document.id, action: 'UPLOAD_DOCUMENT' } });
+    await request(app.getHttpServer()).delete(`/api/documents/${document.id}`).set(authHeader(user.accessToken)).expect(200);
+    expect(await prisma.documentExtraction.findUnique({ where: { id: extraction.id } })).toBeNull();
+    expect(await prisma.spreadsheetImportReviewRow.findUnique({ where: { id: staged.id } })).toBeNull();
+    expect(await prisma.activityData.count({ where: { organizationId: user.user.organizationId } })).toBe(0);
+    expect(await prisma.auditLog.findUnique({ where: { id: priorAudit.id } })).toEqual(priorAudit);
+  });
+
+  it('keeps three imported records when a nine-row partially imported source is removed', async () => {
+    const user = await createTestUser(app, {
+      organizationName: `${testRunId} Partial Org`, email: `partial-${testRunId}@carbonlite-e2e.test`,
+    });
+    const auth = authHeader(user.accessToken);
+    const ready = [
+      { activityType: 'ELECTRICITY', quantity: 980, unit: 'kWh', jurisdictionRegion: 'Alberta', status: 'READY' },
+      { activityType: 'HOTEL', quantity: 4, unit: 'nights', status: 'READY' },
+      { activityType: 'WATER', quantity: 18, unit: 'm3', status: 'TRACKED_ONLY', calculationStatus: 'TRACKED_ONLY' },
+    ];
+    const unresolved = Array.from({ length: 6 }, () => ({ activityType: 'ELECTRICITY', quantity: null, unit: 'kWh', status: 'NEEDS_REVIEW' }));
+    const staged = await request(app.getHttpServer()).post('/api/spreadsheet-import/review-rows').set(auth)
+      .send({ sourceType: 'EXCEL', sourceFileName: `${testRunId}-partial.xlsx`, importBatchId: `${testRunId}-partial`,
+        rows: [...ready, ...unresolved].map((row, index) => ({ ...row, rowId: `partial-${index}`, sourceRow: index + 2,
+          issues: [], sourceSheetName: 'March', sourceReference: `partial-${index}`, jurisdictionCountry: 'Canada', recordDate: '2026-03-07' })) })
+      .expect(201);
+    const documentId: string = staged.body.sourceDocument.id;
+    const confirmed = await request(app.getHttpServer()).post('/api/document-extraction/confirm').set(auth)
+      .send({ documentId, activities: [] }).expect(201);
+    expect(confirmed.body.count).toBe(3);
+    expect(await prisma.spreadsheetImportReviewRow.count({ where: { sourceDocumentId: documentId, status: 'NEEDS_REVIEW' } })).toBe(6);
+    expect(await prisma.document.findUnique({ where: { id: documentId } })).toMatchObject({ status: 'REVIEW_REQUIRED' });
+    const ids: string[] = confirmed.body.createdIds;
+    const before = await prisma.activityData.findMany({ where: { id: { in: ids } }, orderBy: { id: 'asc' } });
+    const summaryBefore = await request(app.getHttpServer()).get('/api/metrics/summary').set(auth).expect(200);
+    expect(summaryBefore.body.totalEstimatedEmissionsKgCO2e).toBeCloseTo(579.4, 2);
+    await request(app.getHttpServer()).delete(`/api/documents/${documentId}`).set(auth).expect(200);
+    expect(await prisma.document.findUnique({ where: { id: documentId } })).toBeNull();
+    expect(await prisma.activityData.findMany({ where: { id: { in: ids } }, orderBy: { id: 'asc' } }))
+      .toEqual(before.map(row => ({ ...row, documentId: null })));
+    expect(await prisma.spreadsheetImportReviewRow.count({ where: { sourceDocumentId: documentId } })).toBe(0);
+    expect(await prisma.documentExtraction.count({ where: { documentId } })).toBe(0);
+    const summaryAfter = await request(app.getHttpServer()).get('/api/metrics/summary').set(auth).expect(200);
+    expect(summaryAfter.body.totalsByMetric).toEqual(summaryBefore.body.totalsByMetric);
+  });
+
+  it('preserves another source, both sources accounting records and the workspace total', async () => {
+    const user = await createTestUser(app, {
+      organizationName: `${testRunId} Multi Org`, email: `multi-${testRunId}@carbonlite-e2e.test`,
+    });
+    const auth = authHeader(user.accessToken);
+    const documents: Array<{ id: string }> = [];
+    const ids: string[] = [];
+    for (const [index, quantity] of [50, 100].entries()) {
+      const document = await uploadTestDocument(user.accessToken, `${testRunId}-multi-${index}.csv`);
+      documents.push(document);
+      const confirmed = await request(app.getHttpServer()).post('/api/document-extraction/confirm').set(auth)
+        .send({ documentId: document.id, activities: [{ activityType: 'DIESEL', quantity, unit: 'liters', recordDate: '2026-03-07',
+          sourceRow: 2, sourceReference: `multi-${index}`, jurisdictionCountry: 'Canada' }] }).expect(201);
+      ids.push(...confirmed.body.createdIds);
+    }
+    const before = await prisma.activityData.findMany({ where: { id: { in: ids } }, orderBy: { id: 'asc' } });
+    const documentBBefore = await prisma.document.findUniqueOrThrow({ where: { id: documents[1].id } });
+    const summaryBefore = await request(app.getHttpServer()).get('/api/metrics/summary').set(auth).expect(200);
+    expect(summaryBefore.body.totalEstimatedEmissionsKgCO2e).toBeCloseTo(402, 2);
+    await request(app.getHttpServer()).delete(`/api/documents/${documents[0].id}`).set(auth).expect(200);
+    expect(await prisma.document.findUnique({ where: { id: documents[0].id } })).toBeNull();
+    expect(await prisma.document.findUnique({ where: { id: documents[1].id } })).toEqual(documentBBefore);
+    expect(await prisma.activityData.findMany({ where: { id: { in: ids } }, orderBy: { id: 'asc' } }))
+      .toEqual(before.map(row => row.documentId === documents[0].id ? { ...row, documentId: null } : row));
+    const summaryAfter = await request(app.getHttpServer()).get('/api/metrics/summary').set(auth).expect(200);
+    expect(summaryAfter.body.totalsByMetric).toEqual(summaryBefore.body.totalsByMetric);
+    expect(summaryAfter.body.totalEstimatedEmissionsKgCO2e).toBeCloseTo(402, 2);
   });
 
   it('returns 404 for a missing document', async () => {

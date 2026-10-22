@@ -1,3 +1,4 @@
+import { PlatformAdminGuard } from '../auth/guards/platform-admin.guard';
 import {
   Body,
   Controller,
@@ -63,14 +64,14 @@ export class AdminFeedbackController {
 
   @Get()
   @Roles(UserRole.ADMIN)
-  @UseGuards(RolesGuard)
+  @UseGuards(PlatformAdminGuard)
   findAllAdmin(@Query() query: FeedbackQueryDto) {
     return this.feedbackService.findAllAdmin(query);
   }
 
   @Patch(':id/status')
   @Roles(UserRole.ADMIN)
-  @UseGuards(RolesGuard)
+  @UseGuards(PlatformAdminGuard)
   updateStatusAdmin(
     @Param('id') id: string,
     @Body() dto: UpdateFeedbackStatusDto,

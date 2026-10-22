@@ -250,6 +250,19 @@ export class CalculationQualityService {
       }
 
       if (!input.recalculate) {
+        const currentStatus = String(record.calculationStatus ?? '').trim().toUpperCase();
+        const treatment = String(record.reportTreatment ?? '').trim().toUpperCase();
+        if ((currentStatus && currentStatus !== 'CALCULATED') || (treatment && treatment !== 'INCLUDED')) {
+          const status = currentStatus && currentStatus !== 'CALCULATED'
+            ? currentStatus === 'TRACKED_METRIC' ? 'TRACKED_ONLY' : currentStatus
+            : treatment === 'TRACKED_ONLY' ? 'TRACKED_ONLY' : 'MISSING_DATA';
+          return this.detail(record, {
+            reportingYear, recordYear, jurisdictionCountry, jurisdictionRegion,
+            jurisdictionSource: resolvedJurisdiction.source, jurisdictionAssumed: resolvedJurisdiction.assumed,
+            jurisdiction: organizationJurisdiction, status: status as CalculationStatus,
+            reason: record.calculationMessage ?? 'The current calculation excludes this record from emissions totals.',
+          });
+        }
         const historical = persistedCalculationDetail(record, this.detail(record, { reportingYear, jurisdiction: organizationJurisdiction, status: 'MISSING_FACTOR', reason: null }));
         if (historical) return historical as ReturnType<CalculationQualityService['detail']>;
       }

@@ -1,10 +1,11 @@
+import { isPlatformAdmin } from '../common/permissions/workspace-permissions';
 import { Body, Controller, Get, Param, Post, Query, UseGuards } from '@nestjs/common';
 import { FactorsService } from './factors.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { AuthenticatedUser } from '../auth/auth.service';
 import { Roles } from '../auth/decorators/roles.decorator';
-import { RolesGuard } from '../auth/guards/roles.guard';
+import { PlatformAdminGuard } from '../auth/guards/platform-admin.guard';
 import { UserRole } from '@prisma/client';
 import { ConversionFactorsService } from './conversion-factors.service';
 import { CreateFactorVersionDto } from './dto/create-factor-version.dto';
@@ -36,7 +37,7 @@ export class FactorsController {
 
   @Post(':id/versions')
   @Roles(UserRole.ADMIN)
-  @UseGuards(RolesGuard)
+  @UseGuards(PlatformAdminGuard)
   createVersion(
     @CurrentUser() user: AuthenticatedUser,
     @Param('id') id: string,
@@ -52,8 +53,8 @@ export class FactorsController {
   }
 
   @Get(':id/history')
-  findHistory(@Param('id') id: string) {
-    return this.conversionFactorsService.getFactorHistory(id);
+  findHistory(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
+    return this.conversionFactorsService.getFactorHistory(id, isPlatformAdmin(user) ? { platform: true } : { organizationId: user.organizationId });
   }
 
   @Get(':id')

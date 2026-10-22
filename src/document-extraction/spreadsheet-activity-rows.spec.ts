@@ -5,7 +5,7 @@ import { openai } from '../openai/openai.client';
 import { access, readFile } from 'fs/promises';
 
 jest.mock('../openai/openai.client', () => ({ openai: { responses: { create: jest.fn() } } }));
-jest.mock('fs/promises', () => ({ access: jest.fn(), readFile: jest.fn() }));
+jest.mock('fs/promises', () => ({ access: jest.fn(), stat: jest.fn().mockResolvedValue({ size: 1000 }), readFile: jest.fn() }));
 
 function workbook(rows: unknown[][]) {
   const w = XLSX.utils.book_new();
@@ -37,7 +37,8 @@ describe('Uploaded tabular workbook extraction', () => {
 
   it('routes the actual extract service to local parsing and durable review storage, never the provider', async () => {
     const document = { id: 'document', organizationId: 'org', fileName: 'operations (1).xlsx', fileUrl: '/uploads/workbook', mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', status: 'UPLOADED' };
-    const prisma = { document: { findFirst: jest.fn().mockResolvedValue(document), update: jest.fn().mockResolvedValue(document) }, documentExtraction: { upsert: jest.fn().mockResolvedValue({}) } };
+    const prisma = { $transaction: jest.fn(), document: { findFirst: jest.fn().mockResolvedValue(document), update: jest.fn().mockResolvedValue(document) }, documentExtraction: { upsert: jest.fn().mockResolvedValue({}) } };
+    prisma.$transaction.mockImplementation(callback => callback(prisma));
     const audit = { log: jest.fn() };
     const tracking = { track: jest.fn() };
     (access as jest.Mock).mockResolvedValue(undefined);
@@ -61,15 +62,16 @@ describe('Workbook re-extraction identity compatibility', () => {
   function subject(existing: any[] = [], extractedRows: any[] = []) {
     const persisted = [...existing];
     const tx = {
+      $queryRaw: jest.fn().mockResolvedValue([{ id: 'doc' }]),
       spreadsheetImportReviewRow: { findMany: jest.fn().mockResolvedValue([]) },
       activityData: {
         findMany: jest.fn(async () => persisted),
         create: jest.fn(async ({ data }) => { const row = { ...data, id: `new-${persisted.length}` }; persisted.push(row); return row; }),
       },
-      document: { update: jest.fn() },
+      document: { update: jest.fn(), findFirst: jest.fn().mockResolvedValue({ id: 'doc', fileName: 'operations.xlsx', extractions: [{ extractedRows }] }) },
     };
     const prisma = { document: { findFirst: jest.fn().mockResolvedValue({ id: 'doc', fileName: 'operations.xlsx', extractions: [{ extractedRows }] }) }, $transaction: jest.fn(async fn => fn(tx)) };
-    return { service: new DocumentExtractionService(prisma as never, { log: jest.fn() } as never, { track: jest.fn() } as never, { prepareCreate: jest.fn(async (_client, data) => data) } as never), updateDocument: tx.document.update };
+    return { service: new DocumentExtractionService(prisma as never, { log: jest.fn() } as never, { track: jest.fn() } as never, { prepareCreate: jest.fn(async (_client, data) => ({ ...data, matchingStatus: 'MATCHED', calculationStatus: 'CALCULATED', reportTreatment: 'INCLUDED' })) } as never), updateDocument: tx.document.update };
   }
   const row = { activityType: 'ELECTRICITY', recordDate: '2026-01-15', quantity: 1250, unit: 'kWh', jurisdictionCountry: 'Canada', jurisdictionRegion: 'Alberta', sourceReference: 'electricity.csv' };
 
@@ -77,6 +79,12 @@ describe('Workbook re-extraction identity compatibility', () => {
     const { service } = subject([{ ...row, recordDate: new Date(row.recordDate), sourceRow: null }]);
     const request = [{ ...row, sourceRow: 2 }, { ...row, activityType: 'GASOLINE', quantity: 350, unit: 'L', sourceReference: 'fuel.csv', sourceRow: 3 }];
     expect((await service.confirmImport('org', 'doc', request)).count).toBe(1);
+    expect((await service.confirmImport('org', 'doc', request)).count).toBe(0);
+  });
+
+  it.each([false, true])('retains legacy row-only retries when one side omits sheet metadata (%s)', async existingHasSheet => {
+    const { service } = subject([{ ...row, sourceRow: '2', sourceSheetName: existingHasSheet ? 'Operations' : null, recordDate: new Date(row.recordDate) }]);
+    const request = [{ ...row, sourceRow: 2, sourceSheetName: existingHasSheet ? undefined : 'Operations' }];
     expect((await service.confirmImport('org', 'doc', request)).count).toBe(0);
   });
 

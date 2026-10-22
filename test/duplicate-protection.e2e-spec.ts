@@ -55,25 +55,25 @@ describe('Document duplicate protection (e2e)', () => {
 
     const firstUpload = await upload(
       user.accessToken,
-      `${testRunId}-utility.xlsx`,
+      `${testRunId}-utility.csv`,
     ).expect(201);
 
     const duplicateResponse = await upload(
       user.accessToken,
-      `${testRunId}-utility-copy.xlsx`,
+      `${testRunId}-utility-copy.csv`,
     ).expect(409);
 
     expect(duplicateResponse.body).toMatchObject({
       message: 'This file appears to have already been uploaded.',
       existingDocument: {
         id: firstUpload.body.id,
-        fileName: `${testRunId}-utility.xlsx`,
+        fileName: `${testRunId}-utility.csv`,
       },
     });
 
     const keptCopy = await upload(
       user.accessToken,
-      `${testRunId}-utility-kept-copy.xlsx`,
+      `${testRunId}-utility-kept-copy.csv`,
       true,
     ).expect(201);
 

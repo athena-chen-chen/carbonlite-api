@@ -31,6 +31,7 @@ function source(overrides: Record<string, unknown> = {}) {
 function service(options: { existing?: unknown; usedByFactors?: number } = {}) {
   const existing = options.existing ?? source({ _count: { versions: options.usedByFactors ?? 0 } });
   const prisma = {
+      $transaction: jest.fn(),
     factorSource: {
       findMany: jest.fn().mockResolvedValue([existing]),
       findUnique: jest.fn().mockResolvedValue(existing),
@@ -43,6 +44,7 @@ function service(options: { existing?: unknown; usedByFactors?: number } = {}) {
       delete: jest.fn().mockResolvedValue(existing),
     },
   } as never;
+    (prisma as any).$transaction.mockImplementation((callback: any) => callback(prisma));
   const auditLog = { log: jest.fn().mockResolvedValue({ id: 'audit-1' }) } as never;
 
   return {
@@ -78,7 +80,7 @@ describe('FactorSourcesService', () => {
     });
 
     expect(prisma.factorSource.create).toHaveBeenCalled();
-    expect(auditLog.log).toHaveBeenCalledWith(expect.objectContaining({ action: 'CREATE_FACTOR_SOURCE' }));
+    expect(auditLog.log).toHaveBeenCalledWith(expect.objectContaining({ action: 'CREATE_FACTOR_SOURCE' }), prisma);
   });
 
   it('rejects an official source without a URL', async () => {
@@ -108,7 +110,7 @@ describe('FactorSourcesService', () => {
       expect.objectContaining({ data: { isActive: false } }),
     );
     expect(prisma.factorSource.delete).not.toHaveBeenCalled();
-    expect(auditLog.log).toHaveBeenCalledWith(expect.objectContaining({ action: 'ARCHIVE_FACTOR_SOURCE' }));
+    expect(auditLog.log).toHaveBeenCalledWith(expect.objectContaining({ action: 'ARCHIVE_FACTOR_SOURCE' }), prisma);
   });
 
   it('hard deletes an unused source', async () => {

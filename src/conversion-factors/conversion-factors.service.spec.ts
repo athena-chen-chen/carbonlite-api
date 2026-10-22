@@ -62,6 +62,7 @@ describe('ConversionFactorsService Factor Library adapter', () => {
 
   function service(input: { legacy?: unknown[]; governed?: unknown[] }) {
     const prisma = {
+      $transaction: jest.fn(),
       conversionFactor: {
         findMany: jest.fn().mockResolvedValue(input.legacy ?? []),
       },
@@ -69,6 +70,7 @@ describe('ConversionFactorsService Factor Library adapter', () => {
         findMany: jest.fn().mockResolvedValue(input.governed ?? []),
       },
     } as never;
+    (prisma as any).$transaction.mockImplementation((callback: any) => callback(prisma));
 
     return new ConversionFactorsService(prisma, auditLog, activityTracking);
   }
@@ -346,6 +348,7 @@ describe('ConversionFactorsService factor governance lifecycle', () => {
 
   function governanceService(currentVersion: unknown, options: { replacement?: unknown } = {}) {
     const prisma = {
+      $transaction: jest.fn(),
       conversionFactor: { findMany: jest.fn().mockResolvedValue([]) },
       factorVersion: {
         findMany: jest.fn().mockResolvedValue([]),
@@ -363,6 +366,7 @@ describe('ConversionFactorsService factor governance lifecycle', () => {
         create: jest.fn().mockResolvedValue({ id: 'change-1' }),
       },
     } as never;
+    (prisma as any).$transaction.mockImplementation((callback: any) => callback(prisma));
 
     return {
       service: new ConversionFactorsService(prisma, auditLog, activityTracking),
@@ -479,6 +483,7 @@ describe('ConversionFactorsService factor governance lifecycle', () => {
       verified: false,
     };
     const prisma = {
+      $transaction: jest.fn(),
       conversionFactor: { findMany: jest.fn().mockResolvedValue([]) },
       factor: { findUnique: jest.fn().mockResolvedValue(previous.factor) },
       factorSource: { findUnique: jest.fn().mockResolvedValue(previous.source) },
@@ -489,6 +494,7 @@ describe('ConversionFactorsService factor governance lifecycle', () => {
       },
       factorChangeLog: { create: jest.fn().mockResolvedValue({ id: 'change-1' }) },
     } as never;
+    (prisma as any).$transaction.mockImplementation((callback: any) => callback(prisma));
     const service = new ConversionFactorsService(prisma, auditLog, activityTracking);
 
     await expect(
@@ -529,6 +535,7 @@ describe('ConversionFactorsService factor governance lifecycle', () => {
     const existing = version({ status: 'DRAFT', verified: false });
     const updated = { ...existing, factorValue: new Prisma.Decimal(2.72) };
     const prisma = {
+      $transaction: jest.fn(),
       conversionFactor: { findMany: jest.fn().mockResolvedValue([]) },
       factorSource: { findUnique: jest.fn().mockResolvedValue(existing.source) },
       factorVersion: {
@@ -537,6 +544,7 @@ describe('ConversionFactorsService factor governance lifecycle', () => {
       },
       factorChangeLog: { create: jest.fn().mockResolvedValue({ id: 'change-1' }) },
     } as never;
+    (prisma as any).$transaction.mockImplementation((callback: any) => callback(prisma));
     const service = new ConversionFactorsService(prisma, auditLog, activityTracking);
 
     await expect(
@@ -547,9 +555,11 @@ describe('ConversionFactorsService factor governance lifecycle', () => {
   it('prevents direct edits to verified versions', async () => {
     const existing = version({ status: 'VERIFIED', verified: true });
     const prisma = {
+      $transaction: jest.fn(),
       conversionFactor: { findMany: jest.fn().mockResolvedValue([]) },
       factorVersion: { findUnique: jest.fn().mockResolvedValue(existing) },
     } as never;
+    (prisma as any).$transaction.mockImplementation((callback: any) => callback(prisma));
     const service = new ConversionFactorsService(prisma, auditLog, activityTracking);
 
     await expect(
@@ -568,6 +578,7 @@ describe('ConversionFactorsService factor governance lifecycle', () => {
       reviewedAt: new Date('2026-06-26T12:00:00.000Z'),
     };
     const prisma = {
+      $transaction: jest.fn(),
       conversionFactor: { findMany: jest.fn().mockResolvedValue([]) },
       factorVersion: {
         findUnique: jest.fn().mockResolvedValue(newVersion),
@@ -580,6 +591,7 @@ describe('ConversionFactorsService factor governance lifecycle', () => {
       factorReviewLog: { create: jest.fn().mockResolvedValue({ id: 'review-1' }) },
       factorChangeLog: { create: jest.fn().mockResolvedValue({ id: 'change-1' }) },
     } as never;
+    (prisma as any).$transaction.mockImplementation((callback: any) => callback(prisma));
     const service = new ConversionFactorsService(prisma, auditLog, activityTracking);
 
     await expect(

@@ -105,20 +105,34 @@ describe('Targeted Sentry error tracking', () => {
     });
 
     expect(mockScope.setContext).toHaveBeenCalledWith('carbonlite', {
+      error: { category: 'Error' },
       organizationId: 'org-1',
       entityType: 'Document',
       entityId: 'document-1',
       metadata: {
         route: '/api/document-extraction/extract',
-        password: '[Redacted]',
-        authorization: '[Redacted]',
-        fileContent: '[Redacted]',
+        password: '[REDACTED]',
+        authorization: '[REDACTED]',
+        fileContent: '[REDACTED]',
         nested: {
-          rawOcrText: '[Redacted]',
+          rawOcrText: '[REDACTED]',
           mimeType: 'application/pdf',
         },
       },
     });
+  });
+
+  it('does not hand raw provider exception contents to the SDK', () => {
+    const error = Object.assign(new Error('secret-provider-message'), {
+      status: 502, config: { headers: { Authorization: 'secret-jwt' }, data: 'secret-base64' },
+      response: { data: 'secret-source' },
+    });
+    captureAppError(error, { feature: 'document-extraction', operation: 'extract', entityId: 'doc-1' });
+    const output = JSON.stringify(mockCaptureException.mock.calls.map(([captured]) => ({
+      ...captured, message: captured.message, stack: captured.stack,
+    })));
+    expect(output).not.toContain('secret-');
+    expect(output).toContain('502');
   });
 
   it('does not let Sentry failures affect the application', () => {
@@ -152,7 +166,7 @@ describe('Targeted Sentry error tracking', () => {
         notes: 'safe note',
       }),
     ).toEqual({
-      token: '[Redacted]',
+      token: '[REDACTED]',
       notes: 'safe note',
     });
   });

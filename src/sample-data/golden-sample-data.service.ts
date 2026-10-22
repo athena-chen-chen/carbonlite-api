@@ -325,7 +325,7 @@ function goldenSampleActivity(input: {
       : 'CarbonLite System Defaults',
     matchedFactorSourceDocument: isTrackedOnly
       ? 'Water tracked-only methodology'
-      : 'CarbonLite MVP Default Factors v1.0',
+      : 'CarbonLite Default Factor Library v1.0',
     matchedFactorVerificationStatus: 'Internal Review Required',
     matchedFactorConfidenceLevel: isTrackedOnly
       ? 'Not applicable'

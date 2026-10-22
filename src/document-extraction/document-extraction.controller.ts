@@ -1,3 +1,4 @@
+import { WorkspaceMutationGuard } from '../auth/guards/workspace-mutation.guard';
 import { Body, Controller, Get, Inject, Param, Post, UseGuards } from '@nestjs/common';
 import { DocumentExtractionService } from './document-extraction.service';
 import { ExtractDocumentDto } from './dto/extract-document.dto';
@@ -7,7 +8,7 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { assertCanContributeActivityData } from '../common/permissions/activity-data-permissions';
 
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, WorkspaceMutationGuard)
 @Controller('document-extraction')
 export class DocumentExtractionController {
   constructor(

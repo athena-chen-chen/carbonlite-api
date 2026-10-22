@@ -20,7 +20,7 @@ async function bootstrap() {
 
     res.on('finish', () => {
       const durationMs = timer.elapsedMs();
-      const requestPath = (req.originalUrl || req.url).split('?')[0];
+      const requestPath = typeof req.route?.path === 'string' ? req.route.path.slice(0, 256) : '[UNMATCHED]';
       const message = `${req.method} ${requestPath} ${res.statusCode} ${durationMs}ms`;
 
       if (durationMs > SLOW_REQUEST_THRESHOLD_MS) {

@@ -57,106 +57,115 @@ export class FactorSourcesService {
   }
 
   async create(dto: CreateFactorSourceDto, actor: Actor = {}) {
-    const data = this.toCreateData(dto);
-    this.validateSource(data);
+    return this.prisma.$transaction(async tx => {
+      const data = this.toCreateData(dto);
+      this.validateSource(data);
 
-    const created = await this.prisma.factorSource.create({
-      data,
-      include: { _count: { select: { versions: true } } },
-    });
-
-    await this.auditLog.log({
-      organizationId: actor.organizationId ?? null,
-      userId: actor.userId ?? null,
-      action: 'CREATE_FACTOR_SOURCE',
-      entityType: 'FactorSource',
-      entityId: created.id,
-      description: `Created factor source ${created.sourceAuthority} ${created.sourceYear}`,
-      newValue: created,
-    });
-
-    return this.toDto(created);
-  }
-
-  async update(id: string, dto: UpdateFactorSourceDto, actor: Actor = {}) {
-    const existing = await this.prisma.factorSource.findUnique({ where: { id } });
-    if (!existing) {
-      throw new NotFoundException(`Factor source ${id} not found.`);
-    }
-
-    const data = this.toUpdateData(dto);
-    const merged = { ...(existing as Record<string, unknown>), ...(data as Record<string, unknown>) };
-    this.validateSource(merged);
-
-    const updated = await this.prisma.factorSource.update({
-      where: { id },
-      data,
-      include: { _count: { select: { versions: true } } },
-    });
-
-    await this.auditLog.log({
-      organizationId: actor.organizationId ?? null,
-      userId: actor.userId ?? null,
-      action: 'UPDATE_FACTOR_SOURCE',
-      entityType: 'FactorSource',
-      entityId: id,
-      description: `Updated factor source ${updated.sourceAuthority} ${updated.sourceYear}`,
-      oldValue: existing,
-      newValue: updated,
-    });
-
-    return this.toDto(updated);
-  }
-
-  async remove(id: string, actor: Actor = {}) {
-    const existing = await this.prisma.factorSource.findUnique({
-      where: { id },
-      include: { _count: { select: { versions: true } } },
-    });
-
-    if (!existing) {
-      throw new NotFoundException(`Factor source ${id} not found.`);
-    }
-
-    if (existing._count.versions > 0) {
-      const archived = await this.prisma.factorSource.update({
-        where: { id },
-        data: { isActive: false },
+      const created = await tx.factorSource.create({
+        data,
         include: { _count: { select: { versions: true } } },
       });
 
       await this.auditLog.log({
         organizationId: actor.organizationId ?? null,
         userId: actor.userId ?? null,
-        action: 'ARCHIVE_FACTOR_SOURCE',
+        action: 'CREATE_FACTOR_SOURCE',
         entityType: 'FactorSource',
-        entityId: id,
-        description: `Archived factor source ${archived.sourceAuthority} ${archived.sourceYear}`,
-        oldValue: existing,
-        newValue: archived,
+        entityId: created.id,
+        description: `Created factor source ${created.sourceAuthority} ${created.sourceYear}`,
+        newValue: created,
+      }, tx);
+
+      return this.toDto(created);
+
+    });
+  }
+
+  async update(id: string, dto: UpdateFactorSourceDto, actor: Actor = {}) {
+    return this.prisma.$transaction(async tx => {
+      const existing = await tx.factorSource.findUnique({ where: { id } });
+      if (!existing) {
+        throw new NotFoundException(`Factor source ${id} not found.`);
+      }
+
+      const data = this.toUpdateData(dto);
+      const merged = { ...(existing as Record<string, unknown>), ...(data as Record<string, unknown>) };
+      this.validateSource(merged);
+
+      const updated = await tx.factorSource.update({
+        where: { id },
+        data,
+        include: { _count: { select: { versions: true } } },
       });
 
-      return {
-        archived: true,
-        deleted: false,
-        usedByFactors: existing._count.versions,
-        source: this.toDto(archived),
-      };
-    }
+      await this.auditLog.log({
+        organizationId: actor.organizationId ?? null,
+        userId: actor.userId ?? null,
+        action: 'UPDATE_FACTOR_SOURCE',
+        entityType: 'FactorSource',
+        entityId: id,
+        description: `Updated factor source ${updated.sourceAuthority} ${updated.sourceYear}`,
+        oldValue: existing,
+        newValue: updated,
+      }, tx);
 
-    await this.prisma.factorSource.delete({ where: { id } });
+      return this.toDto(updated);
 
-    await this.auditLog.log({
-      organizationId: actor.organizationId ?? null,
-      userId: actor.userId ?? null,
-      action: 'DELETE_FACTOR_SOURCE',
-      entityType: 'FactorSource',
-      entityId: id,
-      description: `Deleted unused factor source ${existing.sourceAuthority} ${existing.sourceYear}`,
-      oldValue: existing,
     });
+  }
 
-    return { archived: false, deleted: true, usedByFactors: 0 };
+  async remove(id: string, actor: Actor = {}) {
+    return this.prisma.$transaction(async tx => {
+      const existing = await tx.factorSource.findUnique({
+        where: { id },
+        include: { _count: { select: { versions: true } } },
+      });
+
+      if (!existing) {
+        throw new NotFoundException(`Factor source ${id} not found.`);
+      }
+
+      if (existing._count.versions > 0) {
+        const archived = await tx.factorSource.update({
+          where: { id },
+          data: { isActive: false },
+          include: { _count: { select: { versions: true } } },
+        });
+
+        await this.auditLog.log({
+          organizationId: actor.organizationId ?? null,
+          userId: actor.userId ?? null,
+          action: 'ARCHIVE_FACTOR_SOURCE',
+          entityType: 'FactorSource',
+          entityId: id,
+          description: `Archived factor source ${archived.sourceAuthority} ${archived.sourceYear}`,
+          oldValue: existing,
+          newValue: archived,
+        }, tx);
+
+        return {
+          archived: true,
+          deleted: false,
+          usedByFactors: existing._count.versions,
+          source: this.toDto(archived),
+        };
+      }
+
+      await tx.factorSource.delete({ where: { id } });
+
+      await this.auditLog.log({
+        organizationId: actor.organizationId ?? null,
+        userId: actor.userId ?? null,
+        action: 'DELETE_FACTOR_SOURCE',
+        entityType: 'FactorSource',
+        entityId: id,
+        description: `Deleted unused factor source ${existing.sourceAuthority} ${existing.sourceYear}`,
+        oldValue: existing,
+      }, tx);
+
+      return { archived: false, deleted: true, usedByFactors: 0 };
+
+    });
   }
 
   getTrustLabel(source: { publisherType: PublisherType; isOfficial: boolean }) {

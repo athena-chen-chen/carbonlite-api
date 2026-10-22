@@ -1,3 +1,4 @@
+import { isWorkspaceAdmin } from '../../common/permissions/workspace-permissions';
 import {
   CanActivate,
   ExecutionContext,
@@ -9,6 +10,7 @@ import { UserRole } from '@prisma/client';
 import { AuthenticatedUser } from '../auth.service';
 import { ROLES_KEY } from '../decorators/roles.decorator';
 
+/** Workspace authorization only; global routes must use PlatformAdminGuard. */
 @Injectable()
 export class RolesGuard implements CanActivate {
   constructor(private readonly reflector: Reflector) {}
@@ -27,7 +29,9 @@ export class RolesGuard implements CanActivate {
       user?: AuthenticatedUser;
     }>();
 
-    if (!request.user || !requiredRoles.includes(request.user.role)) {
+    if (!request.user || !requiredRoles.some(role =>
+      role === UserRole.ADMIN ? isWorkspaceAdmin(request.user!) : role === request.user!.role,
+    )) {
       throw new ForbiddenException(
         'You do not have permission to access this resource.',
       );

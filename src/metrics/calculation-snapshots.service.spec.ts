@@ -4,7 +4,7 @@ import { CalculationSnapshotsService } from './calculation-snapshots.service';
 
 function setup(activityType = 'DIESEL', factorValue = 2.68, unit = 'L') {
   const factor: any = { id: 'factor', organizationId: 'org', type: 'EMISSION', activityType, name: 'Synthetic corporate factor', unit, resultUnit: 'kgCO2e', factorValue: new Prisma.Decimal(factorValue), country: 'Canada', jurisdiction: 'Alberta', region: 'Alberta', sourceYear: 2025, verified: true, isSystemDefault: false, sourceAuthority: 'Synthetic authority', sourceDocument: 'Synthetic reference', applicability: 'CORPORATE_INVENTORY', emissionBasis: 'DIRECT_CO2E' };
-  const client: any = { organization: { findUniqueOrThrow: jest.fn().mockResolvedValue({ id: 'org', country: 'Canada', provinceState: 'Alberta', allowDemoFactorsForCalculations: false }) }, conversionFactor: { findMany: jest.fn().mockResolvedValue([factor]) }, factorVersion: { findMany: jest.fn().mockResolvedValue([]) }, activityData: { update: jest.fn(({ data }) => Promise.resolve(data)) }, auditLog: { create: jest.fn() }, userActivityEvent: { create: jest.fn() } };
+  const client: any = { organization: { findUniqueOrThrow: jest.fn().mockResolvedValue({ id: 'org', country: 'Canada', provinceState: 'Alberta', allowDemoFactorsForCalculations: false }) }, conversionFactor: { findMany: jest.fn().mockResolvedValue([factor]) }, factorVersion: { findMany: jest.fn().mockResolvedValue([]) }, metricResult: { findMany: jest.fn().mockResolvedValue([]), deleteMany: jest.fn() }, activityData: { update: jest.fn(({ data }) => Promise.resolve(data)) }, auditLog: { create: jest.fn() }, userActivityEvent: { create: jest.fn() } };
   const quality = new CalculationQualityService(client);
   return { factor, client, quality, service: new CalculationSnapshotsService(client, quality) };
 }
@@ -41,4 +41,44 @@ it('does not rematch an uncalculated legacy record on a historical read', () => 
   const summary = quality.evaluate({ organization: { id: 'org', country: 'Canada', provinceState: 'Alberta', defaultReportingYear: null, allowDemoFactorsForCalculations: false }, records: [{ ...input(), id: 'legacy' } as any], factors: [factor], persistedOnly: true });
   expect(summary.totalEstimatedEmissionsKgCO2e).toBe(0);
   expect(summary.calculationDetails[0].status).toBe('MISSING_FACTOR');
+});
+
+// Old labels are intentional historical evidence, never current library defaults.
+it('preserves historical library provenance after the current document is renamed', async () => {
+  const { service, client, factor, quality } = setup();
+  factor.sourceDocument = 'CarbonLite MVP Default Factors v1.0';
+  const row = await service.prepareCreate(client, input(), 'actor');
+  const original = JSON.stringify(row);
+  factor.sourceDocument = 'CarbonLite Default Factor Library v1.0';
+  const historical = quality.evaluate({ organization: await client.organization.findUniqueOrThrow(), records: [row], factors: [factor], persistedOnly: true });
+  expect(historical.totalEstimatedEmissionsKgCO2e).toBe(268);
+  expect(historical.calculationDetails[0].sourceDocument).toBe('CarbonLite MVP Default Factors v1.0');
+  expect(JSON.stringify(row)).toBe(original);
+  const current = await service.prepareCreate(client, input(), 'actor');
+  expect(current.matchedFactorSourceDocument).toBe('CarbonLite Default Factor Library v1.0');
+  expect(current.calculatedEmissionsKgCO2e).toBe(268);
+  expect(current.calculationSnapshot.factor.id).toBe(row.calculationSnapshot.factor.id);
+  expect(current.calculationSnapshot.factor.value).toBe(row.calculationSnapshot.factor.value);
+});
+
+it.each([
+  ['ELECTRICITY', 0.53, 'kWh', 53],
+  ['NATURAL_GAS', 49.44, 'GJ', 4944],
+  ['GASOLINE', 2.31, 'L', 231],
+  ['DIESEL', 2.68, 'L', 268],
+])('keeps %s matching and results identical across the document rename', async (activity, value, unit, total) => {
+  const { factor, client, quality } = setup(String(activity), Number(value), String(unit));
+  const organization = await client.organization.findUniqueOrThrow();
+  const records: any[] = [{ ...input(String(activity), 100, String(unit)), id: 'rename-regression' }];
+  const old = 'CarbonLite MVP Default Factors v1.0';
+  const current = 'CarbonLite Default Factor Library v1.0';
+  factor.sourceDocument = old;
+  const before = quality.evaluate({ organization, records, factors: [factor], recalculate: true });
+  factor.sourceDocument = current;
+  const after = quality.evaluate({ organization, records, factors: [factor], recalculate: true });
+  expect(after.totalEstimatedEmissionsKgCO2e).toBe(total);
+  expect(after.calculationDetails[0].factorValue).toBe(value);
+  expect(after.calculationDetails[0].sourceDocument).toBe(current);
+  // Whole summaries, including IDs, matching reasons and fallback decisions, differ only by label.
+  expect(JSON.stringify(after)).toBe(JSON.stringify(before).split(old).join(current));
 });

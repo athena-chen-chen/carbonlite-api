@@ -1,3 +1,5 @@
+import { assertDocumentSize, hashDocumentFile, readBoundedDocumentFile, validateDocumentContent, validateDocumentType } from './document-resource-policy';
+import { inspectSpreadsheetContainer } from '../document-extraction/spreadsheet-activity-rows';
 import {
   ConflictException,
   ForbiddenException,
@@ -5,13 +7,12 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
-import { access, readFile, unlink } from 'fs/promises';
-import { createHash } from 'crypto';
+import { access, unlink } from 'fs/promises';
 import { join } from 'path';
 import { PrismaService } from '../prisma/prisma.service';
 import { PaginationQueryDto } from '../common/dto/pagination-query.dto';
 import { AuditLogService } from '../audit-log/audit-log.service';
-import { ActivityTrackingService } from '../activity-tracking/activity-tracking.service';
+import { ActivityTrackingService, trackOptionalActivity } from '../activity-tracking/activity-tracking.service';
 
 @Injectable()
 export class DocumentsService {
@@ -30,52 +31,54 @@ export class DocumentsService {
     type?: string,
     allowDuplicate = false,
   ) {
-    const fileHash = createHash('sha256')
-      .update(await readFile(file.path))
-      .digest('hex');
-    const existingDocument = await this.prisma.document.findFirst({
-      where: { organizationId, fileHash },
-      orderBy: { createdAt: 'asc' },
-      select: {
-        id: true,
-        fileName: true,
-        createdAt: true,
-      },
-    });
-
-    if (existingDocument && !allowDuplicate) {
-      await unlink(file.path).catch(() => undefined);
-      throw new ConflictException({
-        message: 'This file appears to have already been uploaded.',
-        existingDocument,
+    let created;
+    try {
+      assertDocumentSize(file.size);
+      const extension = validateDocumentType(file.originalname, file.mimetype);
+      const buffer = await readBoundedDocumentFile(file.path);
+      validateDocumentContent(file.originalname, buffer);
+      if (extension === '.xlsx' || extension === '.xls') inspectSpreadsheetContainer(buffer);
+      const fileHash = await hashDocumentFile(file.path);
+      const existingDocument = await this.prisma.document.findFirst({
+        where: { organizationId, fileHash }, orderBy: { createdAt: 'asc' },
+        select: { id: true, fileName: true, createdAt: true },
       });
+      if (existingDocument && !allowDuplicate) throw new ConflictException({
+        message: 'This file appears to have already been uploaded.', existingDocument,
+      });
+      created = await this.prisma.$transaction(async tx => {
+        const created = await tx.document.create({
+          data: {
+            organizationId,
+            uploadedById: userId,
+            fileName: file.originalname,
+            fileUrl: `/uploads/${file.filename}`,
+            mimeType: file.mimetype,
+            fileSize: file.size,
+            fileHash,
+            type: (type as any) ?? 'OTHER',
+            status: 'UPLOADED',
+          },
+        });
+        await this.auditLog.log({
+          organizationId,
+          userId,
+          action: 'UPLOAD_DOCUMENT',
+          entityType: 'Document',
+          entityId: created.id,
+          description: `Uploaded document ${created.fileName}`,
+          newValue: created,
+        }, tx);
+        return created;
+      });
+
+    } catch (error) {
+      // Before metadata exists, every failure must remove the rejected source.
+      await unlink(file.path).catch(() => this.logger.warn('Rejected upload cleanup failed.'));
+      throw error;
     }
 
-    const created = await this.prisma.document.create({
-      data: {
-        organizationId,
-        uploadedById: userId,
-        fileName: file.originalname,
-        fileUrl: `/uploads/${file.filename}`,
-        mimeType: file.mimetype,
-        fileSize: file.size,
-        fileHash,
-        type: (type as any) ?? 'OTHER',
-        status: 'UPLOADED',
-      },
-    });
-
-    await this.auditLog.log({
-      organizationId,
-      userId,
-      action: 'UPLOAD_DOCUMENT',
-      entityType: 'Document',
-      entityId: created.id,
-      description: `Uploaded document ${created.fileName}`,
-      newValue: created,
-    });
-
-    await this.activityTracking.track({
+    await trackOptionalActivity(this.activityTracking, {
       organizationId,
       userId,
       eventName: 'DOCUMENT_UPLOADED',
@@ -185,7 +188,7 @@ export class DocumentsService {
       );
     }
 
-    await this.activityTracking.track({
+    await trackOptionalActivity(this.activityTracking, {
       organizationId,
       userId,
       eventName: 'DOCUMENT_VIEWED',
@@ -218,28 +221,13 @@ export class DocumentsService {
         throw new ForbiddenException('You cannot delete this document.');
       }
 
-      const relatedActivities = await tx.activityData.findMany({
+      // Imported accounting records and their metrics outlive the source.
+      // The nullable document relation is detached by ON DELETE SET NULL;
+      // sourceDocumentId and copied provenance remain historical evidence.
+      const preservedActivityRecords = await tx.activityData.count({
         where: {
           organizationId,
-          sourceDocumentId: id,
-        },
-        select: { id: true },
-      });
-      const relatedActivityIds = relatedActivities.map((item) => item.id);
-
-      if (relatedActivityIds.length > 0) {
-        await tx.metricResult.deleteMany({
-          where: {
-            organizationId,
-            activityDataId: { in: relatedActivityIds },
-          },
-        });
-      }
-
-      const deletedActivityRecords = await tx.activityData.deleteMany({
-        where: {
-          organizationId,
-          sourceDocumentId: id,
+          OR: [{ documentId: id }, { sourceDocumentId: id }],
         },
       });
 
@@ -254,11 +242,12 @@ export class DocumentsService {
           action: 'DELETE_DOCUMENT',
           entityType: 'Document',
           entityId: id,
-          description: `Deleted document ${document.fileName}`,
+          description: `Deleted source document ${document.fileName}; preserved ${preservedActivityRecords} imported activity records.`,
           oldValue: JSON.parse(
             JSON.stringify({
               document,
-              deletedActivityRecords: deletedActivityRecords.count,
+              deletedActivityRecords: 0,
+              preservedActivityRecords,
             }),
           ),
         },
@@ -272,14 +261,15 @@ export class DocumentsService {
           entityType: 'Document',
           entityId: id,
           metadata: {
-            deletedActivityRecords: deletedActivityRecords.count,
+            deletedActivityRecords: 0,
+            preservedActivityRecords,
           },
         },
       });
 
       return {
         deletedDocument: true,
-        deletedActivityRecords: deletedActivityRecords.count,
+        deletedActivityRecords: 0,
       };
     });
   }

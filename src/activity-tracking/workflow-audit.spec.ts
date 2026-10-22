@@ -18,6 +18,7 @@ function database() {
   const events: any[] = [];
   const records: any[] = [];
   const client: any = {
+    $queryRaw: jest.fn().mockResolvedValue([{ id: 'source' }]),
     userActivityEvent: {
       create: jest.fn(async ({ data }) => { const row = { ...data, id: `event-${String(events.length + 1).padStart(3, '0')}`, createdAt: new Date('2026-10-14T14:00:00Z') }; events.push(row); return row; }),
       findMany: jest.fn(async ({ where, skip = 0, take = 20 }) => events.filter((row) => row.organizationId === where.organizationId && (!where.eventName?.in || where.eventName.in.includes(row.eventName))).sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || b.id.localeCompare(a.id)).slice(skip, skip + take)),
@@ -37,7 +38,7 @@ const importRows = ['ELECTRICITY', 'WATER', 'HOTEL', 'NATURAL_GAS', 'GASOLINE'].
 describe('workflow audit persistence', () => {
   it('appends partial import 3 then 1 and emits no event for unchanged reconfirm', async () => {
     const { client, events } = database();
-    const subject = new DocumentExtractionService(client, { log: jest.fn() } as never, new ActivityTrackingService(client), { prepareCreate: jest.fn(async (_client, data) => data), fields: jest.fn() } as never);
+    const subject = new DocumentExtractionService(client, { log: jest.fn() } as never, new ActivityTrackingService(client), { prepareCreate: jest.fn(async (_client, data) => ({ ...data, matchingStatus: data.activityType === 'WATER' ? 'TRACKED_ONLY' : 'MATCHED', calculationStatus: data.activityType === 'WATER' ? 'TRACKED_ONLY' : 'CALCULATED', reportTreatment: data.activityType === 'WATER' ? 'TRACKED_ONLY' : 'INCLUDED' })), fields: jest.fn() } as never);
     expect((await subject.confirmImport('org-a', 'source', importRows.slice(0, 3), 'actor-a')).count).toBe(3);
     const first = JSON.stringify(events[0]);
     expect((await subject.confirmImport('org-a', 'source', importRows.slice(0, 4), 'actor-a')).count).toBe(1);
@@ -51,7 +52,7 @@ describe('workflow audit persistence', () => {
     const { client, events } = database();
     const track = new ActivityTrackingService(client);
     const spy = jest.spyOn(track, 'track');
-    await new DocumentExtractionService(client, { log: jest.fn() } as never, track, { prepareCreate: jest.fn(async (_client, data) => data), fields: jest.fn() } as never).confirmImport('org-a', 'source', importRows, 'actor-a');
+    await new DocumentExtractionService(client, { log: jest.fn() } as never, track, { prepareCreate: jest.fn(async (_client, data) => ({ ...data, matchingStatus: data.activityType === 'WATER' ? 'TRACKED_ONLY' : 'MATCHED', calculationStatus: data.activityType === 'WATER' ? 'TRACKED_ONLY' : 'CALCULATED', reportTreatment: data.activityType === 'WATER' ? 'TRACKED_ONLY' : 'INCLUDED' })), fields: jest.fn() } as never).confirmImport('org-a', 'source', importRows, 'actor-a');
     expect(events).toHaveLength(1);
     expect(events[0].metadata).toMatchObject({ createdRecordCount: 5, reviewableRowCount: 5, unresolvedRowCount: 0, skippedCount: 0 });
     expect(spy.mock.calls[0][1]).toBe(client);

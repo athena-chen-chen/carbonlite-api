@@ -3,7 +3,7 @@ import { FeedbackStatus, Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateFeedbackDto } from './dto/create-feedback.dto';
 import { FeedbackQueryDto } from './dto/feedback-query.dto';
-import { ActivityTrackingService } from '../activity-tracking/activity-tracking.service';
+import { ActivityTrackingService, trackOptionalActivity } from '../activity-tracking/activity-tracking.service';
 
 @Injectable()
 export class FeedbackService {
@@ -33,7 +33,7 @@ export class FeedbackService {
       },
     });
 
-    await this.activityTracking.track({
+    await trackOptionalActivity(this.activityTracking, {
       organizationId,
       userId,
       eventName: 'FEEDBACK_SUBMITTED',

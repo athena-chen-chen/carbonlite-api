@@ -1,6 +1,10 @@
+import { writeSafeError } from '../common/logging/safe-log';
+import { assertReviewRowLimit, readBoundedDocumentFile, validateDocumentContent, validateDocumentType } from '../documents/document-resource-policy';
+import { extractionWorkload, withExtractionDeadline, EXTRACTION_TIMEOUT_MS, MAX_PROVIDER_OUTPUT_CHARACTERS, MAX_PROVIDER_OUTPUT_TOKENS } from './extraction-workload';
 import { CalculationSnapshotsService } from '../metrics/calculation-snapshots.service';
 import {
   BadRequestException,
+  HttpException,
   Injectable,
   InternalServerErrorException,
   Logger,
@@ -9,12 +13,12 @@ import {
 import type { ResponseInputContent } from 'openai/resources/responses/responses';
 import { PrismaService } from '../prisma/prisma.service';
 import { openai } from '../openai/openai.client';
-import { access, readFile } from 'fs/promises';
+import { access } from 'fs/promises';
 import { constants } from 'fs';
 import { join } from 'path';
 import { ActivityType, Prisma, SpreadsheetImportReviewRow } from '@prisma/client';
 import { AuditLogService } from '../audit-log/audit-log.service';
-import { ActivityTrackingService } from '../activity-tracking/activity-tracking.service';
+import { ActivityTrackingService, trackOptionalActivity } from '../activity-tracking/activity-tracking.service';
 import {
   normalizeJurisdictionCountry,
   normalizeJurisdictionRegion,
@@ -85,6 +89,9 @@ type NormalizedImportActivity = ParsedActivityRaw & {
   calculationMessage?: string | null;
 };
 
+type ImportActivityIdentity = Pick<NormalizedImportActivity,
+  'sourceSheetName' | 'sourceRow' | 'sourceReference' | 'activityType' | 'recordDate' | 'quantity' | 'unit'>;
+
 type ConfidenceField<T> = {
   value: T | null;
   confidence: ConfidenceLevel;
@@ -129,6 +136,16 @@ export class DocumentExtractionService {
     userId?: string,
     userEmail?: string,
   ) {
+    return extractionWorkload.run(`${organizationId}:${documentId}`, () =>
+      this.extractWithinLimits(organizationId, documentId, userId, userEmail));
+  }
+
+  private async extractWithinLimits(
+    organizationId: string,
+    documentId: string,
+    userId?: string,
+    userEmail?: string,
+  ) {
     const document = await this.prisma.document.findFirst({
       where: { id: documentId, organizationId },
     });
@@ -156,7 +173,7 @@ export class DocumentExtractionService {
       feature: 'document-extraction',
       operation:
         document.status === 'EXTRACTION_FAILED' ||
-        document.status === 'NO_DATA_FOUND'
+          document.status === 'NO_DATA_FOUND'
           ? 'retry-extract'
           : 'extract',
       organizationId,
@@ -219,9 +236,10 @@ export class DocumentExtractionService {
         });
       }
 
-      const fileBuffer = await readFile(absolutePath);
+      const fileBuffer = await readBoundedDocumentFile(absolutePath);
+      validateDocumentContent(document.fileName, fileBuffer);
       if (/\.xlsx?$/i.test(document.fileName)) {
-        return this.extractStructuredActivityRecords({ organizationId, userId, documentId, fileName: document.fileName, fileBuffer }, parseSpreadsheetActivityRows(fileBuffer), 'EXCEL');
+        return await this.extractStructuredActivityRecords({ organizationId, userId, documentId, fileName: document.fileName, fileBuffer }, parseSpreadsheetActivityRows(fileBuffer), 'EXCEL');
       }
       const mimeType = this.resolveOpenAiMimeType(document, fileBuffer);
       const base64 = fileBuffer.toString('base64');
@@ -229,7 +247,7 @@ export class DocumentExtractionService {
       let localText = '';
 
       if (document.fileName.toLowerCase().endsWith('.json')) {
-        return this.extractStructuredJsonDocument({
+        return await this.extractStructuredJsonDocument({
           organizationId,
           userId,
           documentId,
@@ -252,16 +270,17 @@ export class DocumentExtractionService {
         `[DocumentExtraction] OpenAI request prepared documentId=${documentId} model=${this.extractionModel} mimeType=${mimeType} inputModality=${inputModality} fileSize=${fileBuffer.length}`,
       );
 
-      const response = await openai.responses.create({
+      const response = await withExtractionDeadline(signal => openai.responses.create({
         model: this.extractionModel,
+        max_output_tokens: MAX_PROVIDER_OUTPUT_TOKENS,
         input: [
           {
             role: 'system',
             content: [
               {
                 type: 'input_text',
-	                text:
-	                  'You extract operational activity data from invoices, utility bills, receipts, and similar business documents. ' +
+                text:
+                  'You extract operational activity data from invoices, utility bills, receipts, and similar business documents. ' +
                   'Return only activity quantities and usage units, not billing charges. ' +
                   'For utility bills, return only current billing-period consumption as activity rows. ' +
                   'Do not return comparison chart values such as Last bill, Last month, Last year, same period last year, or past usage as current activities. ' +
@@ -368,9 +387,10 @@ export class DocumentExtractionService {
             },
           },
         },
-      });
+      }, { signal, timeout: EXTRACTION_TIMEOUT_MS, maxRetries: 0 }));
 
       const rawText = response.output_text;
+      if (typeof rawText !== 'string' || rawText.length > MAX_PROVIDER_OUTPUT_CHARACTERS) throw new BadRequestException('Extraction output exceeded the processing limit.');
       this.logger.log(
         `[DocumentExtraction] OpenAI response returned documentId=${documentId} model=${this.extractionModel} inputModality=${inputModality} responseStatus=${response.status ?? 'unknown'}`,
       );
@@ -383,7 +403,9 @@ export class DocumentExtractionService {
         );
         throw parseError;
       }
-      const activityRows = this.filterOperationalActivityRows(parsed.activities ?? []);
+      if (!Array.isArray(parsed.activities)) throw new BadRequestException('Invalid extraction result.');
+      assertReviewRowLimit(parsed.activities.length);
+      const activityRows = this.filterOperationalActivityRows(parsed.activities);
 
       const parsedActivities = activityRows.map((activity) =>
         this.addConfidence(activity),
@@ -400,11 +422,6 @@ export class DocumentExtractionService {
         ? `Possible missing rows: source has ${sourceRowCount} rows, AI extracted ${extractedRowCount}.`
         : null;
       const status = extractedRowCount > 0 ? 'REVIEW_REQUIRED' : 'NO_DATA_FOUND';
-
-      await this.prisma.document.update({
-        where: { id: documentId },
-        data: { status },
-      });
 
       if (extractedRowCount === 0) {
         this.logger.warn(
@@ -438,33 +455,36 @@ export class DocumentExtractionService {
         extractedAt: new Date().toISOString(),
       };
 
-      await this.saveExtractionResult({
-        organizationId,
-        documentId,
-        status,
-        parsedActivities,
-        sourceRowCount,
-        extractedRowCount,
-        possibleMissingRows,
-        warning,
-      });
-
-      await this.auditLog.log({
-        organizationId,
-        userId,
-        action: 'EXTRACT_DOCUMENT',
-        entityType: 'Document',
-        entityId: documentId,
-        description:
-          status === 'NO_DATA_FOUND'
-            ? 'Extracted document but no emissions data was detected'
-            : 'Extracted document',
-        newValue: {
+      await this.prisma.$transaction(async tx => {
+        await tx.document.update({ where: { id: documentId }, data: { status } });
+        await this.saveExtractionResult({
+          organizationId,
+          documentId,
           status,
+          parsedActivities,
           sourceRowCount,
           extractedRowCount,
           possibleMissingRows,
-        },
+          warning,
+        }, tx);
+
+        await this.auditLog.log({
+          organizationId,
+          userId,
+          action: 'EXTRACT_DOCUMENT',
+          entityType: 'Document',
+          entityId: documentId,
+          description:
+            status === 'NO_DATA_FOUND'
+              ? 'Extracted document but no emissions data was detected'
+              : 'Extracted document',
+          newValue: {
+            status,
+            sourceRowCount,
+            extractedRowCount,
+            possibleMissingRows,
+          },
+        }, tx);
       });
 
       await this.trackExtractionEvent({
@@ -525,7 +545,7 @@ export class DocumentExtractionService {
         });
       }
 
-      if (error instanceof BadRequestException) {
+      if (error instanceof HttpException) {
         await this.prisma.document.update({
           where: { id: documentId },
           data: { status: 'EXTRACTION_FAILED' },
@@ -536,23 +556,18 @@ export class DocumentExtractionService {
           documentId,
           eventName: 'DOCUMENT_EXTRACT_FAILED',
           metadata: {
-            reason: 'BAD_REQUEST',
+            reason: error.getStatus() === 504 ? 'TIMEOUT' : 'BAD_REQUEST',
           },
         });
         throw error;
       }
 
-      this.logger.error(
-        `[DocumentExtraction] extraction failed documentId=${documentId} filePath=${absolutePath} storageKey=${document.fileUrl} reason=${
-          error instanceof Error ? error.message : String(error)
-        }`,
-        error instanceof Error ? error.stack : undefined,
-      );
+      writeSafeError(this.logger, 'document-extraction', error, { organizationId, documentId });
       captureAppError(error, {
         feature: 'document-extraction',
         operation:
           document.status === 'EXTRACTION_FAILED' ||
-          document.status === 'NO_DATA_FOUND'
+            document.status === 'NO_DATA_FOUND'
             ? 'retry-extract'
             : 'extract',
         userId,
@@ -597,60 +612,7 @@ export class DocumentExtractionService {
     fileName: string;
     mimeType: string | null;
   }) {
-    const fileName = document.fileName.toLowerCase();
-    const mimeType = document.mimeType?.toLowerCase() ?? '';
-    const supportedExtensions = [
-      '.pdf',
-      '.csv',
-      '.xlsx',
-      '.xls',
-      '.png',
-      '.jpg',
-      '.jpeg',
-      '.json',
-    ];
-    const supportedMimeTypes = [
-      'application/pdf',
-      'text/csv',
-      'application/csv',
-      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-      'application/vnd.ms-excel',
-      'image/png',
-      'image/jpeg',
-      'application/json',
-      'text/json',
-    ];
-
-    const hasSupportedExtension = supportedExtensions.some((extension) =>
-      fileName.endsWith(extension),
-    );
-    const hasSupportedMimeType =
-      Boolean(mimeType) &&
-      supportedMimeTypes.some((supportedMimeType) =>
-        mimeType.startsWith(supportedMimeType),
-      );
-
-    if (!hasSupportedExtension && !hasSupportedMimeType) {
-      this.logger.warn(
-        `[DocumentExtraction] unsupported file type documentId=${document.id} fileName=${document.fileName} mimeType=${document.mimeType}`,
-      );
-      addAppBreadcrumb('Unsupported document type', {
-        feature: 'document-extraction',
-        operation: 'unsupported-file-type',
-        organizationId: document.organizationId,
-        entityType: 'Document',
-        entityId: document.id,
-        metadata: {
-          mimeType: document.mimeType,
-          fileExtension: document.fileName.includes('.')
-            ? document.fileName.split('.').pop()
-            : undefined,
-        },
-      });
-      throw new BadRequestException(
-        'Unsupported file type. Please upload a PDF, CSV, XLSX, PNG, JPG, or JSON file.',
-      );
-    }
+    validateDocumentType(document.fileName, document.mimeType);
   }
 
   private buildExtractionUserContent(input: {
@@ -803,6 +765,7 @@ If it contains a utility bill, prefer ELECTRICITY or NATURAL_GAS.
     records: Record<string, unknown>[],
     sourceFormat: 'JSON' | 'EXCEL',
   ) {
+    assertReviewRowLimit(records.length);
     const parsedActivities = records.map((record) => {
       const parsed = this.addConfidence(this.normalizeActivityForExtraction(record, input.fileName));
       if (sourceFormat === 'JSON') return parsed;
@@ -829,38 +792,36 @@ If it contains a utility bill, prefer ELECTRICITY or NATURAL_GAS.
       extractedAt: new Date().toISOString(),
     };
 
-    await this.prisma.document.update({
-      where: { id: input.documentId },
-      data: { status },
-    });
-
-    await this.saveExtractionResult({
-      organizationId: input.organizationId,
-      documentId: input.documentId,
-      status,
-      parsedActivities,
-      sourceRowCount: records.length,
-      extractedRowCount,
-      possibleMissingRows: false,
-      warning: null,
-    });
-
-    await this.auditLog.log({
-      organizationId: input.organizationId,
-      userId: input.userId,
-      action: 'EXTRACT_DOCUMENT',
-      entityType: 'Document',
-      entityId: input.documentId,
-      description:
-        status === 'NO_DATA_FOUND'
-          ? `Extracted ${sourceFormat} document but no activity records were detected`
-          : `Extracted ${sourceFormat} document`,
-      newValue: {
+    await this.prisma.$transaction(async tx => {
+      await tx.document.update({ where: { id: input.documentId }, data: { status } });
+      await this.saveExtractionResult({
+        organizationId: input.organizationId,
+        documentId: input.documentId,
         status,
+        parsedActivities,
         sourceRowCount: records.length,
         extractedRowCount,
         possibleMissingRows: false,
-      },
+        warning: null,
+      }, tx);
+
+      await this.auditLog.log({
+        organizationId: input.organizationId,
+        userId: input.userId,
+        action: 'EXTRACT_DOCUMENT',
+        entityType: 'Document',
+        entityId: input.documentId,
+        description:
+          status === 'NO_DATA_FOUND'
+            ? `Extracted ${sourceFormat} document but no activity records were detected`
+            : `Extracted ${sourceFormat} document`,
+        newValue: {
+          status,
+          sourceRowCount: records.length,
+          extractedRowCount,
+          possibleMissingRows: false,
+        },
+      }, tx);
     });
 
     await this.trackExtractionEvent({
@@ -1059,20 +1020,7 @@ If it contains a utility bill, prefer ELECTRICITY or NATURAL_GAS.
   ) {
     const totalTimer = new PerfTimer();
 
-    const { result: validationResult, durationMs: validationDurationMs } =
-      await timeAsync(async () => {
-        const document = await this.prisma.document.findFirst({
-          where: { id: documentId, organizationId },
-          include: { extractions: { select: { extractedRows: true }, take: 1 } },
-        });
-
-        if (!document) {
-          throw new NotFoundException('Document not found');
-        }
-
-        return { document };
-      });
-    const { document } = validationResult;
+    let validationDurationMs = 0;
 
     const { result: normalizedActivities, durationMs: parseDurationMs } = timeSync(
       () => activities.map((activity) => this.normalizeActivityForImport(activity)),
@@ -1082,8 +1030,27 @@ If it contains a utility bill, prefer ELECTRICITY or NATURAL_GAS.
     const { result: createdIds, durationMs: databaseInsertUpdateDurationMs } =
       await timeAsync(() =>
         this.prisma.$transaction(async (tx) => {
+          const validation = await timeAsync(async () => {
+            // Serialize confirms for this tenant-owned source across processes.
+            // Acquire before reading staging or imported identities and hold
+            // through all inserts/state updates until this transaction ends.
+            const locked = await tx.$queryRaw<Array<{ id: string }>>`
+              SELECT "id" FROM "Document"
+              WHERE "id" = ${documentId} AND "organizationId" = ${organizationId}
+              FOR UPDATE`;
+            if (!locked.length) throw new NotFoundException('Document not found');
+            const document = await tx.document.findFirst({
+              where: { id: documentId, organizationId },
+              include: { extractions: { select: { extractedRows: true }, take: 1 } },
+            });
+            if (!document) throw new NotFoundException('Document not found');
+            return document;
+          });
+          const document = validation.result;
+          validationDurationMs = validation.durationMs;
           const ids: string[] = [];
           let trackedMetricCount = 0;
+          let blockedImportCount = 0;
           const spreadsheetReviewRows = await tx.spreadsheetImportReviewRow.findMany({
             where: {
               organizationId,
@@ -1127,6 +1094,7 @@ If it contains a utility bill, prefer ELECTRICITY or NATURAL_GAS.
             },
             select: {
               sourceRow: true,
+              sourceSheetName: true,
               sourceReference: true,
               activityType: true,
               recordDate: true,
@@ -1138,6 +1106,7 @@ If it contains a utility bill, prefer ELECTRICITY or NATURAL_GAS.
             existingActivities.flatMap((activity) => {
               const keyInput = {
                 sourceRow: activity.sourceRow,
+                sourceSheetName: activity.sourceSheetName,
                 sourceReference: activity.sourceReference,
                 activityType: activity.activityType,
                 recordDate: activity.recordDate.toISOString().slice(0, 10),
@@ -1149,17 +1118,25 @@ If it contains a utility bill, prefer ELECTRICITY or NATURAL_GAS.
             }),
           );
 
+          const importedSourceRows = new Set(existingActivities
+            .map(row => this.normalizeOptionalText(row.sourceRow)).filter(Boolean));
+          const wasImported = (activity: ImportActivityIdentity) => {
+            const sourceRow = this.normalizeOptionalText(activity.sourceRow);
+            const sourceSheetName = this.normalizeOptionalText(activity.sourceSheetName);
+            // A legacy caller omitting the sheet retains its row-only retry
+            // semantics. Explicit sheets only match that sheet or legacy rows
+            // persisted without sheet metadata, never another explicit sheet.
+            if (sourceRow && !sourceSheetName && importedSourceRows.has(sourceRow)) return true;
+            return importedKeys.has(this.buildImportActivityRecordKey(documentId, activity)) ||
+              importedKeys.has(this.buildImportActivityRecordKey(documentId, { ...activity, sourceRow: null })) ||
+              Boolean(sourceRow && sourceSheetName && importedKeys.has(
+                this.buildImportActivityRecordKey(documentId, { ...activity, sourceSheetName: null }),
+              ));
+          };
+
           for (const normalized of activitiesForImport) {
-            const key = this.buildImportActivityRecordKey(documentId, normalized);
-            const fallbackKey = this.buildImportActivityRecordKey(documentId, {
-              ...normalized,
-              sourceRow: null,
-            });
-            // Older provider extractions had no physical source row. Retain their
-            // existing content identity when deterministic extraction adds it.
-            if (importedKeys.has(key) || importedKeys.has(fallbackKey)) continue;
-            const row = await tx.activityData.create({
-              data: await this.snapshots.prepareCreate(tx, {
+            if (wasImported(normalized)) continue;
+            const prepared = await this.snapshots.prepareCreate(tx, {
                 organizationId,
                 documentId,
                 activityType: normalized.activityType as any,
@@ -1201,12 +1178,19 @@ If it contains a utility bill, prefer ELECTRICITY or NATURAL_GAS.
                 calculatedEmissionsKgCO2e: normalized.calculatedEmissionsKgCO2e ?? null,
                 calculationStatus: normalized.calculationStatus ?? null,
                 calculationMessage: normalized.calculationMessage ?? null,
-              }, userId),
-            });
+              }, userId);
+            // Both staged and uploaded rows must pass the server-owned result.
+            // Client/staging status and a tracked scope alone cannot authorize import.
+            if (!this.isPreparedDocumentImportEligible(prepared)) {
+              blockedImportCount += 1;
+              continue;
+            }
+            const row = await tx.activityData.create({ data: prepared });
 
             ids.push(row.id);
-            if (normalized.reportTreatment === 'TRACKED_ONLY' || normalized.calculationStatus === 'TRACKED_ONLY' || normalized.activityType === 'WATER') trackedMetricCount += 1;
-            importedKeys.add(key);
+            if (prepared.calculationStatus === 'TRACKED_ONLY') trackedMetricCount += 1;
+            importedKeys.add(this.buildImportActivityRecordKey(documentId, normalized));
+            if (normalized.sourceRow) importedSourceRows.add(this.normalizeOptionalText(normalized.sourceRow));
 
           }
 
@@ -1218,19 +1202,22 @@ If it contains a utility bill, prefer ELECTRICITY or NATURAL_GAS.
                 if (!row || typeof row !== 'object' || Array.isArray(row)) return false;
                 const identity = {
                   sourceRow: this.normalizeOptionalText(this.unwrapField(row.sourceRow)),
+                  sourceSheetName: this.normalizeOptionalText(this.unwrapField(row.sourceSheetName)),
                   sourceReference: this.normalizeOptionalText(this.unwrapField(row.sourceReference)),
                   activityType: this.normalizeActivityType(this.unwrapField(row.activityType)),
                   recordDate: String(this.unwrapField(row.recordDate) ?? ''),
                   quantity: Number(this.unwrapField(row.quantity)),
                   unit: String(this.unwrapField(row.unit) ?? ''),
                 };
-                return !importedKeys.has(this.buildImportActivityRecordKey(documentId, identity)) &&
-                  !importedKeys.has(this.buildImportActivityRecordKey(documentId, { ...identity, sourceRow: null }));
+                return !wasImported(identity);
               }).length
             : 0;
-          const remainingReviewCount = spreadsheetReviewRows.length
-            ? spreadsheetReviewRows.filter(row => row.status === 'NEEDS_REVIEW').length
-            : remainingExtractedCount;
+          const remainingReviewCount = Math.max(
+            spreadsheetReviewRows.length
+              ? spreadsheetReviewRows.filter(row => row.status === 'NEEDS_REVIEW').length
+              : remainingExtractedCount,
+            blockedImportCount,
+          );
           const documentStatus = remainingReviewCount > 0 ? 'REVIEW_REQUIRED' : 'IMPORTED';
           await tx.document.update({
             where: { id: documentId },
@@ -1261,7 +1248,12 @@ If it contains a utility bill, prefer ELECTRICITY or NATURAL_GAS.
             }, tx);
           }
           return ids;
-        }, { maxWait: 10000, timeout: 60000 }),
+        }, {
+          maxWait: 10000,
+          timeout: 60000,
+          // A waiter must read the imports committed by the previous lock holder.
+          isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted,
+        }),
       );
 
     this.logImportPerformance('documentExtractionConfirmImport', {
@@ -1315,8 +1307,8 @@ If it contains a utility bill, prefer ELECTRICITY or NATURAL_GAS.
     extractedRowCount: number;
     possibleMissingRows: boolean;
     warning: string | null;
-  }) {
-    await this.prisma.documentExtraction.upsert({
+  }, client: Pick<Prisma.TransactionClient, 'documentExtraction'> = this.prisma) {
+    await client.documentExtraction.upsert({
       where: {
         documentId: input.documentId,
       },
@@ -1357,7 +1349,7 @@ If it contains a utility bill, prefer ELECTRICITY or NATURAL_GAS.
     eventName: string;
     metadata?: Record<string, unknown>;
   }) {
-    await this.activityTracking.track({
+    await trackOptionalActivity(this.activityTracking, {
       organizationId: input.organizationId,
       userId: input.userId,
       eventName: input.eventName,
@@ -1443,7 +1435,6 @@ If it contains a utility bill, prefer ELECTRICITY or NATURAL_GAS.
       },
     };
   }
-
 
   private filterOperationalActivityRows(activities: ParsedActivityRaw[]) {
     return activities.filter(
@@ -1740,6 +1731,17 @@ If it contains a utility bill, prefer ELECTRICITY or NATURAL_GAS.
     };
   }
 
+  private isPreparedDocumentImportEligible(
+    activity: Pick<NormalizedImportActivity, 'matchingStatus' | 'calculationStatus' | 'reportTreatment'>,
+  ) {
+    return (
+      (activity.calculationStatus === 'TRACKED_ONLY' && activity.reportTreatment === 'TRACKED_ONLY') ||
+      (activity.matchingStatus === 'MATCHED' &&
+        activity.calculationStatus === 'CALCULATED' &&
+        activity.reportTreatment === 'INCLUDED')
+    );
+  }
+
   private isSpreadsheetReviewRowImportEligible(row: SpreadsheetImportReviewRow) {
     const status = String(row.status ?? '').toUpperCase();
     const reportTreatment = String(row.reportTreatment ?? '').toUpperCase();
@@ -1759,13 +1761,10 @@ If it contains a utility bill, prefer ELECTRICITY or NATURAL_GAS.
 
   private buildImportActivityRecordKey(
     documentId: string,
-    activity: Pick<
-      NormalizedImportActivity,
-      'sourceRow' | 'sourceReference' | 'activityType' | 'recordDate' | 'quantity' | 'unit'
-    >,
+    activity: ImportActivityIdentity,
   ) {
     const sourceRow = this.normalizeOptionalText(activity.sourceRow);
-    if (sourceRow) return `${documentId}::row:${sourceRow}`;
+    if (sourceRow) return [documentId, 'sheet', this.normalizeOptionalText(activity.sourceSheetName) ?? '', 'row', sourceRow].join('::');
 
     return [
       documentId,

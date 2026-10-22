@@ -1,3 +1,4 @@
+import { isPlatformAdmin } from '../common/permissions/workspace-permissions';
 import {
   BadRequestException,
   ConflictException,
@@ -13,7 +14,7 @@ import { MembershipRole, Prisma, UserRole } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { RegisterDto } from './dto/register.dto';
 import { AuditLogService } from '../audit-log/audit-log.service';
-import { ActivityTrackingService } from '../activity-tracking/activity-tracking.service';
+import { ActivityTrackingService, trackOptionalActivity } from '../activity-tracking/activity-tracking.service';
 import { CreatePilotReviewerDto } from './dto/create-pilot-reviewer.dto';
 import { DeactivatePilotReviewerDto } from './dto/deactivate-pilot-reviewer.dto';
 import { RegeneratePilotReviewerInviteDto } from './dto/regenerate-pilot-reviewer-invite.dto';
@@ -29,6 +30,7 @@ export type AuthenticatedUser = {
   organizationId: string;
   organizationName: string;
   role: UserRole;
+  platformRole?: UserRole;
   membershipRole?: MembershipRole | null;
   accountType?: string | null;
 };
@@ -96,7 +98,7 @@ export class AuthService {
         });
       });
 
-      await this.activityTracking.track({
+      await trackOptionalActivity(this.activityTracking, {
         organizationId: user.organizationId,
         userId: user.id,
         eventName: 'USER_REGISTERED',
@@ -182,7 +184,7 @@ export class AuthService {
       description: 'User logged out',
     });
 
-    await this.activityTracking.track({
+    await trackOptionalActivity(this.activityTracking, {
       organizationId: user.organizationId,
       userId: user.id,
       eventName: 'USER_LOGGED_OUT',
@@ -197,7 +199,7 @@ export class AuthService {
     currentUser: AuthenticatedUser,
     dto: CreatePilotReviewerDto,
   ) {
-    if (currentUser.role !== UserRole.ADMIN) {
+    if (!isPlatformAdmin(currentUser)) {
       throw new ForbiddenException(
         'You do not have permission to create pilot reviewers.',
       );
@@ -313,7 +315,7 @@ export class AuthService {
     currentUser: AuthenticatedUser,
     dto: DeactivatePilotReviewerDto,
   ) {
-    if (currentUser.role !== UserRole.ADMIN) {
+    if (!isPlatformAdmin(currentUser)) {
       throw new ForbiddenException(
         'You do not have permission to deactivate pilot reviewers.',
       );
@@ -367,7 +369,7 @@ export class AuthService {
     currentUser: AuthenticatedUser,
     dto: RegeneratePilotReviewerInviteDto,
   ) {
-    if (currentUser.role !== UserRole.ADMIN) {
+    if (!isPlatformAdmin(currentUser)) {
       throw new ForbiddenException(
         'You do not have permission to regenerate pilot reviewer invite links.',
       );
@@ -452,6 +454,7 @@ export class AuthService {
         organizationId: 'admin-script',
         organizationName: 'CarbonLite Admin Script',
         role: UserRole.ADMIN,
+        platformRole: UserRole.ADMIN,
       };
     }
 
@@ -585,6 +588,7 @@ export class AuthService {
         user.role,
         user.memberships?.[0]?.role,
       ),
+      platformRole: user.role,
       membershipRole: user.memberships?.[0]?.role ?? null,
       accountType: user.accountType,
     };
@@ -778,6 +782,7 @@ export class AuthService {
         process.env.LOCAL_DEMO_ORGANIZATION_NAME ||
         'CarbonLite Pilot Demo Workspace',
       role: UserRole.ADMIN,
+      platformRole: UserRole.ADMIN,
     };
 
     await this.recordLoginActivity({
@@ -797,39 +802,24 @@ export class AuthService {
     };
   }
 
-  private async recordLoginActivity(input: {
-    organizationId: string;
-    userId: string;
-  }) {
+  private async recordLoginActivity(input: { organizationId: string; userId: string }) {
     try {
       await this.auditLog.log({
-        organizationId: input.organizationId,
-        userId: input.userId,
-        action: 'LOGIN',
-        entityType: 'Authentication',
-        entityId: input.userId,
+        organizationId: input.organizationId, userId: input.userId,
+        action: 'LOGIN', entityType: 'Authentication', entityId: input.userId,
         description: 'User logged in',
       });
-    } catch (error) {
-      this.logger.warn(
-        `Login audit logging failed: ${getErrorMessage(error)}`,
-      );
+    } catch {
+      try {
+        this.logger.warn(`Optional login audit failed organizationId=${input.organizationId.slice(0, 100)} userId=${input.userId.slice(0, 100)}`);
+      } catch { /* Logging cannot invalidate a successful login. */ }
     }
-
-    try {
-      await this.activityTracking.track({
-        organizationId: input.organizationId,
-        userId: input.userId,
-        eventName: 'USER_LOGGED_IN',
-        entityType: 'User',
-        entityId: input.userId,
-      });
-    } catch (error) {
-      this.logger.warn(
-        `Login activity tracking failed: ${getErrorMessage(error)}`,
-      );
-    }
+    await trackOptionalActivity(this.activityTracking, {
+      organizationId: input.organizationId, userId: input.userId,
+      eventName: 'USER_LOGGED_IN', entityType: 'User', entityId: input.userId,
+    });
   }
+
 }
 
 function isDatabaseUnavailableError(error: unknown) {

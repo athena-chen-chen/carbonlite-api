@@ -1,3 +1,4 @@
+import { documentUploadOptions } from './document-resource-policy';
 import { Module } from '@nestjs/common';
 import { MulterModule } from '@nestjs/platform-express';
 import { DocumentsController } from './documents.controller';
@@ -7,9 +8,7 @@ import { PrismaModule } from '../prisma/prisma.module';
 @Module({
   imports: [
     PrismaModule,
-    MulterModule.register({
-      dest: './uploads',
-    }),
+    MulterModule.register(documentUploadOptions),
   ],
   controllers: [DocumentsController],
   providers: [DocumentsService],

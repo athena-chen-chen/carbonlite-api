@@ -1,3 +1,4 @@
+import { WorkspaceMutationGuard } from '../auth/guards/workspace-mutation.guard';
 import {
   Body,
   Controller,
@@ -26,7 +27,7 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { assertCanContributeActivityData } from '../common/permissions/activity-data-permissions';
 
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, WorkspaceMutationGuard)
 @Controller('activity-data')
 export class ActivityDataController {
   constructor(

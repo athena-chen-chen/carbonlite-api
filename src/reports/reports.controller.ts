@@ -1,3 +1,4 @@
+import { WorkspaceMutationGuard } from '../auth/guards/workspace-mutation.guard';
 import {
   Body,
   Controller,
@@ -18,7 +19,7 @@ import { UpdateReportDto } from './dto/update-report.dto';
 import { ReportsService } from './reports.service';
 import { throwCapturedAppError } from '../common/monitoring/capture-app-error';
 
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, WorkspaceMutationGuard)
 @Controller('reports')
 export class ReportsController {
   constructor(private readonly reportsService: ReportsService) {}

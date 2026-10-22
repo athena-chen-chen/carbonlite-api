@@ -1,8 +1,9 @@
+import { isPlatformAdmin } from '../common/permissions/workspace-permissions';
 import { Body, Controller, Get, Param, Patch, Post, UseGuards } from '@nestjs/common';
 import { UserRole } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
-import { RolesGuard } from '../auth/guards/roles.guard';
+import { PlatformAdminGuard } from '../auth/guards/platform-admin.guard';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { AuthenticatedUser } from '../auth/auth.service';
 import { ConversionFactorsService } from './conversion-factors.service';
@@ -21,13 +22,13 @@ export class FactorVersionsController {
 
 
   @Get(':id/usage')
-  usage(@Param('id') id: string) {
-    return this.conversionFactorsService.getFactorVersionUsage(id);
+  usage(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
+    return this.conversionFactorsService.getFactorVersionUsage(id, isPlatformAdmin(user) ? { platform: true } : { organizationId: user.organizationId });
   }
 
   @Patch(':id/draft')
   @Roles(UserRole.ADMIN)
-  @UseGuards(RolesGuard)
+  @UseGuards(PlatformAdminGuard)
   updateDraft(
     @CurrentUser() user: AuthenticatedUser,
     @Param('id') id: string,
@@ -44,7 +45,7 @@ export class FactorVersionsController {
 
   @Post(':id/verify')
   @Roles(UserRole.ADMIN)
-  @UseGuards(RolesGuard)
+  @UseGuards(PlatformAdminGuard)
   verify(
     @CurrentUser() user: AuthenticatedUser,
     @Param('id') id: string,
@@ -59,7 +60,7 @@ export class FactorVersionsController {
 
   @Post(':id/deprecate')
   @Roles(UserRole.ADMIN)
-  @UseGuards(RolesGuard)
+  @UseGuards(PlatformAdminGuard)
   deprecate(
     @CurrentUser() user: AuthenticatedUser,
     @Param('id') id: string,
@@ -70,7 +71,7 @@ export class FactorVersionsController {
 
   @Post(':id/archive')
   @Roles(UserRole.ADMIN)
-  @UseGuards(RolesGuard)
+  @UseGuards(PlatformAdminGuard)
   archive(
     @CurrentUser() user: AuthenticatedUser,
     @Param('id') id: string,

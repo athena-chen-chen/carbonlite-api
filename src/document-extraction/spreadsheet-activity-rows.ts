@@ -1,3 +1,4 @@
+import { assertDocumentSize, MAX_SPREADSHEET_CELLS, MAX_SPREADSHEET_COLUMNS, MAX_SPREADSHEET_ROWS, MAX_SPREADSHEET_SHEETS } from '../documents/document-resource-policy';
 import { BadRequestException } from '@nestjs/common';
 import * as XLSX from 'xlsx';
 
@@ -18,13 +19,35 @@ const aliases = {
 
 /** Same tabular intake contract as browser spreadsheet import: first worksheet,
  * header aliases and exact cells. Never ask a language model to choose rows. */
-export function parseSpreadsheetActivityRows(buffer: Buffer) {
+export function inspectSpreadsheetContainer(buffer: Buffer) {
+  assertDocumentSize(buffer.length);
   let workbook: XLSX.WorkBook;
-  try { workbook = XLSX.read(buffer, { type: 'buffer', cellDates: false }); }
+  try { workbook = XLSX.read(buffer, { type: 'buffer', bookSheets: true }); }
+  catch { throw new BadRequestException('Unable to read spreadsheet. Please check the workbook format.'); }
+  if (!workbook.SheetNames?.length) throw new BadRequestException('Spreadsheet contains no worksheets.');
+  if (workbook.SheetNames.length > MAX_SPREADSHEET_SHEETS) throw new BadRequestException('File processing limit exceeded: too many worksheets.');
+  return workbook.SheetNames;
+}
+
+export function parseSpreadsheetActivityRows(buffer: Buffer) {
+  const sheetNames = inspectSpreadsheetContainer(buffer);
+  let workbook: XLSX.WorkBook;
+  try { workbook = XLSX.read(buffer, { type: 'buffer', cellDates: false, sheetRows: MAX_SPREADSHEET_ROWS + 1, sheets: [sheetNames[0]], cellFormula: false, cellHTML: false, cellStyles: false }); }
   catch { throw new BadRequestException('Unable to read spreadsheet. Please check the workbook format.'); }
   const sheetName = workbook.SheetNames[0];
   if (!sheetName) return [];
-  const grid = XLSX.utils.sheet_to_json<unknown[]>(workbook.Sheets[sheetName], { header: 1, defval: null, blankrows: true });
+  const sheet = workbook.Sheets[sheetName];
+  const reference = sheet?.['!fullref'] ?? sheet?.['!ref'];
+  if (reference) {
+    const range = XLSX.utils.decode_range(reference);
+    const rows = range.e.r + 1, columns = range.e.c + 1;
+    if (!Number.isSafeInteger(rows) || !Number.isSafeInteger(columns) || rows < 1 || columns < 1 ||
+        rows > MAX_SPREADSHEET_ROWS || columns > MAX_SPREADSHEET_COLUMNS || rows * columns > MAX_SPREADSHEET_CELLS) {
+      throw new BadRequestException('File processing limit exceeded: spreadsheet row, column or cell boundary exceeded.');
+    }
+  }
+  if (Object.keys(sheet ?? {}).length > MAX_SPREADSHEET_CELLS + 10) throw new BadRequestException('File processing limit exceeded: too many cells.');
+  const grid = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1, defval: null, blankrows: true });
   const headerIndex = grid.findIndex(row => {
     const headers = row.map(key);
     return aliases.activityType.some(a => headers.includes(a)) && aliases.quantity.some(a => headers.includes(a));

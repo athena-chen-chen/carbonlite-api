@@ -1,3 +1,4 @@
+import { sanitizeRequestBody, safeErrorSummary } from '../logging/safe-log';
 import {
   HttpException,
   InternalServerErrorException,
@@ -5,9 +6,6 @@ import {
 import * as Sentry from '@sentry/nestjs';
 
 const CAPTURED_ERROR = Symbol('carbonlite.sentryCaptured');
-const SENSITIVE_KEY_PATTERN =
-  /password|token|secret|authorization|cookie|file(content|buffer)|document(content|text)|ocr(text|content)?|extracted(text|content)|raw(text|content)/i;
-
 export type AppErrorContext = {
   feature: string;
   operation: string;
@@ -39,13 +37,15 @@ export function captureAppError(error: unknown, context: AppErrorContext) {
       }
 
       scope.setContext('carbonlite', {
+        error: safeErrorSummary(error),
         organizationId: context.organizationId,
         entityType: context.entityType,
         entityId: context.entityId,
         metadata: sanitizeMetadata(context.metadata),
       });
 
-      Sentry.captureException(error);
+      // Never hand provider errors (config, headers, response data, stack) to the SDK.
+      Sentry.captureException(new Error(JSON.stringify(safeErrorSummary(error))));
       markAppErrorCaptured(error);
     });
   } catch {
@@ -117,28 +117,9 @@ export function sanitizeMetadata(
   metadata?: Record<string, unknown>,
 ): Record<string, unknown> | undefined {
   if (!metadata) return undefined;
-  return sanitizeValue(metadata, 0) as Record<string, unknown>;
-}
-
-function sanitizeValue(value: unknown, depth: number): unknown {
-  if (depth > 4) return '[Truncated]';
-  if (value === null || value === undefined) return value;
-  if (typeof value === 'string') return value.slice(0, 500);
-  if (typeof value === 'number' || typeof value === 'boolean') return value;
-  if (value instanceof Date) return value.toISOString();
-  if (Array.isArray(value)) {
-    return value.slice(0, 20).map((item) => sanitizeValue(item, depth + 1));
-  }
-  if (typeof value !== 'object') return String(value);
-
-  return Object.fromEntries(
-    Object.entries(value as Record<string, unknown>).map(([key, item]) => [
-      key,
-      SENSITIVE_KEY_PATTERN.test(key)
-        ? '[Redacted]'
-        : sanitizeValue(item, depth + 1),
-    ]),
-  );
+  const result = sanitizeRequestBody(metadata);
+  return result && typeof result === 'object' && !Array.isArray(result)
+    ? result as Record<string, unknown> : { diagnostic: '[TRUNCATED]' };
 }
 
 function isExpectedHttpError(error: unknown) {

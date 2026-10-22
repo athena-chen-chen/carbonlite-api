@@ -6,17 +6,27 @@ export function scopeForActivity(activity: string) {
 }
 
 export function persistedCalculationDetail(record: any, base: any): any | null {
+  const status = String(record.calculationStatus ?? '').trim().toUpperCase();
+  const treatment = String(record.reportTreatment ?? '').trim().toUpperCase();
+  // Explicit current state always outranks older snapshots and metric evidence.
+  if ((status && status !== 'CALCULATED') || (treatment && treatment !== 'INCLUDED')) return null;
+
   const snapshot = record.calculationSnapshot;
-  if (snapshot?.contractVersion === 1 && snapshot.detail?.status === 'CALCULATED') {
+  if (snapshot?.contractVersion === 1 && snapshot.detail?.status === 'CALCULATED' &&
+      (!(record.calculationVersion > 0) || snapshot.version === record.calculationVersion)) {
     return { ...base, ...snapshot.detail, activityDataId: record.id,
       costCad: base.costCad, costCurrency: base.costCurrency, notes: base.notes,
       manualSourceProvenance: null, calculationSnapshotVersion: snapshot.version,
       calculatedAt: snapshot.calculatedAt, calculationActorId: snapshot.actorUserId };
   }
+  // Versioned records require their matching current snapshot; only unversioned
+  // legacy records may use the compatibility projection below.
+  if (record.calculationVersion > 0) return null;
   // Compatibility with already-persisted historical results. No calculation/backfill on reads.
   const metric = record.metricResults?.[0];
   const details = metric?.detailsJson;
-  const metricValue = metric && details?.factorValue != null ? Number(metric.value) : null;
+  const metricStatus = String(details?.calculationStatus ?? details?.status ?? '').trim().toUpperCase();
+  const metricValue = metric && (!metricStatus || metricStatus === 'CALCULATED') && details?.factorValue != null ? Number(metric.value) : null;
   const legacy = record.calculationStatus === 'CALCULATED' && record.matchedFactorValue != null && record.calculatedEmissionsKgCO2e != null;
   if (metricValue === null && !legacy) return null;
   const value = metricValue ?? Number(record.calculatedEmissionsKgCO2e);

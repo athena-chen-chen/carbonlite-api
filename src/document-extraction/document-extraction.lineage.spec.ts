@@ -2,7 +2,7 @@ import { DocumentExtractionService } from './document-extraction.service';
 import { openai } from '../openai/openai.client';
 
 jest.mock('../openai/openai.client', () => ({ openai: { responses: { create: jest.fn() } } }));
-jest.mock('fs/promises', () => ({ access: jest.fn(), readFile: jest.fn().mockResolvedValue(Buffer.from('fixture')) }));
+jest.mock('fs/promises', () => ({ access: jest.fn(), stat: jest.fn().mockResolvedValue({ size: 30 }), readFile: jest.fn().mockResolvedValue(Buffer.from('%PDF-1.4\nfixture\n%%EOF')) }));
 
 const sourceRows = [
   ['ELECTRICITY', 1250, 'kWh', 'Calgary HQ'],
@@ -30,12 +30,13 @@ describe('document facility and optional cost lineage', () => {
     const created: any[] = [];
     const document = { id: 'doc', fileName: 'operations.xlsx', fileUrl: '/uploads/operations.xlsx' };
     const tx = {
+      $queryRaw: jest.fn().mockResolvedValue([{ id: 'doc' }]),
       spreadsheetImportReviewRow: { findMany: jest.fn().mockResolvedValue([]) },
       activityData: { findMany: jest.fn().mockResolvedValue([]), create: jest.fn(async ({ data }) => { created.push(data); return { id: `row-${created.length}` }; }) },
-      document: { update: jest.fn() },
+      document: { update: jest.fn(), findFirst: jest.fn().mockResolvedValue(document) },
     };
     const prisma = { document: { findFirst: jest.fn().mockResolvedValue(document) }, $transaction: jest.fn(async (fn) => fn(tx)) };
-    const subject = new DocumentExtractionService(prisma as never, { log: jest.fn() } as never, { track: jest.fn() } as never, { prepareCreate: jest.fn(async (_client, data) => data), fields: jest.fn() } as never);
+    const subject = new DocumentExtractionService(prisma as never, { log: jest.fn() } as never, { track: jest.fn() } as never, { prepareCreate: jest.fn(async (_client, data) => ({ ...data, matchingStatus: 'MATCHED', calculationStatus: 'CALCULATED', reportTreatment: 'INCLUDED' })), fields: jest.fn() } as never);
     const result = await subject.confirmImport('org', 'doc', sourceRows);
     expect(result.count).toBe(5);
     expect(created.map(({ activityType, facilityName, costCad }) => [activityType, facilityName, costCad])).toEqual(sourceRows.map((row) => [row.activityType, row.facilityName, null]));
@@ -43,8 +44,9 @@ describe('document facility and optional cost lineage', () => {
   });
   it('requests facility and explicit optional cost fields in PDF extraction and retains them in review rows', async () => {
     const document = { id: 'doc', fileName: 'operations.pdf', fileUrl: '/uploads/operations.pdf', mimeType: 'application/pdf' };
-    const prisma = { document: { findFirst: jest.fn().mockResolvedValue(document), update: jest.fn() } };
-    const subject = new DocumentExtractionService(prisma as never, { log: jest.fn() } as never, { track: jest.fn() } as never, { prepareCreate: jest.fn(async (_client, data) => data), fields: jest.fn() } as never);
+    const prisma = { $transaction: jest.fn(), document: { findFirst: jest.fn().mockResolvedValue(document), update: jest.fn() } };
+    prisma.$transaction.mockImplementation(callback => callback(prisma));
+    const subject = new DocumentExtractionService(prisma as never, { log: jest.fn() } as never, { track: jest.fn() } as never, { prepareCreate: jest.fn(async (_client, data) => ({ ...data, matchingStatus: 'MATCHED', calculationStatus: 'CALCULATED', reportTreatment: 'INCLUDED' })), fields: jest.fn() } as never);
     jest.spyOn(subject as any, 'saveExtractionResult').mockResolvedValue(undefined);
     (openai.responses.create as jest.Mock).mockResolvedValue({ output_text: JSON.stringify({ activities: sourceRows }), status: 'completed' });
     const result = await subject.extract('org', 'doc');

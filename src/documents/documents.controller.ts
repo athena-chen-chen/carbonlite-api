@@ -1,3 +1,4 @@
+import { WorkspaceMutationGuard } from '../auth/guards/workspace-mutation.guard';
 import {
   Controller,
   Delete,
@@ -15,7 +16,7 @@ import {
   UseGuards,
   Headers,
 } from '@nestjs/common';
-import { FileInterceptor } from '@nestjs/platform-express';
+import { DocumentUploadInterceptor } from './document-upload-storage';
 import { createReadStream } from 'fs';
 import { Response } from 'express';
 import { DocumentsService } from './documents.service';
@@ -26,7 +27,7 @@ import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { throwCapturedAppError } from '../common/monitoring/capture-app-error';
 import { assertCanContributeActivityData } from '../common/permissions/activity-data-permissions';
 
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, WorkspaceMutationGuard)
 @Controller('documents')
 export class DocumentsController {
   constructor(
@@ -35,7 +36,7 @@ export class DocumentsController {
   ) {}
 
   @Post('upload')
-  @UseInterceptors(FileInterceptor('file'))
+  @UseInterceptors(DocumentUploadInterceptor)
   async upload(
     @CurrentUser() user: AuthenticatedUser,
     @UploadedFile() file: Express.Multer.File,

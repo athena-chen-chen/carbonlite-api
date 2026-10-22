@@ -1,3 +1,4 @@
+export type FactorAccessScope = { organizationId: string } | { platform: true };
 import { isInventoryFactorEligible, snapshotFactorProvenance, FactorProvenanceSnapshot } from './factor-governance';
 import {
   BadRequestException,
@@ -13,7 +14,7 @@ import { ConversionFactorQueryDto } from './dto/conversion-factor-query.dto';
 import { CreateFactorVersionDto } from './dto/create-factor-version.dto';
 import { UpdateFactorVersionDraftDto } from './dto/update-factor-version-draft.dto';
 import { AuditLogService } from '../audit-log/audit-log.service';
-import { ActivityTrackingService } from '../activity-tracking/activity-tracking.service';
+import { ActivityTrackingService, trackOptionalActivity } from '../activity-tracking/activity-tracking.service';
 import {
   normalizeJurisdictionCountry,
   normalizeJurisdictionRegion,
@@ -102,52 +103,55 @@ export class ConversionFactorsService {
   ) {}
 
   async verifyFactor(id: string, input: FactorReviewInput) {
-    const reviewedAt = input.reviewedAt ?? new Date();
-    const existing = await this.findGovernedFactorVersion(id);
-    this.validateProductionReadiness(existing, {
-      ...input,
-      reviewedAt,
-      status: 'VERIFIED',
-    });
-
-    await this.deprecatePreviousProductionVersions(existing);
-
-    const updated = await this.prisma.factorVersion.update({
-      where: { id },
-      data: {
-        verified: true,
+    return this.prisma.$transaction(async tx => {
+      const reviewedAt = input.reviewedAt ?? new Date();
+      const existing = await this.findGovernedFactorVersion(id);
+      this.validateProductionReadiness(existing, {
+        ...input,
+        reviewedAt,
         status: 'VERIFIED',
-        reviewedBy: input.reviewedBy,
-        reviewedAt,
-        reviewNotes: input.reviewNotes ?? null,
-        approvalSource: input.approvalSource ?? existing.source.sourceAuthority,
-      },
-      include: { factor: true, source: true },
-    });
+      });
 
-    await this.prisma.factorReviewLog.create({
-      data: {
+      await this.deprecatePreviousProductionVersions(existing, tx);
+
+      const updated = await tx.factorVersion.update({
+        where: { id },
+        data: {
+          verified: true,
+          status: 'VERIFIED',
+          reviewedBy: input.reviewedBy,
+          reviewedAt,
+          reviewNotes: input.reviewNotes ?? null,
+          approvalSource: input.approvalSource ?? existing.source.sourceAuthority,
+        },
+        include: { factor: true, source: true },
+      });
+
+      await tx.factorReviewLog.create({
+        data: {
+          factorVersionId: id,
+          reviewedBy: input.reviewedBy,
+          reviewStatus: 'APPROVED',
+          reviewNotes: input.reviewNotes ?? null,
+          reviewedAt,
+        },
+      });
+
+      await this.logFactorVersionChange({
+        factorId: existing.factorId,
         factorVersionId: id,
-        reviewedBy: input.reviewedBy,
-        reviewStatus: 'APPROVED',
-        reviewNotes: input.reviewNotes ?? null,
-        reviewedAt,
-      },
-    });
+        action: 'VERSION_VERIFIED',
+        oldFactorVersionId: existing.id,
+        newFactorVersionId: updated.id,
+        oldValue: existing,
+        newValue: updated,
+        reason: input.reviewNotes,
+        changedBy: input.reviewedBy,
+      }, tx);
 
-    await this.logFactorVersionChange({
-      factorId: existing.factorId,
-      factorVersionId: id,
-      action: 'VERSION_VERIFIED',
-      oldFactorVersionId: existing.id,
-      newFactorVersionId: updated.id,
-      oldValue: existing,
-      newValue: updated,
-      reason: input.reviewNotes,
-      changedBy: input.reviewedBy,
-    });
+      return updated;
 
-    return updated;
+    });
   }
 
   async approveFactor(id: string, input: FactorReviewInput) {
@@ -155,67 +159,73 @@ export class ConversionFactorsService {
   }
 
   async deprecateFactor(id: string, reason?: string, changedBy?: string) {
-    const existing = await this.findGovernedFactorVersion(id);
-    const updated = await this.prisma.factorVersion.update({
-      where: { id },
-      data: { status: 'DEPRECATED' },
-      include: { factor: true, source: true },
-    });
+    return this.prisma.$transaction(async tx => {
+      const existing = await this.findGovernedFactorVersion(id);
+      const updated = await tx.factorVersion.update({
+        where: { id },
+        data: { status: 'DEPRECATED' },
+        include: { factor: true, source: true },
+      });
 
-    await this.logFactorVersionChange({
-      factorId: existing.factorId,
-      factorVersionId: id,
-      action: 'VERSION_DEPRECATED',
-      oldFactorVersionId: existing.id,
-      newFactorVersionId: updated.id,
-      oldValue: existing,
-      newValue: updated,
-      reason,
-      changedBy,
-    });
+      await this.logFactorVersionChange({
+        factorId: existing.factorId,
+        factorVersionId: id,
+        action: 'VERSION_DEPRECATED',
+        oldFactorVersionId: existing.id,
+        newFactorVersionId: updated.id,
+        oldValue: existing,
+        newValue: updated,
+        reason,
+        changedBy,
+      }, tx);
 
-    return updated;
+      return updated;
+
+    });
   }
 
   async archiveFactor(id: string, reason?: string, changedBy?: string) {
-    const existing = await this.findGovernedFactorVersion(id);
-    const replacement = await this.prisma.factorVersion.findFirst({
-      where: {
-        id: { not: id },
+    return this.prisma.$transaction(async tx => {
+      const existing = await this.findGovernedFactorVersion(id);
+      const replacement = await tx.factorVersion.findFirst({
+        where: {
+          id: { not: id },
+          factorId: existing.factorId,
+          inputUnit: existing.inputUnit,
+          jurisdictionCountry: existing.jurisdictionCountry,
+          jurisdictionRegion: existing.jurisdictionRegion,
+          factorYear: existing.factorYear,
+          status: { in: ['OFFICIAL', 'VERIFIED'] },
+        },
+      });
+
+      if (!replacement && ['OFFICIAL', 'VERIFIED'].includes(existing.status)) {
+        throw new BadRequestException(
+          'Cannot archive the latest active factor version unless another active version replaces it.',
+        );
+      }
+
+      const updated = await tx.factorVersion.update({
+        where: { id },
+        data: { status: 'ARCHIVED' },
+        include: { factor: true, source: true },
+      });
+
+      await this.logFactorVersionChange({
         factorId: existing.factorId,
-        inputUnit: existing.inputUnit,
-        jurisdictionCountry: existing.jurisdictionCountry,
-        jurisdictionRegion: existing.jurisdictionRegion,
-        factorYear: existing.factorYear,
-        status: { in: ['OFFICIAL', 'VERIFIED'] },
-      },
+        factorVersionId: id,
+        action: 'VERSION_ARCHIVED',
+        oldFactorVersionId: existing.id,
+        newFactorVersionId: updated.id,
+        oldValue: existing,
+        newValue: updated,
+        reason,
+        changedBy,
+      }, tx);
+
+      return updated;
+
     });
-
-    if (!replacement && ['OFFICIAL', 'VERIFIED'].includes(existing.status)) {
-      throw new BadRequestException(
-        'Cannot archive the latest active factor version unless another active version replaces it.',
-      );
-    }
-
-    const updated = await this.prisma.factorVersion.update({
-      where: { id },
-      data: { status: 'ARCHIVED' },
-      include: { factor: true, source: true },
-    });
-
-    await this.logFactorVersionChange({
-      factorId: existing.factorId,
-      factorVersionId: id,
-      action: 'VERSION_ARCHIVED',
-      oldFactorVersionId: existing.id,
-      newFactorVersionId: updated.id,
-      oldValue: existing,
-      newValue: updated,
-      reason,
-      changedBy,
-    });
-
-    return updated;
   }
 
   async isProductionReady(id: string) {
@@ -255,11 +265,11 @@ export class ConversionFactorsService {
     return this.toFactorVersionDto(version);
   }
 
-  async getFactorVersionUsage(id: string) {
+  async getFactorVersionUsage(id: string, scope: FactorAccessScope) {
     await this.findGovernedFactorVersion(id);
 
     const metricResults = await this.prisma.metricResult.findMany({
-      where: { factorVersionId: id },
+      where: { factorVersionId: id, ...('organizationId' in scope ? { organizationId: scope.organizationId } : {}) },
       select: {
         id: true,
         organizationId: true,
@@ -284,11 +294,11 @@ export class ConversionFactorsService {
     };
   }
 
-  async getFactorHistory(factorId: string) {
+  async getFactorHistory(factorId: string, scope: FactorAccessScope) {
     await this.ensureFactorExists(factorId);
 
     const logs = await this.prisma.factorChangeLog.findMany({
-      where: { factorId },
+      where: { factorId, ...('organizationId' in scope ? { changedByUser: { organizationId: scope.organizationId } } : {}) },
       include: {
         factorVersion: true,
         oldFactorVersion: true,
@@ -309,73 +319,76 @@ export class ConversionFactorsService {
     reason?: string,
     changedBy?: string,
   ) {
-    const factor = await this.ensureFactorExists(factorId);
-    const previous = await this.prisma.factorVersion.findFirst({
-      where: { factorId },
-      include: { factor: true, source: true },
-      orderBy: [{ factorYear: 'desc' }, { createdAt: 'desc' }],
-    });
+    return this.prisma.$transaction(async tx => {
+      const factor = await this.ensureFactorExists(factorId);
+      const previous = await tx.factorVersion.findFirst({
+        where: { factorId },
+        include: { factor: true, source: true },
+        orderBy: [{ factorYear: 'desc' }, { createdAt: 'desc' }],
+      });
 
-    if (!previous && (!data.factorValue || !data.inputUnit || !data.resultUnit || !data.sourceId)) {
-      throw new BadRequestException(
-        'factorValue, inputUnit, resultUnit, and sourceId are required for the first factor version.',
-      );
-    }
+      if (!previous && (!data.factorValue || !data.inputUnit || !data.resultUnit || !data.sourceId)) {
+        throw new BadRequestException(
+          'factorValue, inputUnit, resultUnit, and sourceId are required for the first factor version.',
+        );
+      }
 
-    const sourceId = data.sourceId ?? previous?.sourceId;
-    if (!sourceId) {
-      throw new BadRequestException('Source is required for a factor version.');
-    }
-    await this.ensureSourceExists(sourceId);
+      const sourceId = data.sourceId ?? previous?.sourceId;
+      if (!sourceId) {
+        throw new BadRequestException('Source is required for a factor version.');
+      }
+      await this.ensureSourceExists(sourceId);
 
-    const factorYear = data.factorYear ?? previous?.factorYear ?? null;
-    const nextVersion = data.version ?? (await this.nextVersionLabel(factorId, factorYear));
+      const factorYear = data.factorYear ?? previous?.factorYear ?? null;
+      const nextVersion = data.version ?? (await this.nextVersionLabel(factorId, factorYear));
 
-    const created = await this.prisma.factorVersion.create({
-      data: {
+      const created = await tx.factorVersion.create({
+        data: {
+          factorId,
+          version: nextVersion,
+          factorValue: new Prisma.Decimal(data.factorValue ?? Number(previous?.factorValue)),
+          inputUnit: data.inputUnit ?? previous?.inputUnit ?? '',
+          resultUnit: data.resultUnit ?? previous?.resultUnit ?? '',
+          jurisdictionCountry: data.jurisdictionCountry ?? previous?.jurisdictionCountry ?? null,
+          jurisdictionRegion: data.jurisdictionRegion ?? previous?.jurisdictionRegion ?? null,
+          factorYear,
+          effectiveFrom: parseOptionalDate(data.effectiveFrom) ?? previous?.effectiveFrom ?? null,
+          effectiveTo: parseOptionalDate(data.effectiveTo) ?? previous?.effectiveTo ?? null,
+          status: 'DRAFT',
+          confidenceLevel: data.confidenceLevel ?? previous?.confidenceLevel ?? 'DEMO',
+          methodology: data.methodology ?? previous?.methodology ?? null,
+          applicability: data.applicability ?? previous?.applicability ?? null,
+          emissionBasis: data.emissionBasis ?? previous?.emissionBasis ?? null,
+          methodologyProvenance: (data.methodologyProvenance ?? previous?.methodologyProvenance ?? Prisma.DbNull) as Prisma.InputJsonValue,
+          verificationStatus: data.verificationStatus ?? previous?.verificationStatus ?? null,
+          verified: false,
+          sourceId,
+          sourcePage: data.sourcePage ?? previous?.sourcePage ?? null,
+          sourceTable: data.sourceTable ?? previous?.sourceTable ?? null,
+          sourceSection: data.sourceSection ?? previous?.sourceSection ?? null,
+          sourceRow: data.sourceRow ?? previous?.sourceRow ?? null,
+          sourceColumn: data.sourceColumn ?? previous?.sourceColumn ?? null,
+          citationText: data.citationText ?? previous?.citationText ?? null,
+          notes: data.notes ?? previous?.notes ?? null,
+        },
+        include: { factor: true, source: true },
+      });
+
+      await this.logFactorVersionChange({
         factorId,
-        version: nextVersion,
-        factorValue: new Prisma.Decimal(data.factorValue ?? Number(previous?.factorValue)),
-        inputUnit: data.inputUnit ?? previous?.inputUnit ?? '',
-        resultUnit: data.resultUnit ?? previous?.resultUnit ?? '',
-        jurisdictionCountry: data.jurisdictionCountry ?? previous?.jurisdictionCountry ?? null,
-        jurisdictionRegion: data.jurisdictionRegion ?? previous?.jurisdictionRegion ?? null,
-        factorYear,
-        effectiveFrom: parseOptionalDate(data.effectiveFrom) ?? previous?.effectiveFrom ?? null,
-        effectiveTo: parseOptionalDate(data.effectiveTo) ?? previous?.effectiveTo ?? null,
-        status: 'DRAFT',
-        confidenceLevel: data.confidenceLevel ?? previous?.confidenceLevel ?? 'DEMO',
-        methodology: data.methodology ?? previous?.methodology ?? null,
-        applicability: data.applicability ?? previous?.applicability ?? null,
-        emissionBasis: data.emissionBasis ?? previous?.emissionBasis ?? null,
-        methodologyProvenance: (data.methodologyProvenance ?? previous?.methodologyProvenance ?? Prisma.DbNull) as Prisma.InputJsonValue,
-        verificationStatus: data.verificationStatus ?? previous?.verificationStatus ?? null,
-        verified: false,
-        sourceId,
-        sourcePage: data.sourcePage ?? previous?.sourcePage ?? null,
-        sourceTable: data.sourceTable ?? previous?.sourceTable ?? null,
-        sourceSection: data.sourceSection ?? previous?.sourceSection ?? null,
-        sourceRow: data.sourceRow ?? previous?.sourceRow ?? null,
-        sourceColumn: data.sourceColumn ?? previous?.sourceColumn ?? null,
-        citationText: data.citationText ?? previous?.citationText ?? null,
-        notes: data.notes ?? previous?.notes ?? null,
-      },
-      include: { factor: true, source: true },
-    });
+        factorVersionId: created.id,
+        oldFactorVersionId: previous?.id,
+        newFactorVersionId: created.id,
+        action: inferVersionCreateAction(previous, created),
+        oldValue: previous,
+        newValue: created,
+        reason,
+        changedBy,
+      }, tx);
 
-    await this.logFactorVersionChange({
-      factorId,
-      factorVersionId: created.id,
-      oldFactorVersionId: previous?.id,
-      newFactorVersionId: created.id,
-      action: inferVersionCreateAction(previous, created),
-      oldValue: previous,
-      newValue: created,
-      reason,
-      changedBy,
-    });
+      return this.toFactorVersionDto(created, factor.displayName);
 
-    return this.toFactorVersionDto(created, factor.displayName);
+    });
   }
 
   async updateDraftFactorVersion(
@@ -384,56 +397,59 @@ export class ConversionFactorsService {
     reason?: string,
     changedBy?: string,
   ) {
-    const existing = await this.findGovernedFactorVersion(id);
-    this.ensureDraftEditable(existing);
+    return this.prisma.$transaction(async tx => {
+      const existing = await this.findGovernedFactorVersion(id);
+      this.ensureDraftEditable(existing);
 
-    if (dto.sourceId !== undefined) {
-      await this.ensureSourceExists(dto.sourceId);
-    }
+      if (dto.sourceId !== undefined) {
+        await this.ensureSourceExists(dto.sourceId);
+      }
 
-    const updated = await this.prisma.factorVersion.update({
-      where: { id },
-      data: {
-        ...(dto.version !== undefined ? { version: dto.version } : {}),
-        ...(dto.factorValue !== undefined ? { factorValue: new Prisma.Decimal(dto.factorValue) } : {}),
-        ...(dto.inputUnit !== undefined ? { inputUnit: dto.inputUnit } : {}),
-        ...(dto.resultUnit !== undefined ? { resultUnit: dto.resultUnit } : {}),
-        ...(dto.applicability !== undefined ? { applicability: dto.applicability } : {}),
-        ...(dto.emissionBasis !== undefined ? { emissionBasis: dto.emissionBasis } : {}),
-        ...(dto.methodologyProvenance !== undefined ? { methodologyProvenance: (dto.methodologyProvenance ?? Prisma.DbNull) as Prisma.InputJsonValue } : {}),
-        ...(dto.jurisdictionCountry !== undefined ? { jurisdictionCountry: dto.jurisdictionCountry || null } : {}),
-        ...(dto.jurisdictionRegion !== undefined ? { jurisdictionRegion: dto.jurisdictionRegion || null } : {}),
-        ...(dto.factorYear !== undefined ? { factorYear: dto.factorYear ?? null } : {}),
-        ...(dto.effectiveFrom !== undefined ? { effectiveFrom: parseOptionalDate(dto.effectiveFrom) } : {}),
-        ...(dto.effectiveTo !== undefined ? { effectiveTo: parseOptionalDate(dto.effectiveTo) } : {}),
-        ...(dto.confidenceLevel !== undefined ? { confidenceLevel: dto.confidenceLevel } : {}),
-        ...(dto.methodology !== undefined ? { methodology: dto.methodology || null } : {}),
-        ...(dto.verificationStatus !== undefined ? { verificationStatus: dto.verificationStatus || null } : {}),
-        ...(dto.sourceId !== undefined ? { sourceId: dto.sourceId } : {}),
-        ...(dto.sourcePage !== undefined ? { sourcePage: dto.sourcePage || null } : {}),
-        ...(dto.sourceTable !== undefined ? { sourceTable: dto.sourceTable || null } : {}),
-        ...(dto.sourceSection !== undefined ? { sourceSection: dto.sourceSection || null } : {}),
-        ...(dto.sourceRow !== undefined ? { sourceRow: dto.sourceRow || null } : {}),
-        ...(dto.sourceColumn !== undefined ? { sourceColumn: dto.sourceColumn || null } : {}),
-        ...(dto.citationText !== undefined ? { citationText: dto.citationText || null } : {}),
-        ...(dto.notes !== undefined ? { notes: dto.notes || null } : {}),
-      },
-      include: { factor: true, source: true },
+      const updated = await tx.factorVersion.update({
+        where: { id },
+        data: {
+          ...(dto.version !== undefined ? { version: dto.version } : {}),
+          ...(dto.factorValue !== undefined ? { factorValue: new Prisma.Decimal(dto.factorValue) } : {}),
+          ...(dto.inputUnit !== undefined ? { inputUnit: dto.inputUnit } : {}),
+          ...(dto.resultUnit !== undefined ? { resultUnit: dto.resultUnit } : {}),
+          ...(dto.applicability !== undefined ? { applicability: dto.applicability } : {}),
+          ...(dto.emissionBasis !== undefined ? { emissionBasis: dto.emissionBasis } : {}),
+          ...(dto.methodologyProvenance !== undefined ? { methodologyProvenance: (dto.methodologyProvenance ?? Prisma.DbNull) as Prisma.InputJsonValue } : {}),
+          ...(dto.jurisdictionCountry !== undefined ? { jurisdictionCountry: dto.jurisdictionCountry || null } : {}),
+          ...(dto.jurisdictionRegion !== undefined ? { jurisdictionRegion: dto.jurisdictionRegion || null } : {}),
+          ...(dto.factorYear !== undefined ? { factorYear: dto.factorYear ?? null } : {}),
+          ...(dto.effectiveFrom !== undefined ? { effectiveFrom: parseOptionalDate(dto.effectiveFrom) } : {}),
+          ...(dto.effectiveTo !== undefined ? { effectiveTo: parseOptionalDate(dto.effectiveTo) } : {}),
+          ...(dto.confidenceLevel !== undefined ? { confidenceLevel: dto.confidenceLevel } : {}),
+          ...(dto.methodology !== undefined ? { methodology: dto.methodology || null } : {}),
+          ...(dto.verificationStatus !== undefined ? { verificationStatus: dto.verificationStatus || null } : {}),
+          ...(dto.sourceId !== undefined ? { sourceId: dto.sourceId } : {}),
+          ...(dto.sourcePage !== undefined ? { sourcePage: dto.sourcePage || null } : {}),
+          ...(dto.sourceTable !== undefined ? { sourceTable: dto.sourceTable || null } : {}),
+          ...(dto.sourceSection !== undefined ? { sourceSection: dto.sourceSection || null } : {}),
+          ...(dto.sourceRow !== undefined ? { sourceRow: dto.sourceRow || null } : {}),
+          ...(dto.sourceColumn !== undefined ? { sourceColumn: dto.sourceColumn || null } : {}),
+          ...(dto.citationText !== undefined ? { citationText: dto.citationText || null } : {}),
+          ...(dto.notes !== undefined ? { notes: dto.notes || null } : {}),
+        },
+        include: { factor: true, source: true },
+      });
+
+      await this.logFactorVersionChange({
+        factorId: existing.factorId,
+        factorVersionId: id,
+        oldFactorVersionId: existing.id,
+        newFactorVersionId: updated.id,
+        action: inferDraftUpdateAction(existing, updated),
+        oldValue: existing,
+        newValue: updated,
+        reason,
+        changedBy,
+      }, tx);
+
+      return this.toFactorVersionDto(updated);
+
     });
-
-    await this.logFactorVersionChange({
-      factorId: existing.factorId,
-      factorVersionId: id,
-      oldFactorVersionId: existing.id,
-      newFactorVersionId: updated.id,
-      action: inferDraftUpdateAction(existing, updated),
-      oldValue: existing,
-      newValue: updated,
-      reason,
-      changedBy,
-    });
-
-    return this.toFactorVersionDto(updated);
   }
 
   async getApplicableFactor(input: ApplicableFactorInput): Promise<ApplicableFactor> {
@@ -660,52 +676,55 @@ export class ConversionFactorsService {
   async create(organizationId: string, dto: CreateConversionFactorDto, userId?: string) {
     this.validateDateRange(dto.effectiveFrom, dto.effectiveTo);
 
-    const created = await this.prisma.conversionFactor.create({
-      data: {
+    const created = await this.prisma.$transaction(async tx => {
+      const created = await tx.conversionFactor.create({
+        data: {
+          organizationId,
+          isSystemDefault: false,
+          name: dto.name,
+          type: dto.type as FactorType,
+          activityType: dto.activityType
+            ? (dto.activityType as ActivityType)
+            : null,
+          jurisdiction: dto.jurisdiction ?? null,
+          region: dto.region ?? null,
+          country: dto.country ?? null,
+          unit: dto.unit,
+          factorValue: new Prisma.Decimal(dto.factorValue),
+          resultUnit: dto.resultUnit,
+          sourceName: dto.sourceName ?? null,
+          sourceReference: dto.sourceReference ?? null,
+          sourceAuthority: dto.sourceAuthority ?? null,
+          sourceDocument: dto.sourceDocument ?? null,
+          sourceYear: dto.sourceYear ?? null,
+          sourceUrl: dto.sourceUrl ?? null,
+          methodology: dto.methodology ?? null,
+          applicability: dto.applicability ?? null,
+          emissionBasis: dto.emissionBasis ?? null,
+          methodologyProvenance: (dto.methodologyProvenance ?? Prisma.DbNull) as Prisma.InputJsonValue,
+          confidenceLevel: dto.confidenceLevel ?? null,
+          verificationStatus: dto.verificationStatus ?? null,
+          verified: dto.verified ?? false,
+          notes: dto.notes ?? null,
+          effectiveFrom: dto.effectiveFrom ? new Date(dto.effectiveFrom) : null,
+          effectiveTo: dto.effectiveTo ? new Date(dto.effectiveTo) : null,
+          isDefault: dto.isDefault ?? false,
+        },
+      });
+
+      await this.auditLog.log({
         organizationId,
-        isSystemDefault: false,
-        name: dto.name,
-        type: dto.type as FactorType,
-        activityType: dto.activityType
-          ? (dto.activityType as ActivityType)
-          : null,
-        jurisdiction: dto.jurisdiction ?? null,
-        region: dto.region ?? null,
-        country: dto.country ?? null,
-        unit: dto.unit,
-        factorValue: new Prisma.Decimal(dto.factorValue),
-        resultUnit: dto.resultUnit,
-        sourceName: dto.sourceName ?? null,
-        sourceReference: dto.sourceReference ?? null,
-        sourceAuthority: dto.sourceAuthority ?? null,
-        sourceDocument: dto.sourceDocument ?? null,
-        sourceYear: dto.sourceYear ?? null,
-        sourceUrl: dto.sourceUrl ?? null,
-        methodology: dto.methodology ?? null,
-        applicability: dto.applicability ?? null,
-        emissionBasis: dto.emissionBasis ?? null,
-        methodologyProvenance: (dto.methodologyProvenance ?? Prisma.DbNull) as Prisma.InputJsonValue,
-        confidenceLevel: dto.confidenceLevel ?? null,
-        verificationStatus: dto.verificationStatus ?? null,
-        verified: dto.verified ?? false,
-        notes: dto.notes ?? null,
-        effectiveFrom: dto.effectiveFrom ? new Date(dto.effectiveFrom) : null,
-        effectiveTo: dto.effectiveTo ? new Date(dto.effectiveTo) : null,
-        isDefault: dto.isDefault ?? false,
-      },
+        userId,
+        action: 'CREATE_CONVERSION_FACTOR',
+        entityType: 'ConversionFactor',
+        entityId: created.id,
+        description: `Created conversion factor ${created.name}`,
+        newValue: created,
+      }, tx);
+      return created;
     });
 
-    await this.auditLog.log({
-      organizationId,
-      userId,
-      action: 'CREATE_CONVERSION_FACTOR',
-      entityType: 'ConversionFactor',
-      entityId: created.id,
-      description: `Created conversion factor ${created.name}`,
-      newValue: created,
-    });
-
-    await this.activityTracking.track({
+    await trackOptionalActivity(this.activityTracking, {
       organizationId,
       userId,
       eventName: 'CONVERSION_FACTOR_CREATED',
@@ -824,89 +843,92 @@ export class ConversionFactorsService {
     const existing = await this.ensureEditable(organizationId, id);
     this.validateDateRange(dto.effectiveFrom, dto.effectiveTo);
 
-    const updated = await this.prisma.conversionFactor.update({
-      where: { id },
-      data: {
-        ...(dto.name !== undefined ? { name: dto.name } : {}),
-        ...(dto.type !== undefined ? { type: dto.type as FactorType } : {}),
-        ...(dto.activityType !== undefined
-          ? {
+    const updated = await this.prisma.$transaction(async tx => {
+      const updated = await tx.conversionFactor.update({
+        where: { id },
+        data: {
+          ...(dto.name !== undefined ? { name: dto.name } : {}),
+          ...(dto.type !== undefined ? { type: dto.type as FactorType } : {}),
+          ...(dto.activityType !== undefined
+            ? {
               activityType: dto.activityType
                 ? (dto.activityType as ActivityType)
                 : null,
             }
-          : {}),
-        ...(dto.jurisdiction !== undefined
-          ? { jurisdiction: dto.jurisdiction || null }
-          : {}),
-        ...(dto.region !== undefined ? { region: dto.region || null } : {}),
-        ...(dto.country !== undefined ? { country: dto.country || null } : {}),
-        ...(dto.unit !== undefined ? { unit: dto.unit } : {}),
-        ...(dto.factorValue !== undefined
-          ? { factorValue: new Prisma.Decimal(dto.factorValue) }
-          : {}),
-        ...(dto.resultUnit !== undefined ? { resultUnit: dto.resultUnit } : {}),
-        ...(dto.applicability !== undefined ? { applicability: dto.applicability } : {}),
-        ...(dto.emissionBasis !== undefined ? { emissionBasis: dto.emissionBasis } : {}),
-        ...(dto.methodologyProvenance !== undefined ? { methodologyProvenance: (dto.methodologyProvenance ?? Prisma.DbNull) as Prisma.InputJsonValue } : {}),
-        ...(dto.sourceName !== undefined
-          ? { sourceName: dto.sourceName || null }
-          : {}),
-        ...(dto.sourceReference !== undefined
-          ? { sourceReference: dto.sourceReference || null }
-          : {}),
-        ...(dto.sourceAuthority !== undefined
-          ? { sourceAuthority: dto.sourceAuthority || null }
-          : {}),
-        ...(dto.sourceDocument !== undefined
-          ? { sourceDocument: dto.sourceDocument || null }
-          : {}),
-        ...(dto.sourceYear !== undefined
-          ? { sourceYear: dto.sourceYear ?? null }
-          : {}),
-        ...(dto.sourceUrl !== undefined
-          ? { sourceUrl: dto.sourceUrl || null }
-          : {}),
-        ...(dto.methodology !== undefined
-          ? { methodology: dto.methodology || null }
-          : {}),
-        ...(dto.confidenceLevel !== undefined
-          ? { confidenceLevel: dto.confidenceLevel || null }
-          : {}),
-        ...(dto.verificationStatus !== undefined
-          ? { verificationStatus: dto.verificationStatus || null }
-          : {}),
-        ...(dto.verified !== undefined ? { verified: dto.verified } : {}),
-        ...(dto.notes !== undefined ? { notes: dto.notes || null } : {}),
-        ...(dto.effectiveFrom !== undefined
-          ? {
+            : {}),
+          ...(dto.jurisdiction !== undefined
+            ? { jurisdiction: dto.jurisdiction || null }
+            : {}),
+          ...(dto.region !== undefined ? { region: dto.region || null } : {}),
+          ...(dto.country !== undefined ? { country: dto.country || null } : {}),
+          ...(dto.unit !== undefined ? { unit: dto.unit } : {}),
+          ...(dto.factorValue !== undefined
+            ? { factorValue: new Prisma.Decimal(dto.factorValue) }
+            : {}),
+          ...(dto.resultUnit !== undefined ? { resultUnit: dto.resultUnit } : {}),
+          ...(dto.applicability !== undefined ? { applicability: dto.applicability } : {}),
+          ...(dto.emissionBasis !== undefined ? { emissionBasis: dto.emissionBasis } : {}),
+          ...(dto.methodologyProvenance !== undefined ? { methodologyProvenance: (dto.methodologyProvenance ?? Prisma.DbNull) as Prisma.InputJsonValue } : {}),
+          ...(dto.sourceName !== undefined
+            ? { sourceName: dto.sourceName || null }
+            : {}),
+          ...(dto.sourceReference !== undefined
+            ? { sourceReference: dto.sourceReference || null }
+            : {}),
+          ...(dto.sourceAuthority !== undefined
+            ? { sourceAuthority: dto.sourceAuthority || null }
+            : {}),
+          ...(dto.sourceDocument !== undefined
+            ? { sourceDocument: dto.sourceDocument || null }
+            : {}),
+          ...(dto.sourceYear !== undefined
+            ? { sourceYear: dto.sourceYear ?? null }
+            : {}),
+          ...(dto.sourceUrl !== undefined
+            ? { sourceUrl: dto.sourceUrl || null }
+            : {}),
+          ...(dto.methodology !== undefined
+            ? { methodology: dto.methodology || null }
+            : {}),
+          ...(dto.confidenceLevel !== undefined
+            ? { confidenceLevel: dto.confidenceLevel || null }
+            : {}),
+          ...(dto.verificationStatus !== undefined
+            ? { verificationStatus: dto.verificationStatus || null }
+            : {}),
+          ...(dto.verified !== undefined ? { verified: dto.verified } : {}),
+          ...(dto.notes !== undefined ? { notes: dto.notes || null } : {}),
+          ...(dto.effectiveFrom !== undefined
+            ? {
               effectiveFrom: dto.effectiveFrom
                 ? new Date(dto.effectiveFrom)
                 : null,
             }
-          : {}),
-        ...(dto.effectiveTo !== undefined
-          ? {
+            : {}),
+          ...(dto.effectiveTo !== undefined
+            ? {
               effectiveTo: dto.effectiveTo ? new Date(dto.effectiveTo) : null,
             }
-          : {}),
-        ...(dto.isDefault !== undefined ? { isDefault: dto.isDefault } : {}),
-        isSystemDefault: false,
-      },
+            : {}),
+          ...(dto.isDefault !== undefined ? { isDefault: dto.isDefault } : {}),
+          isSystemDefault: false,
+        },
+      });
+
+      await this.auditLog.log({
+        organizationId,
+        userId,
+        action: 'UPDATE_CONVERSION_FACTOR',
+        entityType: 'ConversionFactor',
+        entityId: id,
+        description: `Updated conversion factor ${updated.name}`,
+        oldValue: existing,
+        newValue: updated,
+      }, tx);
+      return updated;
     });
 
-    await this.auditLog.log({
-      organizationId,
-      userId,
-      action: 'UPDATE_CONVERSION_FACTOR',
-      entityType: 'ConversionFactor',
-      entityId: id,
-      description: `Updated conversion factor ${updated.name}`,
-      oldValue: existing,
-      newValue: updated,
-    });
-
-    await this.activityTracking.track({
+    await trackOptionalActivity(this.activityTracking, {
       organizationId,
       userId,
       eventName: 'CONVERSION_FACTOR_UPDATED',
@@ -925,21 +947,23 @@ export class ConversionFactorsService {
   async remove(organizationId: string, id: string, userId?: string) {
     const existing = await this.ensureEditable(organizationId, id);
 
-    await this.prisma.conversionFactor.delete({
-      where: { id },
+    await this.prisma.$transaction(async tx => {
+      await tx.conversionFactor.delete({
+        where: { id },
+      });
+
+      await this.auditLog.log({
+        organizationId,
+        userId,
+        action: 'DELETE_CONVERSION_FACTOR',
+        entityType: 'ConversionFactor',
+        entityId: id,
+        description: `Deleted conversion factor ${existing.name}`,
+        oldValue: existing,
+      }, tx);
     });
 
-    await this.auditLog.log({
-      organizationId,
-      userId,
-      action: 'DELETE_CONVERSION_FACTOR',
-      entityType: 'ConversionFactor',
-      entityId: id,
-      description: `Deleted conversion factor ${existing.name}`,
-      oldValue: existing,
-    });
-
-    await this.activityTracking.track({
+    await trackOptionalActivity(this.activityTracking, {
       organizationId,
       userId,
       eventName: 'CONVERSION_FACTOR_DELETED',
@@ -1177,8 +1201,8 @@ export class ConversionFactorsService {
     }
   }
 
-  private async deprecatePreviousProductionVersions(version: NonNullable<FactorVersionWithGovernance>) {
-    const previousVersions = await this.prisma.factorVersion.findMany({
+  private async deprecatePreviousProductionVersions(version: NonNullable<FactorVersionWithGovernance>, client: Prisma.TransactionClient) {
+    const previousVersions = await client.factorVersion.findMany({
       where: {
         id: { not: version.id },
         factorId: version.factorId,
@@ -1192,7 +1216,7 @@ export class ConversionFactorsService {
     });
 
     for (const previous of previousVersions) {
-      const deprecated = await this.prisma.factorVersion.update({
+      const deprecated = await client.factorVersion.update({
         where: { id: previous.id },
         data: { status: 'DEPRECATED' },
         include: { factor: true, source: true },
@@ -1208,7 +1232,7 @@ export class ConversionFactorsService {
         newValue: deprecated,
         reason: `Replaced by factor version ${version.version}`,
         changedBy: version.reviewedBy ?? undefined,
-      });
+      }, client);
     }
   }
 
@@ -1222,8 +1246,8 @@ export class ConversionFactorsService {
     newValue?: unknown;
     reason?: string;
     changedBy?: string;
-  }) {
-    await this.prisma.factorChangeLog.create({
+  }, client: Prisma.TransactionClient = this.prisma) {
+    await client.factorChangeLog.create({
       data: {
         factorId: input.factorId,
         factorVersionId: input.factorVersionId,
@@ -1263,7 +1287,6 @@ export class ConversionFactorsService {
   }
 }
 
-
 function parseOptionalDate(value?: string | null) {
   if (!value) return null;
   const date = new Date(value);
@@ -1286,7 +1309,6 @@ function inferDraftUpdateAction(previous: { factorValue: Prisma.Decimal; sourceI
   if (String(previous.factorValue) !== String(updated.factorValue)) return 'VALUE_CHANGED';
   return 'STATUS_CHANGED';
 }
-
 
 const OFFICIAL_SOURCE_AUTHORITIES = [
   'environment and climate change canada',

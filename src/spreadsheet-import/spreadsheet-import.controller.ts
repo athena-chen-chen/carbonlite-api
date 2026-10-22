@@ -1,3 +1,4 @@
+import { WorkspaceMutationGuard } from '../auth/guards/workspace-mutation.guard';
 import { Body, Controller, Get, Inject, Post, Query, UseGuards } from '@nestjs/common';
 import { AuthenticatedUser } from '../auth/auth.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
@@ -7,7 +8,7 @@ import { SaveSpreadsheetReviewRowsDto } from './dto/save-spreadsheet-review-rows
 import { SpreadsheetReviewRowQueryDto } from './dto/spreadsheet-review-row-query.dto';
 import { SpreadsheetImportService } from './spreadsheet-import.service';
 
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, WorkspaceMutationGuard)
 @Controller('spreadsheet-import')
 export class SpreadsheetImportController {
   constructor(

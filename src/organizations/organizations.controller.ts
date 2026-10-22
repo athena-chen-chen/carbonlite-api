@@ -1,3 +1,4 @@
+import { WorkspaceMutationGuard } from '../auth/guards/workspace-mutation.guard';
 import { Body, Controller, Get, Patch, UseGuards } from '@nestjs/common';
 import { AuthenticatedUser } from '../auth/auth.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
@@ -5,7 +6,7 @@ import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { UpdateOrganizationProfileDto } from './dto/update-organization-profile.dto';
 import { OrganizationsService } from './organizations.service';
 
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, WorkspaceMutationGuard)
 @Controller('organization-profile')
 export class OrganizationsController {
   constructor(private readonly organizationsService: OrganizationsService) {}

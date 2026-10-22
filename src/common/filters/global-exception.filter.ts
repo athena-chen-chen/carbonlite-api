@@ -1,3 +1,4 @@
+import { writeSafeError } from '../logging/safe-log';
 import {
   ArgumentsHost,
   Catch,
@@ -26,34 +27,28 @@ export class GlobalExceptionFilter implements ExceptionFilter {
         ? exception.getStatus()
         : HttpStatus.INTERNAL_SERVER_ERROR;
 
-    if (
-      status >= HttpStatus.INTERNAL_SERVER_ERROR &&
-      !wasAppErrorCaptured(exception)
-    ) {
-      captureAppError(exception, {
-        feature: 'api',
-        operation: 'unhandled-request',
-        userId: request.user?.id,
-        userEmail: request.user?.email,
-        organizationId: request.user?.organizationId,
-        metadata: {
-          route: request.originalUrl || request.url,
-          method: request.method,
-          statusCode: status,
-        },
-      });
-    }
+    try {
+      const route = typeof request.route?.path === 'string'
+        ? request.route.path.slice(0, 256) : '[UNMATCHED]';
+      if (status >= HttpStatus.INTERNAL_SERVER_ERROR && !wasAppErrorCaptured(exception)) {
+        captureAppError(exception, {
+          feature: 'api',
+          operation: 'unhandled-request',
+          userId: request.user?.id,
+          userEmail: request.user?.email,
+          organizationId: request.user?.organizationId,
+          metadata: { route, method: request.method, statusCode: status },
+        });
+      }
 
-    if (status >= HttpStatus.INTERNAL_SERVER_ERROR) {
-      this.logger.error(
-        [
-          `${request.method} ${request.originalUrl || request.url} failed with ${status}`,
-          getErrorMessage(exception),
-          `body=${JSON.stringify(sanitizeRequestBody(request.body))}`,
-        ].join(' '),
-        getErrorStack(exception),
-      );
-    }
+      if (status >= HttpStatus.INTERNAL_SERVER_ERROR) {
+        // Bodies, headers, query values and concrete route params are deliberately omitted.
+        writeSafeError(this.logger, 'unhandled-request', exception, {
+          method: request.method, route, statusCode: status,
+          organizationId: request.user?.organizationId, userId: request.user?.id,
+        });
+      }
+    } catch { /* Diagnostic failures must not mask the original HTTP response. */ }
 
     response.status(status).json({
       statusCode: status,
@@ -86,33 +81,4 @@ export class GlobalExceptionFilter implements ExceptionFilter {
           : 'Request failed',
     };
   }
-}
-
-function getErrorMessage(exception: unknown) {
-  if (exception instanceof Error) return exception.message;
-  return String(exception);
-}
-
-function getErrorStack(exception: unknown) {
-  return exception instanceof Error ? exception.stack : undefined;
-}
-
-function sanitizeRequestBody(value: unknown): unknown {
-  if (!value || typeof value !== 'object') return value;
-
-  const sensitiveKeys = new Set([
-    'password',
-    'passwordHash',
-    'token',
-    'accessToken',
-    'refreshToken',
-    'authorization',
-  ]);
-
-  return Object.fromEntries(
-    Object.entries(value as Record<string, unknown>).map(([key, fieldValue]) => [
-      key,
-      sensitiveKeys.has(key.toLowerCase()) ? '[REDACTED]' : fieldValue,
-    ]),
-  );
 }

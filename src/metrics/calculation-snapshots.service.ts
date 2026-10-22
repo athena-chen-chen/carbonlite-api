@@ -58,11 +58,22 @@ export class CalculationSnapshotsService {
 
   async recalculate(client: Prisma.TransactionClient, row: any, actorUserId?: string) {
     const fields = await this.fields(client, row, actorUserId, (row.calculationVersion ?? 0) + 1);
+    // Legacy metrics may be the only historical calculation evidence. Archive
+    // them before invalidating the current projection, just as we retain snapshots.
+    const previousMetrics = row.calculationSnapshot ? [] : await client.metricResult.findMany({
+      where: { organizationId: row.organizationId, activityDataId: row.id, metricType: 'CARBON_EMISSION' },
+    });
+    const previousCalculation = row.calculationSnapshot ?? { activityData: row, metricResults: previousMetrics };
     const updated = await client.activityData.update({ where: { id: row.id, organizationId: row.organizationId, calculationVersion: row.calculationVersion ?? 0 }, data: fields });
+    // This shares the caller's transaction with the state/snapshot transition.
+    // Explicit metric calculation recreates a projection only for a valid result.
+    await client.metricResult.deleteMany({ where: {
+      organizationId: row.organizationId, activityDataId: row.id, metricType: 'CARBON_EMISSION',
+    } });
     await client.auditLog.create({ data: { organizationId: row.organizationId, userId: actorUserId ?? null,
       action: 'RECALCULATE_ACTIVITY_RECORD', entityType: 'ActivityData', entityId: row.id,
       description: 'Explicit activity calculation; previous result retained in audit history.',
-      ...(row.calculationSnapshot ? { oldValue: json(row.calculationSnapshot) } : {}), newValue: json({ calculationSnapshot: updated.calculationSnapshot, status: updated.calculationStatus }) } });
+      oldValue: json(previousCalculation), newValue: json({ calculationSnapshot: updated.calculationSnapshot, status: updated.calculationStatus }) } });
     await client.userActivityEvent.create({ data: { organizationId: row.organizationId, userId: actorUserId ?? null,
       eventName: 'ACTIVITY_RECORD_RECALCULATED', entityType: 'ActivityData', entityId: row.id,
       metadata: { previousVersion: row.calculationVersion ?? 0, version: updated.calculationVersion } } });

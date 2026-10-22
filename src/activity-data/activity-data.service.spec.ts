@@ -12,7 +12,7 @@ const canonicalFields = {
   matchedFactorUnit: 'kgCO2e/kWh',
   matchedFactorVersion: 'v1.0',
   matchedFactorSourceAuthority: 'CarbonLite',
-  matchedFactorSourceDocument: 'CarbonLite MVP Default Factors v1.0',
+  matchedFactorSourceDocument: 'CarbonLite Default Factor Library v1.0',
   matchedFactorVerificationStatus: 'INTERNAL_REVIEW_REQUIRED',
   matchedFactorConfidenceLevel: 'LOW',
   matchedFactorAssumptions: 'Pilot default electricity factor.',

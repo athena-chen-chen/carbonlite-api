@@ -37,7 +37,8 @@ describe('new manual activity provenance at creation', () => {
     const { Prisma } = await import('@prisma/client');
     const storedAudits: Array<Record<string, any>> = [];
     const createdAt = new Date('2026-10-16T12:00:00.000Z');
-    const prisma = { activityData: { create: jest.fn(async ({ data }) => ({ ...data, id: 'new-manual', createdAt })) } };
+    const prisma = { $transaction: jest.fn(), activityData: { create: jest.fn(async ({ data }) => ({ ...data, id: 'new-manual', createdAt })) } };
+    prisma.$transaction.mockImplementation(callback => callback(prisma));
     const auditLog = { log: jest.fn(async (event) => {
       const persisted = JSON.parse(JSON.stringify(event));
       storedAudits.push({ ...persisted, id: 'new-audit', createdAt });

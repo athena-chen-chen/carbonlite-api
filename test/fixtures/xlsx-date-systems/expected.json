@@ -1,0 +1,101 @@
+[
+  {
+    "activityType": "ELECTRICITY",
+    "recordDate": "2026-01-15",
+    "quantity": 980,
+    "unit": "kWh",
+    "jurisdictionCountry": "Canada",
+    "jurisdictionRegion": "Alberta",
+    "sourceReference": "modern",
+    "sourceSheetName": "Dates",
+    "sourceRow": 2
+  },
+  {
+    "activityType": "ELECTRICITY",
+    "recordDate": "2024-02-29",
+    "quantity": 980,
+    "unit": "kWh",
+    "jurisdictionCountry": "Canada",
+    "jurisdictionRegion": "Alberta",
+    "sourceReference": "leap-day",
+    "sourceSheetName": "Dates",
+    "sourceRow": 3
+  },
+  {
+    "activityType": "ELECTRICITY",
+    "recordDate": "2025-12-31",
+    "quantity": 980,
+    "unit": "kWh",
+    "jurisdictionCountry": "Canada",
+    "jurisdictionRegion": "Alberta",
+    "sourceReference": "year-end",
+    "sourceSheetName": "Dates",
+    "sourceRow": 4
+  },
+  {
+    "activityType": "ELECTRICITY",
+    "recordDate": "2026-01-01",
+    "quantity": 980,
+    "unit": "kWh",
+    "jurisdictionCountry": "Canada",
+    "jurisdictionRegion": "Alberta",
+    "sourceReference": "year-start",
+    "sourceSheetName": "Dates",
+    "sourceRow": 5
+  },
+  {
+    "activityType": "ELECTRICITY",
+    "recordDate": "2026-10-22",
+    "quantity": 980,
+    "unit": "kWh",
+    "jurisdictionCountry": "Canada",
+    "jurisdictionRegion": "Alberta",
+    "sourceReference": "october",
+    "sourceSheetName": "Dates",
+    "sourceRow": 6
+  },
+  {
+    "activityType": "ELECTRICITY",
+    "recordDate": "2026-10-22",
+    "quantity": 980,
+    "unit": "kWh",
+    "jurisdictionCountry": "Canada",
+    "jurisdictionRegion": "Alberta",
+    "sourceReference": "noon",
+    "sourceSheetName": "Dates",
+    "sourceRow": 7
+  },
+  {
+    "activityType": "ELECTRICITY",
+    "recordDate": "2026-01-15",
+    "quantity": 980,
+    "unit": "kWh",
+    "jurisdictionCountry": "Canada",
+    "jurisdictionRegion": "Alberta",
+    "sourceReference": "text",
+    "sourceSheetName": "Dates",
+    "sourceRow": 8
+  },
+  {
+    "activityType": "ELECTRICITY",
+    "recordDate": "2026-01-15",
+    "quantity": 980,
+    "unit": "kWh",
+    "jurisdictionCountry": "Canada",
+    "jurisdictionRegion": "Alberta",
+    "sourceReference": "cached-formula",
+    "sourceSheetName": "Dates",
+    "sourceRow": 9
+  },
+  {
+    "activityType": "ELECTRICITY",
+    "recordDate": "2026-01-15",
+    "quantity": 980,
+    "unit": "kWh",
+    "jurisdictionCountry": "Canada",
+    "jurisdictionRegion": "Alberta",
+    "sourceReference": "unformatted",
+    "sourceSheetName": "Dates",
+    "sourceRow": 10
+  }
+]

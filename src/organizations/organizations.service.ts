@@ -1,3 +1,4 @@
+import { assertCanAdministerWorkspace } from '../common/permissions/workspace-permissions';
 import {
   BadRequestException,
   ForbiddenException,
@@ -91,11 +92,7 @@ export class OrganizationsService {
     user: AuthenticatedUser,
     dto: UpdateOrganizationProfileDto,
   ) {
-    if (user.accountType === 'PILOT_REVIEWER' || user.role !== UserRole.ADMIN) {
-      throw new ForbiddenException(
-        'This account is read-only for pilot review. Editing actions are disabled.',
-      );
-    }
+    assertCanAdministerWorkspace(user);
 
     const profile = this.normalizeAndValidate(dto);
     const existing = await this.prisma.organization.findFirst({ where: { id: user.organizationId, isActive: true } });
@@ -105,7 +102,7 @@ export class OrganizationsService {
     const changed = fingerprint !== boundaryFingerprint(previous);
     if (dto.boundaryVersion !== undefined && dto.boundaryVersion !== (existing.boundaryVersion ?? 1)) throw new ConflictException('Reporting boundary changed. Reload before reviewing.');
     const review = dto.boundaryStatus === 'REVIEWED';
-    if (review && ['reportingPeriodStart','reportingPeriodEnd','geographicBoundary','includedFacilitiesOrLocations','includedScopes','exclusionsAndLimitations'].some(key => !String((profile as any)[key] ?? '').trim())) throw new BadRequestException('Complete the reporting boundary before marking it reviewed.');
+    if (review && ['reportingPeriodStart', 'reportingPeriodEnd', 'geographicBoundary', 'includedFacilitiesOrLocations', 'includedScopes', 'exclusionsAndLimitations'].some(key => !String((profile as any)[key] ?? '').trim())) throw new BadRequestException('Complete the reporting boundary before marking it reviewed.');
     const attestation = review ? {
       boundaryStatus: 'REVIEWED', boundaryVersion: (existing.boundaryVersion ?? 1) + (changed ? 1 : 0),
       boundaryReviewedBy: user.email, boundaryReviewedByUserId: user.id, boundaryReviewedAt: new Date(),
@@ -116,41 +113,51 @@ export class OrganizationsService {
       boundaryReviewNote: null, boundaryReviewFingerprint: null,
     } : {};
 
+    return this.prisma.$transaction(async tx => {
+      const organization = await tx.organization.update({
+        where: { id: user.organizationId },
+        data: {
+          ...attestation,
+          name: profile.organizationName,
+          industry: profile.industry,
+          otherIndustry: profile.otherIndustry || null,
+          country: profile.country,
+          provinceState: profile.provinceOrState,
+          city: profile.city || null,
+          primaryContactName: profile.primaryContactName || null,
+          primaryContactEmail: profile.primaryContactEmail || null,
+          reportingPeriodStart: profile.reportingPeriodStart || null,
+          reportingPeriodEnd: profile.reportingPeriodEnd || null,
+          geographicBoundary: profile.geographicBoundary || null,
+          includedFacilitiesOrLocations:
+            profile.includedFacilitiesOrLocations || null,
+          excludedFacilitiesOrLocations:
+            profile.excludedFacilitiesOrLocations || null,
+          includedScopes: profile.includedScopes || null,
+          scope3CoverageNote: profile.scope3CoverageNote || null,
+          exclusionsAndLimitations: profile.exclusionsAndLimitations || null,
+          boundaryNotes: profile.boundaryNotes || null,
+        },
+      });
 
-    const organization = await this.prisma.organization.update({
-      where: { id: user.organizationId },
-      data: {
-        ...attestation,
-        name: profile.organizationName,
-        industry: profile.industry,
-        otherIndustry: profile.otherIndustry || null,
-        country: profile.country,
-        provinceState: profile.provinceOrState,
-        city: profile.city || null,
-        primaryContactName: profile.primaryContactName || null,
-        primaryContactEmail: profile.primaryContactEmail || null,
-        reportingPeriodStart: profile.reportingPeriodStart || null,
-        reportingPeriodEnd: profile.reportingPeriodEnd || null,
-        geographicBoundary: profile.geographicBoundary || null,
-        includedFacilitiesOrLocations:
-          profile.includedFacilitiesOrLocations || null,
-        excludedFacilitiesOrLocations:
-          profile.excludedFacilitiesOrLocations || null,
-        includedScopes: profile.includedScopes || null,
-        scope3CoverageNote: profile.scope3CoverageNote || null,
-        exclusionsAndLimitations: profile.exclusionsAndLimitations || null,
-        boundaryNotes: profile.boundaryNotes || null,
-      },
+      await tx.auditLog.create({
+        data: {
+          organizationId: user.organizationId, userId: user.id,
+          action: review ? 'BOUNDARY_REVIEWED' : 'BOUNDARY_UPDATED', entityType: 'Organization', entityId: user.organizationId,
+          description: review ? 'Reporting boundary reviewed by authenticated actor.' : 'Reporting boundary updated.',
+          oldValue: JSON.parse(JSON.stringify(previous)), newValue: JSON.parse(JSON.stringify(this.toProfileResponse(organization)))
+        }
+      });
+      await tx.userActivityEvent.create({
+        data: {
+          organizationId: user.organizationId, userId: user.id,
+          eventName: review ? 'BOUNDARY_REVIEWED' : 'BOUNDARY_UPDATED', entityType: 'Organization', entityId: user.organizationId,
+          metadata: { version: organization.boundaryVersion, status: organization.boundaryStatus }
+        }
+      });
+      return this.toProfileResponse(organization);
+
     });
-
-    await this.prisma.auditLog.create({ data: { organizationId: user.organizationId, userId: user.id,
-      action: review ? 'BOUNDARY_REVIEWED' : 'BOUNDARY_UPDATED', entityType: 'Organization', entityId: user.organizationId,
-      description: review ? 'Reporting boundary reviewed by authenticated actor.' : 'Reporting boundary updated.',
-      oldValue: JSON.parse(JSON.stringify(previous)), newValue: JSON.parse(JSON.stringify(this.toProfileResponse(organization))) } });
-    await this.prisma.userActivityEvent.create({ data: { organizationId: user.organizationId, userId: user.id,
-      eventName: review ? 'BOUNDARY_REVIEWED' : 'BOUNDARY_UPDATED', entityType: 'Organization', entityId: user.organizationId,
-      metadata: { version: organization.boundaryVersion, status: organization.boundaryStatus } } });
-    return this.toProfileResponse(organization);
   }
 
   private toProfileResponse(organization: {

@@ -1,3 +1,4 @@
+import { sanitizeSentryEvent } from './common/logging/sentry-event';
 import 'dotenv/config';
 import * as Sentry from '@sentry/nestjs';
 
@@ -7,6 +8,8 @@ export function initSentry() {
 
   Sentry.init({
     dsn: sentryDsn,
+    sendDefaultPii: false,
+    beforeSend: sanitizeSentryEvent,
     environment: process.env.NODE_ENV || 'development',
     release:
       process.env.RELEASE_VERSION ||
