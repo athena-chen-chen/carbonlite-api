@@ -1,3 +1,4 @@
+import { LEGITIMATE_OFFICIAL_FACTOR } from '../test-support/legitimate-factor-metadata';
 import { Prisma } from '@prisma/client';
 import { ConversionFactorsService } from './conversion-factors.service';
 
@@ -15,14 +16,11 @@ describe('ConversionFactorsService Factor Library adapter', () => {
       unit: 'liters',
       factorValue: new Prisma.Decimal(2.68),
       resultUnit: 'kgCO2e',
-      sourceName: 'CarbonLite system defaults',
-      sourceReference: 'Pilot demo factor library',
-      sourceAuthority: 'CarbonLite system defaults',
-      sourceDocument: 'Pilot demo factor library',
+      ...LEGITIMATE_OFFICIAL_FACTOR,
       sourceYear: 2025,
       sourceUrl: null,
-      confidenceLevel: 'DEMO',
-      verified: false,
+      confidenceLevel: 'OFFICIAL_GOVERNMENT',
+      verified: true,
       isDefault: true,
       isSystemDefault: true,
       updatedAt: new Date('2025-01-01T00:00:00.000Z'),
@@ -34,7 +32,7 @@ describe('ConversionFactorsService Factor Library adapter', () => {
     return {
       id: 'factor-version-diesel-2025',
       factorId: 'factor-diesel',
-      version: '2025-demo',
+      version: '2025-v1',
       factorValue: new Prisma.Decimal(2.7),
       inputUnit: 'liters',
       resultUnit: 'kgCO2e',
@@ -51,8 +49,8 @@ describe('ConversionFactorsService Factor Library adapter', () => {
         isActive: true,
       },
       source: {
-        sourceAuthority: 'CarbonLite system defaults',
-        sourceDocument: 'Pilot demo factor library',
+        sourceAuthority: LEGITIMATE_OFFICIAL_FACTOR.sourceAuthority,
+        sourceDocument: LEGITIMATE_OFFICIAL_FACTOR.sourceDocument,
         sourceYear: 2025,
         sourceUrl: null,
       },
@@ -60,9 +58,10 @@ describe('ConversionFactorsService Factor Library adapter', () => {
     };
   }
 
-  function service(input: { legacy?: unknown[]; governed?: unknown[] }) {
+  function service(input: { legacy?: unknown[]; governed?: unknown[]; allowDemoFactorsForCalculations?: boolean }) {
     const prisma = {
       $transaction: jest.fn(),
+      organization: { findUniqueOrThrow: jest.fn().mockResolvedValue({ id: 'org-1', allowDemoFactorsForCalculations: input.allowDemoFactorsForCalculations === true }) },
       conversionFactor: {
         findMany: jest.fn().mockResolvedValue(input.legacy ?? []),
       },
@@ -267,27 +266,28 @@ describe('ConversionFactorsService Factor Library adapter', () => {
     });
   });
 
-  it('falls back to legacy system defaults while reports still use current calculation path', async () => {
-    const adapter = service({ legacy: [legacyFactor()], governed: [] });
-
-    await expect(
-      adapter.getApplicableFactor({
-        activityType: 'DIESEL',
-        inputUnit: 'L',
-        jurisdictionCountry: 'Canada',
-        jurisdictionRegion: 'Alberta',
-        factorYear: 2025,
-        organizationId: 'org-1',
-      }),
-    ).resolves.toMatchObject({
-      matched: true,
-      factorValue: 2.68,
-      factorType: 'LEGACY_SYSTEM_DEFAULT',
-      status: 'MATCHED_SYSTEM_DEFAULT',
-      matchedBy: 'SYSTEM_COUNTRY_YEAR',
-      confidenceLevel: 'DEMO',
+  it.each([false, true])('allows legacy demo defaults only with persisted workspace opt-in (enabled=%s)', async enabled => {
+    const adapter = service({ legacy: [legacyFactor({
+      sourceAuthority: 'CarbonLite system defaults', sourceName: 'CarbonLite system defaults',
+      sourceDocument: 'Pilot demo factor library', sourceReference: 'Pilot demo factor library',
+      confidenceLevel: 'DEMO', verified: false,
+    })], governed: [], allowDemoFactorsForCalculations: enabled });
+    const match = await adapter.getApplicableFactor({
+      activityType: 'DIESEL', inputUnit: 'L', jurisdictionCountry: 'Canada',
+      jurisdictionRegion: 'Alberta', factorYear: 2025, organizationId: 'org-1',
+      // Request flags cannot elevate a demo-disabled persisted workspace.
+      allowDemoFactors: true, allowPlaceholderFactors: true,
     });
+    if (enabled) {
+      expect(match).toMatchObject({
+        matched: true, factorValue: 2.68, factorType: 'LEGACY_SYSTEM_DEFAULT',
+        status: 'MATCHED_SYSTEM_DEFAULT', matchedBy: 'SYSTEM_COUNTRY_YEAR', confidenceLevel: 'DEMO',
+      });
+    } else {
+      expect(match).toMatchObject({ matched: false, factor: null, status: 'NO_MATCH' });
+    }
   });
+
 });
 
 
@@ -615,6 +615,7 @@ describe('ConversionFactorsService factor governance lifecycle', () => {
   it('deprecated factor is not returned by default applicable-factor search', async () => {
     const adapter = new ConversionFactorsService(
       {
+        organization: { findUniqueOrThrow: jest.fn().mockResolvedValue({ id: 'org-1', allowDemoFactorsForCalculations: false }) },
         conversionFactor: { findMany: jest.fn().mockResolvedValue([]) },
         factorVersion: { findMany: jest.fn().mockResolvedValue([version({ status: 'DEPRECATED' })]) },
       } as never,

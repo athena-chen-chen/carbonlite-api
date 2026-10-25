@@ -1,10 +1,11 @@
+import { LEGITIMATE_ORGANIZATION_FACTOR } from '../test-support/legitimate-factor-metadata';
 import { Prisma } from '@prisma/client';
 import { CalculationQualityService } from './calculation-quality.service';
 import { CalculationSnapshotsService } from './calculation-snapshots.service';
 
-function setup(activityType = 'DIESEL', factorValue = 2.68, unit = 'L') {
-  const factor: any = { id: 'factor', organizationId: 'org', type: 'EMISSION', activityType, name: 'Synthetic corporate factor', unit, resultUnit: 'kgCO2e', factorValue: new Prisma.Decimal(factorValue), country: 'Canada', jurisdiction: 'Alberta', region: 'Alberta', sourceYear: 2025, verified: true, isSystemDefault: false, sourceAuthority: 'Synthetic authority', sourceDocument: 'Synthetic reference', applicability: 'CORPORATE_INVENTORY', emissionBasis: 'DIRECT_CO2E' };
-  const client: any = { organization: { findUniqueOrThrow: jest.fn().mockResolvedValue({ id: 'org', country: 'Canada', provinceState: 'Alberta', allowDemoFactorsForCalculations: false }) }, conversionFactor: { findMany: jest.fn().mockResolvedValue([factor]) }, factorVersion: { findMany: jest.fn().mockResolvedValue([]) }, metricResult: { findMany: jest.fn().mockResolvedValue([]), deleteMany: jest.fn() }, activityData: { update: jest.fn(({ data }) => Promise.resolve(data)) }, auditLog: { create: jest.fn() }, userActivityEvent: { create: jest.fn() } };
+function setup(activityType = 'DIESEL', factorValue = 2.68, unit = 'L', allowDemoFactorsForCalculations = false) {
+  const factor: any = { id: 'factor', organizationId: 'org', type: 'EMISSION', activityType, name: 'Customer corporate factor', unit, resultUnit: 'kgCO2e', factorValue: new Prisma.Decimal(factorValue), country: 'Canada', jurisdiction: 'Alberta', region: 'Alberta', sourceYear: 2025, isSystemDefault: false, ...LEGITIMATE_ORGANIZATION_FACTOR, applicability: 'CORPORATE_INVENTORY', emissionBasis: 'DIRECT_CO2E' };
+  const client: any = { organization: { findUniqueOrThrow: jest.fn().mockResolvedValue({ id: 'org', country: 'Canada', provinceState: 'Alberta', allowDemoFactorsForCalculations }) }, conversionFactor: { findMany: jest.fn().mockResolvedValue([factor]) }, factorVersion: { findMany: jest.fn().mockResolvedValue([]) }, metricResult: { findMany: jest.fn().mockResolvedValue([]), deleteMany: jest.fn() }, activityData: { update: jest.fn(({ data }) => Promise.resolve(data)) }, auditLog: { create: jest.fn() }, userActivityEvent: { create: jest.fn() } };
   const quality = new CalculationQualityService(client);
   return { factor, client, quality, service: new CalculationSnapshotsService(client, quality) };
 }
@@ -25,7 +26,7 @@ it('retains 268 and copied provenance after library edits; explicit recalculatio
   factor.factorValue = new Prisma.Decimal(3.68); factor.sourceDocument = 'Changed current document';
   const summary = quality.evaluate({ organization: await client.organization.findUniqueOrThrow(), records: [row], factors: [factor], persistedOnly: true });
   expect(summary.totalEstimatedEmissionsKgCO2e).toBe(268);
-  expect(summary.calculationDetails[0].sourceDocument).toBe('Synthetic reference');
+  expect(summary.calculationDetails[0].sourceDocument).toBe(LEGITIMATE_ORGANIZATION_FACTOR.sourceDocument);
   expect(JSON.stringify(row.calculationSnapshot)).toBe(original);
   const updated = await service.recalculate(client, row, 'reviewer');
   expect(updated.calculationSnapshot).toMatchObject({ version: 2, actorUserId: 'reviewer', result: { value: 368 } });
@@ -43,9 +44,10 @@ it('does not rematch an uncalculated legacy record on a historical read', () => 
   expect(summary.calculationDetails[0].status).toBe('MISSING_FACTOR');
 });
 
-// Old labels are intentional historical evidence, never current library defaults.
+// Known demo library labels: only these rename cases use persisted demo opt-in.
+// This proves history/rename behavior, not factor methodology approval.
 it('preserves historical library provenance after the current document is renamed', async () => {
-  const { service, client, factor, quality } = setup();
+  const { service, client, factor, quality } = setup('DIESEL', 2.68, 'L', true);
   factor.sourceDocument = 'CarbonLite MVP Default Factors v1.0';
   const row = await service.prepareCreate(client, input(), 'actor');
   const original = JSON.stringify(row);
@@ -67,7 +69,7 @@ it.each([
   ['GASOLINE', 2.31, 'L', 231],
   ['DIESEL', 2.68, 'L', 268],
 ])('keeps %s matching and results identical across the document rename', async (activity, value, unit, total) => {
-  const { factor, client, quality } = setup(String(activity), Number(value), String(unit));
+  const { factor, client, quality } = setup(String(activity), Number(value), String(unit), true);
   const organization = await client.organization.findUniqueOrThrow();
   const records: any[] = [{ ...input(String(activity), 100, String(unit)), id: 'rename-regression' }];
   const old = 'CarbonLite MVP Default Factors v1.0';
@@ -81,4 +83,16 @@ it.each([
   expect(after.calculationDetails[0].sourceDocument).toBe(current);
   // Whole summaries, including IDs, matching reasons and fallback decisions, differ only by label.
   expect(JSON.stringify(after)).toBe(JSON.stringify(before).split(old).join(current));
+});
+
+// Identical candidate data; only the persisted organization policy varies.
+it.each([false, true])('requires persisted demo authorization for legacy library labels (enabled=%s)', async enabled => {
+  const { service, client, factor } = setup('DIESEL', 2.68, 'L', enabled);
+  for (const sourceDocument of ['CarbonLite MVP Default Factors v1.0', 'CarbonLite Default Factor Library v1.0']) {
+    factor.sourceDocument = sourceDocument;
+    const row = await service.prepareCreate(client, input(), 'actor');
+    expect(row.calculationStatus).toBe(enabled ? 'CALCULATED' : 'MISSING_FACTOR');
+    expect(row.calculatedEmissionsKgCO2e).toBe(enabled ? 268 : null);
+  }
+  expect(client.organization.findUniqueOrThrow).toHaveBeenCalledWith({ where: { id: 'org' } });
 });

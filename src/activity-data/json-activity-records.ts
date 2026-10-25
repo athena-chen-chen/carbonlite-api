@@ -1,3 +1,5 @@
+import { isFactorAllowedForWorkspace, type FactorPolicyMetadata, type FactorWorkspacePolicy } from '../conversion-factors/factor-calculation-policy';
+import { isInventoryFactorEligible } from '../conversion-factors/factor-governance';
 import { BadRequestException } from '@nestjs/common';
 import { ActivityType, Prisma, RecordSourceType } from '@prisma/client';
 import { CreateActivityDataDto } from './dto/create-activity-data.dto';
@@ -61,7 +63,7 @@ export type JsonActivityPreviewResult = {
   summary: JsonActivityPreviewSummary;
 };
 
-type FactorCandidate = {
+type FactorCandidate = FactorPolicyMetadata & {
   id?: string | null;
   name?: string | null;
   activityType?: ActivityType | null;
@@ -201,12 +203,12 @@ export function parseJsonActivityPayload(input: {
   throw new BadRequestException(MISSING_RECORDS_MESSAGE);
 }
 
-export function buildJsonActivityPreview(input: {
+export function buildJsonActivityPreview(input: FactorWorkspacePolicy & {
   records: RawActivityRecord[];
   sourceFileName?: string;
   factors?: FactorCandidate[];
 }): JsonActivityPreviewResult {
-  const factors = input.factors ?? [];
+  const factors = (input.factors ?? []).filter(factor => isFactorAllowedForWorkspace(factor, input) && isInventoryFactorEligible(factor));
   const previewRecords = input.records.map((record, index) =>
     normalizeJsonActivityRecord({
       record,
@@ -555,7 +557,7 @@ function regionMatches(factorRegion?: string | null, recordRegion?: string | nul
 }
 
 export function toJsonPreviewFactorCandidates(input: {
-  legacyFactors?: Array<{
+  legacyFactors?: Array<FactorPolicyMetadata & {
     id?: string | null;
     name?: string | null;
     activityType: ActivityType | null;
@@ -567,7 +569,7 @@ export function toJsonPreviewFactorCandidates(input: {
     country: string | null;
     sourceYear: number | null;
   }>;
-  governedFactors?: Array<{
+  governedFactors?: Array<FactorPolicyMetadata & {
     id?: string | null;
     inputUnit: string;
     factorValue?: number | string | Prisma.Decimal | null;
@@ -584,6 +586,7 @@ export function toJsonPreviewFactorCandidates(input: {
         Boolean(factor.activityType),
     ),
     ...(input.governedFactors ?? []).map((factor) => ({
+      ...factor,
       id: factor.id,
       activityType: factor.factor.activityType,
       inputUnit: factor.inputUnit,

@@ -1,3 +1,4 @@
+import { isFactorAllowedForWorkspace } from '../conversion-factors/factor-calculation-policy';
 import { isInventoryFactorEligible } from '../conversion-factors/factor-governance';
 import { ActivityType, ConversionFactor, MetricType } from '@prisma/client';
 
@@ -7,6 +8,7 @@ type MatchFactorInput = {
   factors: ConversionFactor[];
   metricType: MetricType;
   organizationId: string;
+  allowDemoFactorsForCalculations?: boolean;
 };
 
 export function normalizeUnit(unit: string): string {
@@ -148,7 +150,7 @@ export function matchBestFactor(input: MatchFactorInput): ConversionFactor | nul
       (metricType === 'COST_ESTIMATE' && factor.type === 'COST') ||
       (metricType === 'CUSTOM' && factor.type === 'CUSTOM');
 
-    return activityMatches && unitMatches && factorMatchesMetric &&
+    return isFactorAllowedForWorkspace(factor, input) && activityMatches && unitMatches && factorMatchesMetric &&
       (metricType !== 'CARBON_EMISSION' || isInventoryFactorEligible(factor));
   });
 

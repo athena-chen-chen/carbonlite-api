@@ -25,6 +25,7 @@ import {
 } from '../sample-data/golden-sample-data.service';
 
 export type AuthenticatedUser = {
+  allowDemoFactorsForCalculations?: boolean;
   id: string;
   email: string;
   organizationId: string;
@@ -584,6 +585,7 @@ export class AuthService {
       email: user.email,
       organizationId: user.organizationId,
       organizationName: user.organization.name,
+      allowDemoFactorsForCalculations: user.organization.allowDemoFactorsForCalculations === true,
       role: this.resolveEffectiveUserRole(
         user.role,
         user.memberships?.[0]?.role,

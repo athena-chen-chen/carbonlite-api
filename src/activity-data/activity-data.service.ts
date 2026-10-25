@@ -203,6 +203,7 @@ export class ActivityDataService {
         data: dto.data,
       }),
     );
+    const organization = await this.prisma.organization.findUniqueOrThrow({ where: { id: organizationId } });
     const activityTypes = [
       ActivityType.ELECTRICITY,
       ActivityType.NATURAL_GAS,
@@ -221,18 +222,6 @@ export class ActivityDataService {
               activityType: { in: activityTypes },
               OR: [{ organizationId }, { isSystemDefault: true }],
             },
-            select: {
-              id: true,
-              name: true,
-              activityType: true,
-              unit: true,
-              factorValue: true,
-              resultUnit: true,
-              jurisdiction: true,
-              region: true,
-              country: true,
-              sourceYear: true,
-            },
           }),
           this.prisma.factorVersion.findMany({
             where: {
@@ -242,20 +231,7 @@ export class ActivityDataService {
               },
               status: { notIn: ['DEPRECATED', 'ARCHIVED'] },
             },
-            select: {
-              id: true,
-              inputUnit: true,
-              factorValue: true,
-              resultUnit: true,
-              jurisdictionRegion: true,
-              jurisdictionCountry: true,
-              factorYear: true,
-              factor: {
-                select: {
-                  activityType: true,
-                },
-              },
-            },
+            include: { factor: true, source: true },
           }),
         ]),
       );
@@ -266,6 +242,8 @@ export class ActivityDataService {
         records,
         sourceFileName: dto.sourceFileName,
         factors: toJsonPreviewFactorCandidates({ legacyFactors, governedFactors }),
+        organizationId,
+        allowDemoFactorsForCalculations: organization.allowDemoFactorsForCalculations,
       }),
     );
 

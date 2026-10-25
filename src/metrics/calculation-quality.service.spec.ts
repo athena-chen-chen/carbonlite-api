@@ -1,3 +1,4 @@
+import { LEGITIMATE_OFFICIAL_FACTOR } from '../test-support/legitimate-factor-metadata';
 import { Prisma } from '@prisma/client';
 import { CalculationQualityService } from './calculation-quality.service';
 import { normalizeJurisdictionRegion } from './metrics.utils';
@@ -55,10 +56,7 @@ describe('CalculationQualityService', () => {
       unit: 'liters',
       factorValue: new Prisma.Decimal(2.68),
       resultUnit: 'kgCO2e',
-      sourceName: null,
-      sourceReference: null,
-      sourceAuthority: 'Test Authority',
-      sourceDocument: 'Test factor table',
+      ...LEGITIMATE_OFFICIAL_FACTOR,
       sourceYear: 2025,
       sourceUrl: 'https://example.com/factor',
       methodology: null,
@@ -230,7 +228,7 @@ describe('CalculationQualityService', () => {
     });
   });
 
-  it('does not treat placeholder wording in confidence as electricity factor eligibility', () => {
+  it('rejects placeholder confidence in a demo-disabled organization', () => {
     const result = service.evaluate({
       organization,
       records: [
@@ -261,12 +259,11 @@ describe('CalculationQualityService', () => {
       ],
     });
 
-    expect(result.totalEstimatedEmissionsKgCO2e).toBe(519.4);
+    expect(result.totalEstimatedEmissionsKgCO2e).toBe(0);
     expect(result.calculationDetails[0]).toMatchObject({
-      status: 'CALCULATED',
-      factorId: 'electricity-ab-low-placeholder-label',
-      matchingStatus: 'MATCHED',
-      calculatedEmissionsKgCO2e: 519.4,
+      status: 'MISSING_FACTOR',
+      matchingStatus: 'MISSING_FACTOR',
+      calculatedEmissionsKgCO2e: null,
     });
   });
 
@@ -542,11 +539,11 @@ describe('CalculationQualityService', () => {
       factors: [],
       governedFactors: [
         governedFactor({
-          id: 'factor-version-ab-demo-2025',
+          id: 'factor-version-ab-2025',
           factorValue: new Prisma.Decimal(0.53),
           factorYear: 2025,
-          status: 'DRAFT',
-          confidenceLevel: 'DEMO',
+          status: 'VERIFIED',
+          confidenceLevel: 'OFFICIAL_GOVERNMENT',
         }),
       ],
     });
@@ -559,8 +556,8 @@ describe('CalculationQualityService', () => {
       jurisdictionAssumed: true,
       matchingStatus: 'MATCHED',
       matchedBy: 'NEAREST_YEAR',
-      factorPriority: 'DEMO_ALLOWED',
-      factorSelectionReason: 'PILOT_DEFAULT_FALLBACK',
+      factorPriority: 'GOVERNED_NEAREST_YEAR',
+      factorSelectionReason: 'NEAREST_YEAR_PROXY',
     });
   });
 

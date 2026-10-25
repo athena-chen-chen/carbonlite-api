@@ -1,3 +1,4 @@
+import { isFactorAllowedForWorkspace } from '../conversion-factors/factor-calculation-policy';
 import { persistedCalculationDetail } from './calculation-snapshot';
 import { isInventoryFactorEligible, snapshotFactorProvenance } from '../conversion-factors/factor-governance';
 import { Injectable, Logger } from '@nestjs/common';
@@ -668,11 +669,12 @@ export class CalculationQualityService {
     jurisdiction: string;
     reportingYear: number;
   }): FactorMatch | null {
+    const policy = { organizationId: input.organizationId, allowDemoFactorsForCalculations: input.allowDemoFactors === true };
     const normalizedInputUnit = normalizeUnit(input.record.unit);
     const activityType = input.record.activityType;
 
     const legacyCandidates = input.factors.filter((factor) => {
-      if (!isInventoryFactorEligible(factor)) return false;
+      if (!isInventoryFactorEligible(factor) || !isFactorAllowedForWorkspace(factor, policy)) return false;
       if (factor.activityType !== activityType) return false;
       if (!unitsCompatible(input.record.unit, factor.unit)) return false;
       if (factor.sourceYear && factor.sourceYear > input.reportingYear) return false;
@@ -699,14 +701,14 @@ export class CalculationQualityService {
 
     const governedCandidates = input.governedFactors
       .filter(isInventoryFactorEligible)
+      .filter((version) => isFactorAllowedForWorkspace(version, policy))
       .filter((version) => version.factor.activityType === activityType)
       .filter((version) => unitsCompatible(input.record.unit, version.inputUnit))
       .filter((version) => Number.isFinite(Number(version.factorValue)))
       .filter((version) => version.source?.isActive !== false)
       .filter((version) =>
         ['VERIFIED', 'OFFICIAL'].includes(version.status) ||
-        (input.allowDemoFactors && version.confidenceLevel === 'DEMO') ||
-        isPilotElectricitySystemFactor(activityType, version),
+        (input.allowDemoFactors && version.confidenceLevel === 'DEMO'),
       );
 
     const exactProvinceYear = governedCandidates
@@ -1107,18 +1109,6 @@ function buildFactorSelectionMetadata(input: {
     reason,
     explanation: parts.join(' '),
   };
-}
-
-function isPilotElectricitySystemFactor(
-  activityType: string,
-  version: GovernedFactorVersion,
-) {
-  return (
-    activityType === 'ELECTRICITY' &&
-    version.factor.isSystem &&
-    version.factor.isActive &&
-    version.confidenceLevel === 'DEMO'
-  );
 }
 
 function unitsCompatible(fromUnit?: string | null, toUnit?: string | null) {

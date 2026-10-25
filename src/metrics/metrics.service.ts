@@ -51,6 +51,11 @@ export class MetricsService {
       ],
     });
 
+    // Carbon calculations already load policy through snapshot preparation.
+    const allowDemoFactorsForCalculations = requestedMetricTypes.some(type => type !== 'CARBON_EMISSION' && type !== 'ENERGY_INTENSITY')
+      ? (await this.prisma.organization.findUniqueOrThrow({ where: { id: organizationId } })).allowDemoFactorsForCalculations === true
+      : false;
+
     return this.prisma.$transaction(async tx => {
       const createdResults: Array<{
         activityDataId: string;
@@ -88,7 +93,7 @@ export class MetricsService {
             continue;
           }
           const carbonDetail: any = undefined;
-          const factor = matchBestFactor({ activityType: record.activityType, unit: record.unit, factors, metricType, organizationId });
+          const factor = matchBestFactor({ activityType: record.activityType, unit: record.unit, factors, metricType, organizationId, allowDemoFactorsForCalculations });
           if (!factor) {
             this.logger.warn(
               `No conversion factor match organizationId=${organizationId} activityDataId=${record.id} activityType=${record.activityType} unit=${record.unit} metricType=${metricType}`,

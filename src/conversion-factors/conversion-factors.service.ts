@@ -1,3 +1,4 @@
+import { isFactorAllowedForWorkspace } from './factor-calculation-policy';
 export type FactorAccessScope = { organizationId: string } | { platform: true };
 import { isInventoryFactorEligible, snapshotFactorProvenance, FactorProvenanceSnapshot } from './factor-governance';
 import {
@@ -458,7 +459,11 @@ export class ConversionFactorsService {
     const recordYear = input.recordYear ?? input.factorYear ?? inferYear(input.recordDate);
     const country = normalizeJurisdictionCountry(input.jurisdictionCountry) ?? 'Canada';
     const region = normalizeJurisdictionRegion(input.jurisdictionRegion);
-    const allowPlaceholderFactors = Boolean(input.allowPlaceholderFactors ?? input.allowDemoFactors);
+    // Caller-supplied flags cannot elevate a normal workspace into demo mode.
+    const organization = await this.prisma.organization.findUniqueOrThrow({ where: { id: input.organizationId } });
+    const allowPlaceholderFactors = organization.allowDemoFactorsForCalculations === true &&
+      (input.allowPlaceholderFactors ?? input.allowDemoFactors ?? true);
+    const policy = { organizationId: input.organizationId, allowDemoFactorsForCalculations: allowPlaceholderFactors };
     const allowSystemFactors = input.allowSystemFactors !== false;
 
     if (!normalizedInputUnit || isNumericUnit(normalizedInputUnit)) {
@@ -501,7 +506,7 @@ export class ConversionFactorsService {
       ],
     });
 
-    const legacyMatches = legacyFactors.filter(isInventoryFactorEligible).filter(
+    const legacyMatches = legacyFactors.filter(isInventoryFactorEligible).filter((factor) => isFactorAllowedForWorkspace(factor, policy)).filter(
       (factor) => normalizeUnit(factor.unit) === normalizedInputUnit,
     );
     const organizationCustom = legacyMatches.find(
@@ -561,6 +566,7 @@ export class ConversionFactorsService {
 
     const governedCandidates = governedVersions
       .filter(isInventoryFactorEligible)
+      .filter((version) => isFactorAllowedForWorkspace(version, policy))
       .filter((version) => !['DEPRECATED', 'ARCHIVED'].includes(version.status))
       .filter((version) => version.source?.isActive !== false)
       .filter((version) =>
