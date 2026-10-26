@@ -5,6 +5,29 @@ import { validate } from 'class-validator';
 import { CreateFactorVersionDto } from './dto/create-factor-version.dto';
 
 describe('factor provenance', () => {
+  it('fails closed for known reference-only methods and unsafe result dimensions', () => {
+    expect(
+      isInventoryFactorEligible({
+        id: 'eccc-natural-gas-canada-generic-gj-2025',
+        resultUnit: 'kgCO2e',
+      }),
+    ).toBe(false);
+    expect(
+      isInventoryFactorEligible({
+        resultUnit: 'kgCO2e',
+        methodologyProvenance: { sourceVersion: 'ECCC_REFERENCE_2026' },
+      }),
+    ).toBe(false);
+    expect(
+      isInventoryFactorEligible({ inputUnit: 'L', resultUnit: 'g CO2/L' }),
+    ).toBe(false);
+    expect(
+      isInventoryFactorEligible({ inputUnit: 'kWh', resultUnit: 'kgCO2e/GJ' }),
+    ).toBe(false);
+    expect(
+      isInventoryFactorEligible({ inputUnit: 'litres', resultUnit: 'kgCO2e/L' }),
+    ).toBe(true);
+  });
  it('captures source version, source year, publication date, factor vintage and historical identity separately', () => {
   const factor = { id: 'version-2026', factorId: 'egdf', version: '2026.1', factorYear: 2026,
     applicability: 'ALBERTA_OFFSET_PROJECT', emissionBasis: 'DIRECT_CO2E',

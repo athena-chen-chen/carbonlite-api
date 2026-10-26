@@ -16,7 +16,7 @@ describe('F21 document confirmation HTTP boundary and provenance', () => {
   beforeAll(async () => {
     const setup = await createE2eApp({ globalFilters: [new GlobalExceptionFilter()] });
     app = setup.app; prisma = setup.prisma;
-    const user = await createTestUser(app, { organizationName: run, email: `${run}@carbonlite-e2e.test` });
+    const user = await createTestUser(app, { organizationName: run, email: `${run}@carbonlite-e2e.test`, factorProfile: 'reviewed' });
     organizationId = user.user.organizationId; auth = authHeader(user.accessToken);
     const upload = await request(app.getHttpServer()).post('/api/documents/upload').set(auth).field('type', 'SPREADSHEET')
       .attach('file', Buffer.from('activityType,recordDate,quantity,unit\n'), { filename: `${run}.csv`, contentType: 'text/csv' }).expect(201);

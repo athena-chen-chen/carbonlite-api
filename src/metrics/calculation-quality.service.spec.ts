@@ -975,15 +975,13 @@ describe('CalculationQualityService', () => {
       expect(result.totalEstimatedEmissionsKgCO2e).toBe(519.4);
       expect(result.calculationDetails[0].factorValue).toBe(.53);
     });
-    it('keeps ENMAX direct GJ and refuses ungoverned m3 to GJ conversion', () => {
-      const gas = factor({ activityType: 'NATURAL_GAS', unit: 'GJ', factorValue: new Prisma.Decimal(49.44), sourceYear: null, country: 'Canada', jurisdiction: 'Canada (Generic)', sourceAuthority: 'Environment and Climate Change Canada', methodologyProvenance: { quantityBasis: 'ENERGY_HHV' } });
+    it('rejects the approximate Table A8 GJ reference and refuses ungoverned m3 to GJ conversion', () => {
+      const gas = factor({ id: 'eccc-natural-gas-canada-generic-gj-2025', activityType: 'NATURAL_GAS', unit: 'GJ', factorValue: new Prisma.Decimal(49.44), sourceYear: null, country: 'Canada', jurisdiction: 'Canada (Generic)', sourceAuthority: 'Environment and Climate Change Canada', methodologyProvenance: { sourceVersion: 'ECCC_EPR_2025_TABLE_A8', quantityBasis: 'ENERGY_HHV' } });
       const component = factor({ id: 'component', activityType: 'NATURAL_GAS', unit: 'm3', emissionBasis: 'CO2_COMPONENT', applicability: 'ALBERTA_TIER_SGRR' });
       const evaluate = (unit: string, quantity: number) => service.evaluate({ organization, records: [record({ activityType: 'NATURAL_GAS', unit, quantity: new Prisma.Decimal(quantity) })], factors: [component, gas] });
       const detail = evaluate('GJ', 3).calculationDetails[0];
-      expect(detail.factorValue).toBe(49.44);
-      expect(detail.calculatedEmissionsKgCO2e).toBe(148.32);
-      expect(detail.sourceAuthority).toBe('Environment and Climate Change Canada');
-      expect(detail.factorSelectionReason).toBe('GENERIC_JURISDICTION_FALLBACK');
+      expect(detail.status).toBe('MISSING_FACTOR');
+      expect(detail.calculatedEmissionsKgCO2e).toBeNull();
       expect(evaluate('m3', 100).calculationDetails[0].status).toBe('MISSING_FACTOR');
     });
     it('legacy null governance remains valid, direct basis remains matchable', () => {

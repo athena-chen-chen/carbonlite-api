@@ -14,7 +14,7 @@ describe('current calculation lifecycle (e2e)', () => {
   afterAll(async () => { await cleanupTestData(prisma, testRunId); await app.close(); });
 
   async function setup(source: 'MANUAL' | 'DOCUMENT' | 'SPREADSHEET' = 'MANUAL') {
-    const user = await createTestUser(app, { organizationName: `${testRunId} ${source} ${uniqueTestId()}`, email: `${uniqueTestId(testRunId)}@carbonlite-e2e.test` });
+    const user = await createTestUser(app, { organizationName: `${testRunId} ${source} ${uniqueTestId()}`, email: `${uniqueTestId(testRunId)}@carbonlite-e2e.test`, factorProfile: 'reviewed' });
     const auth = authHeader(user.accessToken);
     const row = { activityType: 'DIESEL', quantity: 10, unit: 'liters', recordDate: '2026-03-07', jurisdictionCountry: 'Canada', sourceReference: testRunId };
     let id: string;

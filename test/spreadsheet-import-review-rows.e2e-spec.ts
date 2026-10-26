@@ -131,6 +131,7 @@ describe('Spreadsheet import review rows (e2e)', () => {
     const user = await createTestUser(app, {
       organizationName: `${testRunId} Partial Confirm Org`,
       email: `partial-confirm-${testRunId}@carbonlite-e2e.test`,
+      factorProfile: 'reviewed',
     });
     const sourceFileName = `${testRunId}-needs-review.xlsx`;
     const payload = buildNeedsReviewWorkbookPayload(sourceFileName);

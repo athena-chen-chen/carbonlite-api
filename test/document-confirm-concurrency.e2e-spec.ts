@@ -56,6 +56,7 @@ describe('database-serialized document confirmation (e2e)', () => {
   async function source(staged: boolean, rows: Row[], existingUser?: TestUser) {
     const user = existingUser ?? await createTestUser(app, {
       organizationName: uniqueTestId(testRunId), email: `${uniqueTestId(testRunId)}@carbonlite-e2e.test`,
+      factorProfile: 'reviewed',
     });
     await prisma.organization.update({ where: { id: user.user.organizationId }, data: { provinceState: null } });
     const auth = authHeader(user.accessToken);

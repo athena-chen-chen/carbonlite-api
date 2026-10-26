@@ -15,7 +15,7 @@ describe('workbook epoch through upload, extraction and F21 confirmation', () =>
   const run = uniqueTestId('f22-date');
   beforeAll(async () => {
     const setup = await createE2eApp(); app = setup.app; prisma = setup.prisma;
-    const user = await createTestUser(app, { organizationName: run, email: `${run}@carbonlite-e2e.test` });
+    const user = await createTestUser(app, { organizationName: run, email: `${run}@carbonlite-e2e.test`, factorProfile: 'reviewed' });
     auth = authHeader(user.accessToken);
   });
   afterAll(async () => { if (prisma) await cleanupTestData(prisma, run); if (app) await app.close(); });

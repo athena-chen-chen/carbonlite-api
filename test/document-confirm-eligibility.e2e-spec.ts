@@ -20,7 +20,7 @@ describe('canonical document confirmation eligibility (e2e)', () => {
   afterAll(async () => { await cleanupTestData(prisma, testRunId); await app.close(); });
 
   async function source(staged: boolean, inputs: Row[]) {
-    const user = await createTestUser(app, { organizationName: `${testRunId} ${uniqueTestId()}`, email: `${uniqueTestId(testRunId)}@carbonlite-e2e.test` });
+    const user = await createTestUser(app, { organizationName: `${testRunId} ${uniqueTestId()}`, email: `${uniqueTestId(testRunId)}@carbonlite-e2e.test`, factorProfile: 'reviewed' });
     await prisma.organization.update({ where: { id: user.user.organizationId }, data: { provinceState: null } });
     const auth = authHeader(user.accessToken);
     const rows = inputs.map((row, index) => ({ ...row, sourceRow: index + 2, sourceSheetName: 'Main', sourceReference: `source-${index}` }));

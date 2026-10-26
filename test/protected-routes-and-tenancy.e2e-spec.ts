@@ -42,11 +42,13 @@ describe('Protected routes and tenant isolation (e2e)', () => {
     const userA = await createTestUser(app, {
       organizationName: `${testRunId} Org A`,
       email: `user-a-${testRunId}@carbonlite-e2e.test`,
+      factorProfile: 'reviewed',
     });
     const userB = await createTestUser(app, {
       organizationName: `${testRunId} Org B`,
       email: `user-b-${testRunId}@carbonlite-e2e.test`,
       password: 'Fictional-Test-Only!2026',
+      factorProfile: 'reviewed',
     });
 
     const authA = authHeader(userA.accessToken);

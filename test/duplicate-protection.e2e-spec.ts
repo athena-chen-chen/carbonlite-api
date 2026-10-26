@@ -98,6 +98,7 @@ describe('Document duplicate protection (e2e)', () => {
     const user = await createTestUser(app, {
       organizationName: `${testRunId} Import Org`,
       email: `import-${testRunId}@carbonlite-e2e.test`,
+      factorProfile: 'reviewed',
     });
     const uploaded = await upload(
       user.accessToken,

@@ -29,6 +29,7 @@ describe('Metrics unit normalization (e2e)', () => {
     const user = await createTestUser(app, {
       organizationName: `${testRunId} Hotel Org`,
       email: `hotel-${testRunId}@carbonlite-e2e.test`,
+      factorProfile: 'reviewed',
     });
     const auth = authHeader(user.accessToken);
 
@@ -74,6 +75,7 @@ describe('Metrics unit normalization (e2e)', () => {
     const user = await createTestUser(app, {
       organizationName: `${testRunId} Fuel Org`,
       email: `fuel-${testRunId}@carbonlite-e2e.test`,
+      factorProfile: 'reviewed',
     });
     const auth = authHeader(user.accessToken);
 
@@ -123,6 +125,7 @@ describe('Metrics unit normalization (e2e)', () => {
     const user = await createTestUser(app, {
       organizationName: `${testRunId} Travel Power Org`,
       email: `travel-power-${testRunId}@carbonlite-e2e.test`,
+      factorProfile: 'reviewed',
     });
     const auth = authHeader(user.accessToken);
 

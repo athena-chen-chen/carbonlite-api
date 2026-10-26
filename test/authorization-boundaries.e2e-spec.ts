@@ -21,7 +21,7 @@ describe('platform, workspace and tenant authorization boundaries', () => {
   });
   afterAll(async () => { if (prisma) await cleanupTestData(prisma, run); if (app) await app.close(); });
   async function actor(membershipRole?: MembershipRole, platform = false, pilot = false) {
-    const result = await createTestUser(app, { organizationName: uniqueTestId(run), email: `${uniqueTestId(run)}@carbonlite-e2e.test` });
+    const result = await createTestUser(app, { organizationName: uniqueTestId(run), email: `${uniqueTestId(run)}@carbonlite-e2e.test`, factorProfile: 'reviewed' });
     await prisma.user.update({ where: { id: result.user.id }, data: { role: platform ? 'ADMIN' : 'USER', accountType: pilot ? 'PILOT_REVIEWER' : 'CUSTOMER' } });
     if (membershipRole) await prisma.membership.create({ data: { userId: result.user.id, organizationId: result.user.organizationId, role: membershipRole } });
     return { ...result, auth: authHeader(result.accessToken) };

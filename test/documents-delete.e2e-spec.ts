@@ -95,6 +95,7 @@ describe('Document delete (e2e)', () => {
     const user = await createTestUser(app, {
       organizationName: `${testRunId} Preservation Org`,
       email: `preservation-${testRunId}@carbonlite-e2e.test`,
+      factorProfile: 'reviewed',
     });
     const auth = authHeader(user.accessToken);
     const document = await uploadTestDocument(user.accessToken, `${testRunId}-golden-a.csv`);
@@ -165,6 +166,7 @@ describe('Document delete (e2e)', () => {
     const user = await createTestUser(app, {
       organizationName: `${testRunId} Import Metadata Org`,
       email: `import-metadata-${testRunId}@carbonlite-e2e.test`,
+      factorProfile: 'reviewed',
     });
     const document = await uploadTestDocument(
       user.accessToken,
@@ -275,6 +277,7 @@ describe('Document delete (e2e)', () => {
     const user = await createTestUser(app, {
       organizationName: `${testRunId} Metrics Org`,
       email: `metrics-${testRunId}@carbonlite-e2e.test`,
+      factorProfile: 'reviewed',
     });
     const document = await uploadTestDocument(
       user.accessToken,
@@ -370,6 +373,7 @@ describe('Document delete (e2e)', () => {
   it('keeps three imported records when a nine-row partially imported source is removed', async () => {
     const user = await createTestUser(app, {
       organizationName: `${testRunId} Partial Org`, email: `partial-${testRunId}@carbonlite-e2e.test`,
+      factorProfile: 'reviewed',
     });
     const auth = authHeader(user.accessToken);
     const ready = [
@@ -406,6 +410,7 @@ describe('Document delete (e2e)', () => {
   it('preserves another source, both sources accounting records and the workspace total', async () => {
     const user = await createTestUser(app, {
       organizationName: `${testRunId} Multi Org`, email: `multi-${testRunId}@carbonlite-e2e.test`,
+      factorProfile: 'reviewed',
     });
     const auth = authHeader(user.accessToken);
     const documents: Array<{ id: string }> = [];

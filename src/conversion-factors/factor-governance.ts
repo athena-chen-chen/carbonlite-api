@@ -1,3 +1,8 @@
+import {
+  isMethodologySupportedForInventory,
+  type InventoryMethodMetadata,
+} from './factor-methodology';
+
 export const FACTOR_APPLICABILITIES = ['CORPORATE_INVENTORY', 'ALBERTA_OFFSET_PROJECT', 'ALBERTA_TIER_SGRR', 'REFERENCE_ONLY'] as const;
 export const EMISSION_BASES = ['DIRECT_CO2E', 'CO2_COMPONENT', 'CH4_COMPONENT', 'N2O_COMPONENT'] as const;
 export type FactorApplicability = typeof FACTOR_APPLICABILITIES[number];
@@ -43,12 +48,13 @@ export type FactorProvenanceSnapshot = FactorGovernance & {
 
 /** Null metadata preserves legacy eligibility. Restricted sectors need explicit
  * activity context, which today's inventory workflow does not collect. */
-export function isInventoryFactorEligible(factor: {
+export function isInventoryFactorEligible(factor: InventoryMethodMetadata & {
   applicability?: string | null;
   emissionBasis?: string | null;
   methodologyProvenance?: unknown;
   resultUnit?: string | null;
 }): boolean {
+  if (!isMethodologySupportedForInventory(factor)) return false;
   if (factor.applicability != null && factor.applicability !== 'CORPORATE_INVENTORY') return false;
   if (factor.emissionBasis != null && factor.emissionBasis !== 'DIRECT_CO2E') return false;
   const provenance = factor.methodologyProvenance;

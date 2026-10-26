@@ -29,6 +29,7 @@ describe('ActivityData canonical calculation fields (e2e)', () => {
     const user = await createTestUser(app, {
       organizationName: `${testRunId} Org`,
       email: `user-${testRunId}@carbonlite-e2e.test`,
+      factorProfile: 'reviewed',
     });
 
     const response = await request(app.getHttpServer())
@@ -62,11 +63,25 @@ describe('ActivityData canonical calculation fields (e2e)', () => {
       reportTreatment: 'INCLUDED',
       scope: 'SCOPE_2',
       matchedFactorId: expect.any(String),
-      matchedFactorName: 'Electricity - Alberta',
+      matchedFactorName: 'E2E-reviewed Alberta electricity factor',
+      matchedFactorSourceAuthority: 'CarbonLite E2E Review',
       matchedFactorSourceYear: 2025,
       calculatedEmissionsKgCO2e: 6625,
       calculationStatus: 'CALCULATED',
       calculationMessage: expect.any(String),
+    });
+    await expect(prisma.organization.findUniqueOrThrow({
+      where: { id: user.user.organizationId },
+      select: { allowDemoFactorsForCalculations: true },
+    })).resolves.toEqual({ allowDemoFactorsForCalculations: false });
+    await expect(prisma.conversionFactor.findUniqueOrThrow({
+      where: { id: response.body.matchedFactorId },
+      select: { organizationId: true, sourceAuthority: true, verified: true, applicability: true },
+    })).resolves.toEqual({
+      organizationId: user.user.organizationId,
+      sourceAuthority: 'CarbonLite E2E Review',
+      verified: true,
+      applicability: 'CORPORATE_INVENTORY',
     });
     expect(String(response.body.recordDate).slice(0, 10)).toBe('2026-07-20');
   });
@@ -75,6 +90,7 @@ describe('ActivityData canonical calculation fields (e2e)', () => {
     const user = await createTestUser(app, {
       organizationName: `${testRunId} Ground Transport Org`,
       email: `ground-transport-${testRunId}@carbonlite-e2e.test`,
+      factorProfile: 'reviewed',
     });
 
     const response = await request(app.getHttpServer())
@@ -113,6 +129,7 @@ describe('ActivityData canonical calculation fields (e2e)', () => {
       scope: 'SCOPE_3',
       matchedFactorId: expect.any(String),
       matchedFactorName: expect.any(String),
+      matchedFactorSourceAuthority: 'CarbonLite E2E Review',
       matchedFactorSourceYear: 2025,
       calculatedEmissionsKgCO2e: 20,
       calculationStatus: 'CALCULATED',
