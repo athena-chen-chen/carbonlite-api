@@ -97,6 +97,71 @@ describe('ActivityData delete persistence (e2e)', () => {
     expect(ids).not.toContain(activityB.id);
   });
 
+  it('reconciles aggregate reporting after deleting included and uncalculated records', async () => {
+    const user = await createTestUser(app, {
+      organizationName: `${testRunId} Reporting Delete Org`,
+      email: `reporting-delete-${testRunId}@carbonlite-e2e.test`,
+    });
+    const includedA = await createActivity(user.accessToken, `${testRunId}-reporting-a`);
+    const includedB = await createActivity(user.accessToken, `${testRunId}-reporting-b`);
+    const unsupported = await request(app.getHttpServer())
+      .post('/api/activity-data')
+      .set(authHeader(user.accessToken))
+      .send({
+        activityType: 'ELECTRICITY',
+        recordDate: '2026-05-21',
+        quantity: 980,
+        unit: 'kWh',
+        jurisdictionCountry: 'Canada',
+        jurisdictionRegion: 'Alberta',
+        sourceType: 'MANUAL',
+        sourceReference: `${testRunId}-unsupported-electricity`,
+      })
+      .expect(201);
+
+    expect(unsupported.body).toMatchObject({
+      calculationStatus: 'MISSING_FACTOR',
+      reportTreatment: 'REQUIRES_REVIEW',
+      calculatedEmissionsKgCO2e: null,
+    });
+
+    const summary = async () => request(app.getHttpServer())
+      .get('/api/metrics/calculation-summary')
+      .set(authHeader(user.accessToken))
+      .expect(200);
+    const before = await summary();
+    expect(before.body).toMatchObject({
+      totalEstimatedEmissionsKgCO2e: 53.6,
+      processedRecords: 2,
+      skippedRecords: 1,
+    });
+
+    await request(app.getHttpServer())
+      .delete(`/api/activity-data/${includedA.id}`)
+      .set(authHeader(user.accessToken))
+      .expect(200);
+    const afterIncludedDelete = await summary();
+    expect(afterIncludedDelete.body).toMatchObject({
+      totalEstimatedEmissionsKgCO2e: 26.8,
+      processedRecords: 1,
+      skippedRecords: 1,
+    });
+    expect(afterIncludedDelete.body.calculationDetails.map((row: { activityDataId: string }) => row.activityDataId))
+      .toEqual(expect.arrayContaining([includedB.id, unsupported.body.id]));
+
+    await request(app.getHttpServer())
+      .delete(`/api/activity-data/${unsupported.body.id}`)
+      .set(authHeader(user.accessToken))
+      .expect(200);
+    const afterUnsupportedDelete = await summary();
+    expect(afterUnsupportedDelete.body).toMatchObject({
+      totalEstimatedEmissionsKgCO2e: 26.8,
+      processedRecords: 1,
+      skippedRecords: 0,
+    });
+    expect(afterUnsupportedDelete.body.calculationDetails).toHaveLength(1);
+  });
+
   it('cannot delete another organization record', async () => {
     const userA = await createTestUser(app, {
       organizationName: `${testRunId} Org A`,
