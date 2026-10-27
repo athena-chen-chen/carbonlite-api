@@ -19,9 +19,12 @@ describe('canonical document confirmation eligibility (e2e)', () => {
   beforeAll(async () => { const setup = await createE2eApp(); app = setup.app; prisma = setup.prisma; });
   afterAll(async () => { await cleanupTestData(prisma, testRunId); await app.close(); });
 
-  async function source(staged: boolean, inputs: Row[]) {
-    const user = await createTestUser(app, { organizationName: `${testRunId} ${uniqueTestId()}`, email: `${uniqueTestId(testRunId)}@carbonlite-e2e.test`, factorProfile: 'reviewed' });
-    await prisma.organization.update({ where: { id: user.user.organizationId }, data: { provinceState: null } });
+  async function source(staged: boolean, inputs: Row[], options: { reviewedFactors?: boolean; allowDemoFactorsForCalculations?: boolean } = {}) {
+    const user = await createTestUser(app, { organizationName: `${testRunId} ${uniqueTestId()}`, email: `${uniqueTestId(testRunId)}@carbonlite-e2e.test`, factorProfile: options.reviewedFactors === false ? undefined : 'reviewed' });
+    await prisma.organization.update({ where: { id: user.user.organizationId }, data: {
+      provinceState: null,
+      allowDemoFactorsForCalculations: options.allowDemoFactorsForCalculations ?? false,
+    } });
     const auth = authHeader(user.accessToken);
     const rows = inputs.map((row, index) => ({ ...row, sourceRow: index + 2, sourceSheetName: 'Main', sourceReference: `source-${index}` }));
     let documentId: string;
@@ -93,7 +96,7 @@ describe('canonical document confirmation eligibility (e2e)', () => {
       expect(summary.body.totalEstimatedEmissionsKgCO2e).toBe(0);
     });
 
-    it('partially imports mixed nine-row confirmation and keeps 3 -> 1 -> 0 retry behavior', async () => {
+    it('fails closed on unsupported Alberta electricity and keeps 2 -> 1 -> 0 retry behavior', async () => {
       const ctx = await source(staged, [
         { ...base, activityType: 'ELECTRICITY', quantity: 980, unit: 'kWh', jurisdictionRegion: 'Alberta' },
         { ...base, activityType: 'HOTEL', quantity: 4, unit: 'nights' },
@@ -101,22 +104,25 @@ describe('canonical document confirmation eligibility (e2e)', () => {
         { ...base, unit: 'kg' }, { ...base, activityType: 'ELECTRICITY', unit: 'kWh' },
         { ...base, activityType: 'Office Supplies', unit: 'kg' }, { ...base, activityType: 'GASOLINE', unit: 'kg' },
         { ...base, unit: 'widgets' }, { ...base, activityType: 'WATER', unit: 'widgets' },
-      ].map(row => ({ ...row, ...spoof })));
+      ].map(row => ({ ...row, ...spoof })), { reviewedFactors: false, allowDemoFactorsForCalculations: true });
       const first = await ctx.confirm();
-      expect(first.body.count).toBe(3);
+      expect(first.body.count).toBe(2);
       const before = await prisma.activityData.findMany({ where: { sourceDocumentId: ctx.documentId }, orderBy: { id: 'asc' } });
-      expect(before).toHaveLength(3);
+      expect(before).toHaveLength(2);
+      expect(before.some(row => row.activityType === 'ELECTRICITY')).toBe(false);
+      expect(before.some(row => Number(row.matchedFactorValue) === .53)).toBe(false);
+      expect(before.some(row => Number(row.calculatedEmissionsKgCO2e) === 519.4)).toBe(false);
       const summary = await request(app.getHttpServer()).get('/api/metrics/summary').set(ctx.auth).expect(200);
-      expect(summary.body.totalEstimatedEmissionsKgCO2e).toBe(579.4);
+      expect(summary.body.totalEstimatedEmissionsKgCO2e).toBe(60);
       expect((await ctx.confirm()).body.count).toBe(0);
       expect(await prisma.document.findUnique({ where: { id: ctx.documentId } })).toMatchObject({ status: 'REVIEW_REQUIRED' });
-      if (staged) expect(await prisma.spreadsheetImportReviewRow.count({ where: { sourceDocumentId: ctx.documentId, status: 'NEEDS_REVIEW' } })).toBe(6);
+      if (staged) expect(await prisma.spreadsheetImportReviewRow.count({ where: { sourceDocumentId: ctx.documentId, status: 'NEEDS_REVIEW' } })).toBe(7);
       const event = await prisma.userActivityEvent.findFirstOrThrow({ where: { entityId: ctx.documentId, eventName: 'ACTIVITY_RECORD_IMPORTED' } });
-      expect(event.metadata).toMatchObject({ createdRecordCount: 3, trackedMetricCount: 1, unresolvedRowCount: 6, skippedCount: 6 });
+      expect(event.metadata).toMatchObject({ createdRecordCount: 2, trackedMetricCount: 1, unresolvedRowCount: 7, skippedCount: 7 });
       const corrected = ctx.rows.map((row, index) => index === 3 ? { ...row, unit: 'liters' } : row);
       expect((await ctx.confirm(corrected)).body.count).toBe(1);
       expect((await ctx.confirm(corrected)).body.count).toBe(0);
-      expect(await prisma.activityData.count({ where: { sourceDocumentId: ctx.documentId } })).toBe(4);
+      expect(await prisma.activityData.count({ where: { sourceDocumentId: ctx.documentId } })).toBe(3);
       expect(await prisma.activityData.findMany({ where: { id: { in: before.map(row => row.id) } }, orderBy: { id: 'asc' } })).toEqual(before);
       expect(await prisma.document.findUnique({ where: { id: ctx.documentId } })).toMatchObject({ status: 'REVIEW_REQUIRED' });
     });

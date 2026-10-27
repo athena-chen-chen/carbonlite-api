@@ -19,6 +19,26 @@ it('captures server-owned input, actor, factor and result and ignores forged cli
   expect(row.calculationSnapshot).toMatchObject({ contractVersion: 1, version: 1, actorUserId: 'actor', input: { quantity: 980, unit: 'kWh' }, factor: { value: .53 }, result: { value: 519.4, scope: 'SCOPE_2' } });
   expect(row.calculatedAt).toBeInstanceOf(Date);
 });
+it('preserves a confirmed Alberta electricity snapshot after the live factor becomes unsupported', async () => {
+  const { service, client, factor, quality } = setup('ELECTRICITY', .53, 'kWh');
+  const row = await service.prepareCreate(client, input('ELECTRICITY', 980, 'kWh'), 'actor');
+  const original = JSON.stringify(row.calculationSnapshot);
+  factor.sourceAuthority = 'CarbonLite System Defaults';
+  factor.sourceDocument = 'CarbonLite Default Factor Library v1.0';
+  factor.isSystemDefault = true;
+  factor.organizationId = null;
+
+  const historical = quality.evaluate({
+    organization: await client.organization.findUniqueOrThrow(),
+    records: [row], factors: [factor], persistedOnly: true,
+  });
+
+  expect(historical.totalEstimatedEmissionsKgCO2e).toBe(519.4);
+  expect(historical.calculationDetails[0]).toMatchObject({
+    status: 'CALCULATED', calculatedEmissionsKgCO2e: 519.4, factorValue: .53,
+  });
+  expect(JSON.stringify(row.calculationSnapshot)).toBe(original);
+});
 it('retains 268 and copied provenance after library edits; explicit recalculation creates audited version 2', async () => {
   const { service, client, factor, quality } = setup();
   const row = await service.prepareCreate(client, input(), 'actor');
@@ -64,7 +84,6 @@ it('preserves historical library provenance after the current document is rename
 });
 
 it.each([
-  ['ELECTRICITY', 0.53, 'kWh', 53],
   ['NATURAL_GAS', 49.44, 'GJ', 4944],
   ['GASOLINE', 2.31, 'L', 231],
   ['DIESEL', 2.68, 'L', 268],

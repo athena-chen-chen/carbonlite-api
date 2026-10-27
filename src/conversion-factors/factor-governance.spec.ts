@@ -14,10 +14,42 @@ describe('factor provenance', () => {
     ).toBe(false);
     expect(
       isInventoryFactorEligible({
+        id: 'factor-electricity-ab',
+        resultUnit: 'kgCO2e',
+      }),
+    ).toBe(false);
+    expect(
+      isInventoryFactorEligible({
         resultUnit: 'kgCO2e',
         methodologyProvenance: { sourceVersion: 'ECCC_REFERENCE_2026' },
       }),
     ).toBe(false);
+    expect(
+      isInventoryFactorEligible({
+        activityType: 'ELECTRICITY',
+        jurisdictionRegion: 'Alberta',
+        factorSet: 'PILOT_DEFAULT_V0_1',
+        resultUnit: 'kgCO2e',
+      }),
+    ).toBe(false);
+    expect(
+      isInventoryFactorEligible({
+        activityType: 'ELECTRICITY',
+        jurisdiction: 'Alberta, Canada',
+        sourceAuthority: 'CarbonLite System Defaults',
+        sourceDocument: 'CarbonLite Default Factor Library v1.0',
+        resultUnit: 'kgCO2e',
+      }),
+    ).toBe(false);
+    expect(
+      isInventoryFactorEligible({
+        activityType: 'ELECTRICITY',
+        jurisdictionRegion: 'Alberta',
+        sourceAuthority: 'Reviewed inventory agency',
+        sourceDocument: 'Approved corporate factor',
+        resultUnit: 'kgCO2e',
+      }),
+    ).toBe(true);
     expect(
       isInventoryFactorEligible({ inputUnit: 'L', resultUnit: 'g CO2/L' }),
     ).toBe(false);

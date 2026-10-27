@@ -235,6 +235,8 @@ async function main() {
       .replace(/\(generic\)/g, 'generic')
       .replace(/[^a-z0-9]+/g, '-')
       .replace(/^-|-$/g, '');
+    const isUnsupportedAlbertaPilotElectricity =
+      factor.activityType === 'ELECTRICITY' && factorJurisdiction === 'Alberta';
     const existingFactor = await prisma.conversionFactor.findFirst({
       where: {
         isSystemDefault: true,
@@ -259,6 +261,9 @@ async function main() {
       verificationStatus: metadata.verificationStatus,
       verified: metadata.verified,
       notes: metadata.notes,
+      applicability: isUnsupportedAlbertaPilotElectricity
+        ? ('REFERENCE_ONLY' as const)
+        : undefined,
     };
 
     if (existingFactor) {
@@ -266,6 +271,7 @@ async function main() {
         where: { id: existingFactor.id },
         data: {
           name: factor.name,
+          isDefault: !isUnsupportedAlbertaPilotElectricity,
           ...governanceData,
         },
       });
@@ -280,7 +286,7 @@ async function main() {
           unit: factor.unit,
           factorValue: factor.factorValue,
           resultUnit: 'kgCO2e',
-          isDefault: true,
+          isDefault: !isUnsupportedAlbertaPilotElectricity,
           isSystemDefault: true,
           ...governanceData,
         },
@@ -380,6 +386,7 @@ async function main() {
         reviewNotes: 'Internal review required before production use.',
         sourceId,
         notes: governanceData.notes,
+        applicability: governanceData.applicability,
       },
       create: {
         factorId,
@@ -398,6 +405,7 @@ async function main() {
         reviewNotes: 'Internal review required before production use.',
         sourceId,
         notes: governanceData.notes,
+        applicability: governanceData.applicability,
       },
     });
   }

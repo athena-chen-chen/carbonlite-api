@@ -968,12 +968,21 @@ describe('CalculationQualityService', () => {
       const result = service.evaluate({ organization, records: [record()], factors: [factor({ methodologyProvenance: { sectorApplicability: ['Industrial'] } })] });
       expect(result.calculationDetails[0].status).toBe('MISSING_FACTOR');
     });
-    it('keeps 980 kWh corporate electricity at 0.53 when newer convertible EGDF is present', () => {
-      const result = service.evaluate({ organization, records: [record({ activityType: 'ELECTRICITY', unit: 'kWh', quantity: new Prisma.Decimal(980), recordDate: new Date('2026-01-01'), jurisdictionCountry: 'Canada', jurisdictionRegion: 'Alberta' })],
-        factors: [factor({ activityType: 'ELECTRICITY', unit: 'kWh', factorValue: new Prisma.Decimal(.53), sourceYear: 2026, country: 'Canada', region: 'Alberta' })],
-        governedFactors: [governedFactor({ applicability: 'ALBERTA_OFFSET_PROJECT', inputUnit: 'MWh', factorValue: new Prisma.Decimal(.4303), resultUnit: 'tCO2e', factorYear: 2026 })] });
-      expect(result.totalEstimatedEmissionsKgCO2e).toBe(519.4);
-      expect(result.calculationDetails[0].factorValue).toBe(.53);
+    it('fails closed instead of using the Alberta pilot estimate, EGDF, or ECCC references', () => {
+      const result = service.evaluate({
+        organization: { ...organization, allowDemoFactorsForCalculations: true },
+        records: [record({ activityType: 'ELECTRICITY', unit: 'kWh', quantity: new Prisma.Decimal(980), recordDate: new Date('2026-01-01'), jurisdictionCountry: 'Canada', jurisdictionRegion: 'Alberta' })],
+        factors: [
+          factor({ activityType: 'ELECTRICITY', unit: 'kWh', factorValue: new Prisma.Decimal(.53), sourceYear: 2026, country: 'Canada', region: 'Alberta', sourceAuthority: 'CarbonLite System Defaults', sourceDocument: 'CarbonLite Default Factor Library v1.0' }),
+          factor({ id: 'eccc-electricity-ab-2025', activityType: 'ELECTRICITY', unit: 'kWh', factorValue: new Prisma.Decimal(.49), sourceYear: 2025, country: 'Canada', region: 'Alberta', applicability: 'REFERENCE_ONLY' }),
+          factor({ id: 'eccc-electricity-ab-2026', activityType: 'ELECTRICITY', unit: 'kWh', factorValue: new Prisma.Decimal(.438), sourceYear: 2026, country: 'Canada', region: 'Alberta', applicability: 'REFERENCE_ONLY' }),
+        ],
+        governedFactors: [governedFactor({ applicability: 'ALBERTA_OFFSET_PROJECT', inputUnit: 'MWh', factorValue: new Prisma.Decimal(.4303), resultUnit: 'tCO2e', factorYear: 2026 })],
+      });
+      expect(result.totalEstimatedEmissionsKgCO2e).toBe(0);
+      expect(result.calculationDetails[0]).toMatchObject({
+        status: 'MISSING_FACTOR', calculatedEmissionsKgCO2e: null, factorId: null,
+      });
     });
     it('rejects the approximate Table A8 GJ reference and refuses ungoverned m3 to GJ conversion', () => {
       const gas = factor({ id: 'eccc-natural-gas-canada-generic-gj-2025', activityType: 'NATURAL_GAS', unit: 'GJ', factorValue: new Prisma.Decimal(49.44), sourceYear: null, country: 'Canada', jurisdiction: 'Canada (Generic)', sourceAuthority: 'Environment and Climate Change Canada', methodologyProvenance: { sourceVersion: 'ECCC_EPR_2025_TABLE_A8', quantityBasis: 'ENERGY_HHV' } });
