@@ -1,0 +1,86 @@
+name: Nightly E2E
+
+on:
+  schedule:
+    - cron: '30 2 * * *'
+      timezone: America/Edmonton
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly-e2e-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  backend-validation:
+    name: Backend unit, E2E, typecheck, and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: carbonlite_ci_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d carbonlite_ci_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      APP_ENV: test
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/carbonlite_ci_test
+      FRONTEND_URL: http://127.0.0.1:4173
+      JWT_SECRET: carbonlite-nightly-ci-only
+      NODE_ENV: test
+      # Deterministic tests mock the provider; this only permits module initialization.
+      OPENAI_API_KEY: ci-mocked-not-a-real-key
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.17.0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate Prisma client
+        run: pnpm prisma:generate
+
+      - name: Apply Prisma migrations
+        run: pnpm exec prisma migrate deploy
+
+      - name: Seed isolated CI database
+        run: pnpm seed
+
+      # Keep routine full validation here; local development should prefer focused tests.
+      - name: Run backend unit tests
+        run: pnpm test:unit
+
+      - name: Run full backend E2E suite
+        run: pnpm test:e2e
+
+      - name: Typecheck
+        run: pnpm exec tsc --noEmit -p tsconfig.json
+
+      - name: Build production application
+        run: pnpm build
+
+      # GitHub Actions removes the disposable PostgreSQL service with the job.
