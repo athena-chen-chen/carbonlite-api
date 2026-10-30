@@ -12,6 +12,7 @@ jest.mock('../openai/openai.client', () => ({ openai: { responses: { create: jes
 const factor = (overrides: any = {}) => ({ id: 'official', name: 'Diesel combustion', activityType: 'DIESEL', type: 'EMISSION',
   organizationId: null, unit: 'L', factorValue: new Prisma.Decimal(2.68), resultUnit: 'kgCO2e', country: 'Canada', region: 'Alberta', jurisdiction: 'Alberta',
   sourceYear: 2026, sourceAuthority: 'Environment and Climate Change Canada', sourceDocument: 'Reviewed source', verified: true,
+  verificationStatus: 'VERIFIED', applicability: 'CORPORATE_INVENTORY', emissionBasis: 'DIRECT_CO2E',
   isSystemDefault: true, isDefault: true, createdAt: new Date('2026-01-01'), updatedAt: new Date('2026-01-01'), ...overrides });
 const version = (overrides: any = {}) => ({ ...factor(), id: 'version', factorId: 'identity', inputUnit: 'L', factorYear: 2026,
   jurisdictionCountry: 'Canada', jurisdictionRegion: 'Alberta', status: 'OFFICIAL', confidenceLevel: 'OFFICIAL_GOVERNMENT',
@@ -69,6 +70,22 @@ describe('P0 workspace eligibility across real service boundaries (in-memory Pri
       expect((await lookup.getApplicableFactor(lookupInput)).matched).toBe(true);
     }
     expect(setup([], [version()]).evaluate().status).toBe('CALCULATED');
+  });
+
+  it('automatically allows a future factor identity only when governance metadata is complete', () => {
+    const future = factor({ id: 'future-library-id-never-listed-in-code', status: 'VERIFIED', emissionBasis: null });
+    expect(setup([future]).evaluate()).toMatchObject({ status: 'CALCULATED', factorId: future.id });
+    expect(setup([{ ...future, applicability: 'REFERENCE_ONLY' }]).evaluate().status).toBe('MISSING_FACTOR');
+    expect(setup([{ ...future, verified: false }]).evaluate().status).toBe('MISSING_FACTOR');
+
+    const futureVersion = version({
+      id: 'future-version-id-never-listed-in-code',
+      factorId: 'future-factor-id-never-listed-in-code',
+      emissionBasis: null,
+      factor: { id: 'future-factor-id-never-listed-in-code', activityType: 'DIESEL', displayName: 'Future approved diesel', isActive: true, isSystem: true },
+    });
+    expect(setup([], [futureVersion]).evaluate()).toMatchObject({ status: 'CALCULATED', factorId: futureVersion.factorId });
+    expect(setup([], [{ ...futureVersion, verified: false }]).evaluate().status).toBe('MISSING_FACTOR');
   });
 
   it.each([false, true])('rejects a foreign tenant even with a system flag and demo=%s', async demo => {

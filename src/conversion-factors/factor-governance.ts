@@ -31,6 +31,15 @@ export type FactorGovernance = {
   applicability?: FactorApplicability | null;
   emissionBasis?: EmissionBasis | null;
   methodologyProvenance?: MethodologyProvenance | null;
+  status?: string | null;
+  factorStatus?: string | null;
+  verificationStatus?: string | null;
+  verified?: boolean | null;
+  isActive?: boolean | null;
+  isUsableForCalculation?: boolean | null;
+  usableForCalculation?: boolean | null;
+  isCalculationEligible?: boolean | null;
+  calculationEligible?: boolean | null;
 };
 export type FactorProvenanceSnapshot = FactorGovernance & {
   factorId?: string | null;
@@ -46,17 +55,42 @@ export type FactorProvenanceSnapshot = FactorGovernance & {
   sourceSection?: string | null;
 };
 
-/** Null metadata preserves legacy eligibility. Restricted sectors need explicit
- * activity context, which today's inventory workflow does not collect. */
+/** Canonical automatic-use predicate. Governance is deliberately fail-closed;
+ * identity/source checks in the methodology predicate remain compatibility
+ * backstops for legacy rows until their structured metadata is backfilled. */
 export function isInventoryFactorEligible(factor: InventoryMethodMetadata & {
   applicability?: string | null;
   emissionBasis?: string | null;
   methodologyProvenance?: unknown;
   resultUnit?: string | null;
+  status?: string | null;
+  factorStatus?: string | null;
+  verificationStatus?: string | null;
+  verified?: boolean | null;
+  isActive?: boolean | null;
+  isUsableForCalculation?: boolean | null;
+  usableForCalculation?: boolean | null;
+  isCalculationEligible?: boolean | null;
+  calculationEligible?: boolean | null;
+  factor?: unknown;
+  source?: unknown;
 }): boolean {
   if (!isMethodologySupportedForInventory(factor)) return false;
-  if (factor.applicability != null && factor.applicability !== 'CORPORATE_INVENTORY') return false;
+  if (factor.applicability !== 'CORPORATE_INVENTORY') return false;
   if (factor.emissionBasis != null && factor.emissionBasis !== 'DIRECT_CO2E') return false;
+  if (factor.verified !== true) return false;
+
+  const nestedFactor = objectMetadata(factor.factor);
+  const source = objectMetadata(factor.source);
+  if (factor.isActive === false || nestedFactor?.isActive === false || source?.isActive === false) return false;
+  if ([factor.isUsableForCalculation, factor.usableForCalculation, factor.isCalculationEligible, factor.calculationEligible]
+    .some(value => value === false)) return false;
+
+  const lifecycleStatus = governanceLabel(factor.factorStatus ?? factor.status);
+  if (factor.factorId && !lifecycleStatus) return false;
+  if (lifecycleStatus && !['ACTIVE', 'APPROVED', 'OFFICIAL', 'VERIFIED'].includes(lifecycleStatus)) return false;
+  const verificationStatus = governanceLabel(factor.verificationStatus);
+  if (verificationStatus && /(?:PENDING|REQUIRED|REJECTED|UNVERIFIED|DRAFT|EXPIRED|RETIRED)/.test(verificationStatus)) return false;
   const provenance = factor.methodologyProvenance;
   if (provenance != null) {
     if (typeof provenance !== 'object' || Array.isArray(provenance)) return false;
@@ -64,8 +98,19 @@ export function isInventoryFactorEligible(factor: InventoryMethodMetadata & {
     if (sectors != null && (!Array.isArray(sectors) || sectors.length > 0)) return false;
   }
   // Explicit component units remain unsafe even if metadata is missing or wrong.
-  const unit = String(factor.resultUnit ?? '').toUpperCase().replace(/[\s₂₄]/g, (char) => char === '₂' ? '2' : char === '₄' ? '4' : '');
+  if (!String(factor.resultUnit ?? '').trim()) return false;
+  const unit = String(factor.resultUnit).toUpperCase().replace(/[\s₂₄]/g, (char) => char === '₂' ? '2' : char === '₄' ? '4' : '');
   return !/CH4|N2O|CO2(?!E|EQ|EQUIVALENT)/.test(unit);
+}
+
+function objectMetadata(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function governanceLabel(value?: string | null): string {
+  return String(value ?? '').trim().toUpperCase().replace(/[^A-Z0-9]+/g, '_');
 }
 
 export function factorProvenanceLines(provenance?: FactorProvenanceSnapshot | null): string[] {

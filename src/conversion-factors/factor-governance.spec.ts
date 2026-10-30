@@ -5,6 +5,13 @@ import { validate } from 'class-validator';
 import { CreateFactorVersionDto } from './dto/create-factor-version.dto';
 
 describe('factor provenance', () => {
+  const approvedGovernance = {
+    applicability: 'CORPORATE_INVENTORY' as const,
+    emissionBasis: 'DIRECT_CO2E' as const,
+    verified: true,
+    verificationStatus: 'VERIFIED',
+  };
+
   it('fails closed for known reference-only methods and unsafe result dimensions', () => {
     expect(
       isInventoryFactorEligible({
@@ -48,6 +55,7 @@ describe('factor provenance', () => {
         sourceAuthority: 'Reviewed inventory agency',
         sourceDocument: 'Approved corporate factor',
         resultUnit: 'kgCO2e',
+        ...approvedGovernance,
       }),
     ).toBe(true);
     expect(
@@ -57,9 +65,17 @@ describe('factor provenance', () => {
       isInventoryFactorEligible({ inputUnit: 'kWh', resultUnit: 'kgCO2e/GJ' }),
     ).toBe(false);
     expect(
-      isInventoryFactorEligible({ inputUnit: 'litres', resultUnit: 'kgCO2e/L' }),
+      isInventoryFactorEligible({ inputUnit: 'litres', resultUnit: 'kgCO2e/L', ...approvedGovernance }),
     ).toBe(true);
   });
+ it('makes future eligibility depend on complete governance metadata rather than identity', () => {
+  const future = { id: 'unseen-future-factor-id', inputUnit: 'L', resultUnit: 'kgCO2e', ...approvedGovernance };
+  expect(isInventoryFactorEligible(future)).toBe(true);
+  expect(isInventoryFactorEligible({ ...future, applicability: 'REFERENCE_ONLY' })).toBe(false);
+  expect(isInventoryFactorEligible({ ...future, verified: false })).toBe(false);
+  expect(isInventoryFactorEligible({ ...future, emissionBasis: undefined })).toBe(true);
+  expect(isInventoryFactorEligible({ ...future, emissionBasis: undefined, resultUnit: undefined })).toBe(false);
+ });
  it('captures source version, source year, publication date, factor vintage and historical identity separately', () => {
   const factor = { id: 'version-2026', factorId: 'egdf', version: '2026.1', factorYear: 2026,
     applicability: 'ALBERTA_OFFSET_PROJECT', emissionBasis: 'DIRECT_CO2E',

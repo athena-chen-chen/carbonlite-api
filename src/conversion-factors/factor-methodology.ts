@@ -23,45 +23,19 @@ export type InventoryMethodMetadata = {
   source?: unknown;
 };
 
-/** Existing catalogs represented these references as corporate inventory
- * methods even though their published boundaries do not establish that use.
- * Keep them available as historical/source evidence, but fail closed for new
- * automatic calculations until a separately reviewed method is registered.
- */
+/** Dimensional and methodology checks supplement the canonical structured
+ * governance predicate. Eligibility never depends on factor/source identity. */
 export function isMethodologySupportedForInventory(
   factor: InventoryMethodMetadata,
 ): boolean {
   if (isUnsupportedAlbertaPilotElectricity(factor)) return false;
-  if (
-    factor.id === 'eccc-natural-gas-canada-generic-gj-2025' ||
-    /^eccc-electricity-(?:ab|bc|on)-(?:2025|2026)$/.test(factor.id ?? '')
-  ) {
-    return false;
-  }
-
   const provenance = factor.methodologyProvenance;
   const provenanceVersion =
     provenance && typeof provenance === 'object' && !Array.isArray(provenance)
       ? (provenance as { sourceVersion?: unknown }).sourceVersion
       : undefined;
-  const sourceVersions = [
-    provenanceVersion,
-    factor.factorVersion,
-    factor.factorSet,
-    factor.sourceVersion,
-    sourceVersion(factor.source),
-  ];
-  if (
-    sourceVersions.some((value) =>
-      [
-        'ECCC_EPR_2025_TABLE_A8',
-        'ECCC_REFERENCE_2025',
-        'ECCC_REFERENCE_2026',
-      ].includes(String(value ?? '')),
-    )
-  ) {
-    return false;
-  }
+  const sourceVersions = [provenanceVersion, factor.factorVersion, factor.factorSet, factor.sourceVersion, sourceVersion(factor.source)];
+  if (sourceVersions.some((value) => ['ECCC_EPR_2025_TABLE_A8', 'ECCC_REFERENCE_2025', 'ECCC_REFERENCE_2026'].includes(String(value ?? '')))) return false;
 
   // Current inventory evaluators emit kgCO2e directly. They have no result-
   // mass conversion step, so reject g/t/component results rather than silently
@@ -85,65 +59,28 @@ export function isMethodologySupportedForInventory(
   return true;
 }
 
-function isUnsupportedAlbertaPilotElectricity(
-  factor: InventoryMethodMetadata,
-): boolean {
+function isUnsupportedAlbertaPilotElectricity(factor: InventoryMethodMetadata): boolean {
   const nestedFactor = objectValue(factor.factor);
   const source = objectValue(factor.source);
-  const factorId = String(
-    factor.id ?? factor.factorId ?? nestedFactor?.id ?? '',
-  ).trim();
-  if (
-    factorId === 'factor-electricity-ab' ||
-    factorId === 'pilot-electricity-ab-2026'
-  ) {
-    return true;
-  }
-  const activityType = String(
-    factor.activityType ?? nestedFactor?.activityType ?? '',
-  )
-    .trim()
-    .toUpperCase();
-  const region = [
-    factor.jurisdictionRegion,
-    factor.region,
-    factor.jurisdiction,
-    nestedFactor?.jurisdictionRegion,
-    source?.jurisdictionRegion,
-  ]
-    .map((value) => String(value ?? '').toUpperCase())
-    .join(' ');
-  if (activityType !== 'ELECTRICITY' || !/\b(?:ALBERTA|AB)\b/.test(region)) {
-    return false;
-  }
-
-  const sourceDocument = String(
-    factor.sourceDocument ?? source?.sourceDocument ?? '',
-  ).trim();
-  const sourceAuthority = String(
-    factor.sourceAuthority ?? source?.sourceAuthority ?? '',
-  ).trim();
-  const factorSet = String(factor.factorSet ?? '')
-    .trim()
-    .toUpperCase();
-  return (
-    factorSet === 'PILOT_DEFAULT_V0_1' ||
-    (/^CarbonLite (?:MVP Default Factors|Default Factor Library) v1\.0$/i.test(
-      sourceDocument,
-    ) && /^CarbonLite(?: System Defaults)?$/i.test(sourceAuthority))
-  );
+  const factorId = String(factor.id ?? factor.factorId ?? nestedFactor?.id ?? '').trim();
+  if (factorId === 'factor-electricity-ab' || factorId === 'pilot-electricity-ab-2026') return true;
+  const activityType = String(factor.activityType ?? nestedFactor?.activityType ?? '').trim().toUpperCase();
+  const region = [factor.jurisdictionRegion, factor.region, factor.jurisdiction, nestedFactor?.jurisdictionRegion, source?.jurisdictionRegion]
+    .map((value) => String(value ?? '').toUpperCase()).join(' ');
+  if (activityType !== 'ELECTRICITY' || !/\b(?:ALBERTA|AB)\b/.test(region)) return false;
+  const sourceDocument = String(factor.sourceDocument ?? source?.sourceDocument ?? '').trim();
+  const sourceAuthority = String(factor.sourceAuthority ?? source?.sourceAuthority ?? '').trim();
+  const factorSet = String(factor.factorSet ?? '').trim().toUpperCase();
+  return factorSet === 'PILOT_DEFAULT_V0_1' ||
+    (/^CarbonLite (?:MVP Default Factors|Default Factor Library) v1\.0$/i.test(sourceDocument) && /^CarbonLite(?: System Defaults)?$/i.test(sourceAuthority));
 }
 
 function objectValue(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === 'object' && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : null;
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
 }
 
 function sourceVersion(source: unknown): unknown {
-  return source && typeof source === 'object' && !Array.isArray(source)
-    ? (source as { sourceVersion?: unknown }).sourceVersion
-    : undefined;
+  return source && typeof source === 'object' && !Array.isArray(source) ? (source as { sourceVersion?: unknown }).sourceVersion : undefined;
 }
 
 function unitKey(value: string): string {

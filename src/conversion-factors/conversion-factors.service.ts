@@ -120,6 +120,7 @@ export class ConversionFactorsService {
         data: {
           verified: true,
           status: 'VERIFIED',
+          verificationStatus: 'VERIFIED',
           reviewedBy: input.reviewedBy,
           reviewedAt,
           reviewNotes: input.reviewNotes ?? null,
@@ -232,10 +233,6 @@ export class ConversionFactorsService {
   async isProductionReady(id: string) {
     const version = await this.findGovernedFactorVersion(id);
     return this.isProductionReadyVersion(version);
-  }
-
-  isOfficialSource(sourceAuthority?: string | null) {
-    return isOfficialSourceAuthority(sourceAuthority);
   }
 
   async getFactorVersions(factorId: string, includeArchived = true) {
@@ -1166,11 +1163,6 @@ export class ConversionFactorsService {
         );
       }
 
-      if (!this.isOfficialSource(version.source.sourceAuthority)) {
-        throw new BadRequestException(
-          'Official government confidence requires an official source authority.',
-        );
-      }
     }
   }
 
@@ -1314,25 +1306,6 @@ function inferDraftUpdateAction(previous: { factorValue: Prisma.Decimal; sourceI
   if (previous.sourceId !== updated.sourceId) return 'SOURCE_CHANGED';
   if (String(previous.factorValue) !== String(updated.factorValue)) return 'VALUE_CHANGED';
   return 'STATUS_CHANGED';
-}
-
-const OFFICIAL_SOURCE_AUTHORITIES = [
-  'environment and climate change canada',
-  'eccc',
-  'us epa',
-  'epa',
-  'defra',
-  'ipcc',
-  'ghg protocol',
-  'greenhouse gas protocol',
-];
-
-function isOfficialSourceAuthority(sourceAuthority?: string | null) {
-  const source = normalizeText(sourceAuthority);
-  if (!source) return false;
-  return OFFICIAL_SOURCE_AUTHORITIES.some(
-    (authority) => source === authority || source.includes(authority),
-  );
 }
 
 function normalizeText(value?: string | null) {

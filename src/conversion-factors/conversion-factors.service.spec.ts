@@ -40,6 +40,10 @@ describe('ConversionFactorsService Factor Library adapter', () => {
       jurisdictionRegion: 'Alberta',
       factorYear: 2025,
       status: 'VERIFIED',
+      verified: true,
+      verificationStatus: 'VERIFIED',
+      applicability: 'CORPORATE_INVENTORY',
+      emissionBasis: 'DIRECT_CO2E',
       confidenceLevel: 'OFFICIAL_GOVERNMENT',
       updatedAt: new Date('2025-02-01T00:00:00.000Z'),
       factor: {
@@ -266,7 +270,7 @@ describe('ConversionFactorsService Factor Library adapter', () => {
     });
   });
 
-  it.each([false, true])('allows legacy demo defaults only with persisted workspace opt-in (enabled=%s)', async enabled => {
+  it.each([false, true])('keeps incomplete legacy demo defaults blocked (enabled=%s)', async enabled => {
     const adapter = service({ legacy: [legacyFactor({
       sourceAuthority: 'CarbonLite system defaults', sourceName: 'CarbonLite system defaults',
       sourceDocument: 'Pilot demo factor library', sourceReference: 'Pilot demo factor library',
@@ -278,14 +282,7 @@ describe('ConversionFactorsService Factor Library adapter', () => {
       // Request flags cannot elevate a demo-disabled persisted workspace.
       allowDemoFactors: true, allowPlaceholderFactors: true,
     });
-    if (enabled) {
-      expect(match).toMatchObject({
-        matched: true, factorValue: 2.68, factorType: 'LEGACY_SYSTEM_DEFAULT',
-        status: 'MATCHED_SYSTEM_DEFAULT', matchedBy: 'SYSTEM_COUNTRY_YEAR', confidenceLevel: 'DEMO',
-      });
-    } else {
-      expect(match).toMatchObject({ matched: false, factor: null, status: 'NO_MATCH' });
-    }
+    expect(match).toMatchObject({ matched: false, factor: null, status: 'NO_MATCH' });
   });
 
 });
@@ -329,6 +326,9 @@ describe('ConversionFactorsService factor governance lifecycle', () => {
       status: 'DRAFT',
       confidenceLevel: 'OFFICIAL_GOVERNMENT',
       verified: false,
+      verificationStatus: 'PENDING',
+      applicability: 'CORPORATE_INVENTORY',
+      emissionBasis: 'DIRECT_CO2E',
       sourceId: 'source-1',
       reviewedBy: null,
       reviewedAt: null,
@@ -401,16 +401,16 @@ describe('ConversionFactorsService factor governance lifecycle', () => {
     ).rejects.toThrow('Reviewed at is required before verifying a factor version.');
   });
 
-  it('official government confidence requires an official source', async () => {
+  it('accepts a newly named official government source from source metadata', async () => {
     const { service } = governanceService(
       version({
-        source: source({ sourceAuthority: 'CarbonLite system defaults' }),
+        source: source({ sourceAuthority: 'New government inventory agency' }),
       }),
     );
 
     await expect(
       service.verifyFactor('factor-version-1', { reviewedBy: 'Athena Chen' }),
-    ).rejects.toThrow('Official government confidence requires an official source authority.');
+    ).resolves.toMatchObject({ status: 'VERIFIED', verified: true });
   });
 
   it('cannot verify against an archived official source', async () => {
@@ -432,6 +432,7 @@ describe('ConversionFactorsService factor governance lifecycle', () => {
       ...existing,
       verified: true,
       status: 'VERIFIED',
+      verificationStatus: 'VERIFIED',
       reviewedBy: 'Athena Chen',
       reviewedAt,
       approvalSource: 'ECCC',

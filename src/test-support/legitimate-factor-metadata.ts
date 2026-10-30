@@ -8,6 +8,9 @@ export const LEGITIMATE_OFFICIAL_FACTOR = {
   sourceReference: 'Published inventory factors',
   confidenceLevel: 'OFFICIAL_GOVERNMENT',
   verified: true,
+  verificationStatus: 'VERIFIED',
+  applicability: 'CORPORATE_INVENTORY',
+  emissionBasis: 'DIRECT_CO2E',
 } as const;
 
 export const LEGITIMATE_ORGANIZATION_FACTOR = {
@@ -15,4 +18,7 @@ export const LEGITIMATE_ORGANIZATION_FACTOR = {
   sourceDocument: 'Reviewed site inventory methodology',
   confidenceLevel: 'CUSTOM',
   verified: true,
+  verificationStatus: 'VERIFIED',
+  applicability: 'CORPORATE_INVENTORY',
+  emissionBasis: 'DIRECT_CO2E',
 } as const;
