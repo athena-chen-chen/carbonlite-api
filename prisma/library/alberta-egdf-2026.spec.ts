@@ -67,7 +67,7 @@ describe('official Alberta EGDF development load', () => {
     expect(tx.factor.upsert).not.toHaveBeenCalled();
   });
 
-  it('keeps 1000 kWh of ordinary Alberta inventory at 530 kgCO2e with the exact official record present', () => {
+  it('keeps ordinary Alberta Scope 2 blocked when only demo, EGDF, and reference-only factors exist', () => {
     const inventory = {
       id: 'existing-alberta', organizationId: null, name: 'Electricity - Alberta',
       activityType: 'ELECTRICITY', type: 'EMISSION', unit: 'kWh', resultUnit: 'kgCO2e',
@@ -82,10 +82,14 @@ describe('official Alberta EGDF development load', () => {
       governedFactors: [
         { id: 'generated-version', ...albertaEgdfVersion, factor: { id: ALBERTA_EGDF_FACTOR_ID, ...albertaEgdfFactor }, source: albertaEgdfSource },
         { id: 'existing-inventory-version', factorId: 'demo-factor-electricity-alberta', version: 'demo-2025-kwh-alberta', factorValue: new Prisma.Decimal('0.53'), inputUnit: 'kWh', resultUnit: 'kgCO2e', factorYear: 2025, jurisdictionCountry: 'Canada', jurisdictionRegion: 'Alberta', status: 'DRAFT', confidenceLevel: 'DEMO', updatedAt: new Date('2025-01-01'), source: { isActive: true }, factor: { id: 'demo-factor-electricity-alberta', displayName: 'Electricity - Alberta', activityType: 'ELECTRICITY', isSystem: true, isActive: true } },
+        { id: 'eccc-reference-version', factorId: 'eccc-electricity-ab-2026', version: '2026-reference', factorValue: new Prisma.Decimal('0.438'), inputUnit: 'kWh', resultUnit: 'kgCO2e', factorYear: 2026, jurisdictionCountry: 'Canada', jurisdictionRegion: 'Alberta', status: 'VERIFIED', verified: true, verificationStatus: 'VERIFIED', applicability: 'REFERENCE_ONLY', emissionBasis: 'DIRECT_CO2E', confidenceLevel: 'OFFICIAL_GOVERNMENT', updatedAt: new Date('2026-09-09'), source: { isActive: true }, factor: { id: 'eccc-electricity-ab-2026', displayName: 'Electricity - Alberta - 2026 Reference', activityType: 'ELECTRICITY', isSystem: true, isActive: true } },
       ] as never,
     });
-    expect(result.totalEstimatedEmissionsKgCO2e).toBe(530);
-    expect(result.calculationDetails[0]).toMatchObject({ factorValue: 0.53, factorName: 'Electricity - Alberta', calculatedEmissionsKgCO2e: 530 });
+    expect(result.totalEstimatedEmissionsKgCO2e).toBe(0);
+    expect(result.calculationDetails[0]).toMatchObject({
+      calculationStatus: 'MISSING_FACTOR',
+      calculatedEmissionsKgCO2e: null,
+    });
     expect(result.calculationDetails[0].factorName).not.toBe(ALBERTA_EGDF_NAME);
   });
 });
