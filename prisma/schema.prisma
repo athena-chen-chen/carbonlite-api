@@ -515,7 +515,7 @@ model FactorVersion {
   id                  String                @id @default(cuid())
   factorId            String
   version             String
-  factorValue         Decimal               @db.Decimal(18, 8)
+  factorValue         Decimal               @db.Decimal(30, 16)
   inputUnit           String
   resultUnit          String
   jurisdictionCountry String?
@@ -656,7 +656,7 @@ model ConversionFactor {
   region             String?
   country            String?
   unit               String
-  factorValue        Decimal       @db.Decimal(18, 8)
+  factorValue        Decimal       @db.Decimal(30, 16)
   resultUnit         String
   sourceName         String?
   sourceReference    String?
