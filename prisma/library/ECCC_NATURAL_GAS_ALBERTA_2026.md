@@ -1,6 +1,6 @@
 # ECCC Alberta natural-gas production factor, 2026
 
-This paid-pilot library entry covers Scope 1 stationary combustion of
+These paid-pilot library entries cover Scope 1 stationary combustion of
 utility-supplied marketable natural gas at a commercial/institutional Alberta
 facility. It does not promote or modify the existing 49.44 kgCO2e/GJ
 Canada-generic reference or the 1.89 kgCO2e/m3 demo factor.
@@ -27,6 +27,9 @@ CO2e = 1962 + (0.037 x 28) + (0.035 x 265)
       = 51.3756446991404 kgCO2e/GJ
 ```
 
+The direct volume factor uses the same source components without an energy
+conversion: `1972.311 gCO2e/m3 = 1.972311 kgCO2e/m3`.
+
 This is an HHV (gross calorific value) basis, at the Canadian standard gas
 conditions of 15 C and 101.325 kPa. It does not use the general CRA conversion
 of 26.853 m3/GJ, which is inconsistent with the selected ECCC 38.39 MJ/m3 HHV.
@@ -45,6 +48,6 @@ endpoint ID:
 npm run seed:eccc-natural-gas-alberta:neon -- --confirmed-development-endpoint=<endpoint-id>
 ```
 
-It creates one source, one governed factor/version and one legacy API
-projection. Empty upsert updates make reruns non-destructive. The loader is not
+It creates one source, two governed factor/versions and two legacy API
+projections. Empty upsert updates make reruns non-destructive. The loader is not
 part of the general demo seed and was not run during implementation.

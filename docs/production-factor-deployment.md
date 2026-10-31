@@ -1,6 +1,6 @@
 # Production factor deployment gate
 
-The paid-pilot production manifest contains exactly 20 reviewed factors. Loading is an explicit deployment operation; API startup never seeds factors.
+The paid-pilot production manifest contains exactly 21 reviewed factors. Loading is an explicit deployment operation; API startup never seeds factors.
 
 Deployment order:
 

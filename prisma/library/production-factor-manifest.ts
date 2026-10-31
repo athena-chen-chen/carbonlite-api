@@ -13,11 +13,15 @@ import {
 } from './eccc-refined-petroleum-2026';
 import {
   ECCC_NATURAL_GAS_ALBERTA_2026_FACTOR_ID,
+  ECCC_NATURAL_GAS_ALBERTA_2026_M3_FACTOR_ID,
   ECCC_NATURAL_GAS_ALBERTA_2026_SOURCE_ID,
   ecccNaturalGasAlberta2026Factor,
+  ecccNaturalGasAlberta2026M3Factor,
   ecccNaturalGasAlberta2026Legacy,
+  ecccNaturalGasAlberta2026M3Legacy,
   ecccNaturalGasAlberta2026Source,
   ecccNaturalGasAlberta2026Version,
+  ecccNaturalGasAlberta2026M3Version,
 } from './eccc-natural-gas-alberta-2026';
 import {
   DESNZ_HOTEL_CANADA_2026_FACTOR_ID,
@@ -85,6 +89,9 @@ export const PRODUCTION_FACTOR_MANIFEST: readonly ProductionFactorManifestEntry[
   entry(ECCC_NATURAL_GAS_ALBERTA_2026_FACTOR_ID, ECCC_NATURAL_GAS_ALBERTA_2026_SOURCE_ID,
     ecccNaturalGasAlberta2026Factor, ecccNaturalGasAlberta2026Version,
     ecccNaturalGasAlberta2026Legacy, ecccNaturalGasAlberta2026Source),
+  entry(ECCC_NATURAL_GAS_ALBERTA_2026_M3_FACTOR_ID, ECCC_NATURAL_GAS_ALBERTA_2026_SOURCE_ID,
+    ecccNaturalGasAlberta2026M3Factor, ecccNaturalGasAlberta2026M3Version,
+    ecccNaturalGasAlberta2026M3Legacy, ecccNaturalGasAlberta2026Source),
   entry(DESNZ_HOTEL_CANADA_2026_FACTOR_ID, DESNZ_HOTEL_CANADA_2026_SOURCE_ID,
     desnzHotelCanada2026Factor, desnzHotelCanada2026Version,
     desnzHotelCanada2026Legacy, desnzHotelCanada2026Source),
@@ -98,9 +105,9 @@ export const PRODUCTION_FACTOR_MANIFEST: readonly ProductionFactorManifestEntry[
   )),
 ];
 
-export const EXPECTED_PRODUCTION_FACTOR_COUNT = 20;
+export const EXPECTED_PRODUCTION_FACTOR_COUNT = 21;
 
 if (PRODUCTION_FACTOR_MANIFEST.length !== EXPECTED_PRODUCTION_FACTOR_COUNT ||
     new Set(PRODUCTION_FACTOR_MANIFEST.map((item) => item.factorId)).size !== EXPECTED_PRODUCTION_FACTOR_COUNT) {
-  throw new Error('Production factor manifest must contain exactly 20 unique factor identities.');
+  throw new Error('Production factor manifest must contain exactly 21 unique factor identities.');
 }

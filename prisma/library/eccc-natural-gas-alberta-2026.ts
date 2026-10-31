@@ -7,21 +7,26 @@ export const ECCC_NATURAL_GAS_ALBERTA_2026_SOURCE_URL =
   'https://www.canada.ca/en/environment-climate-change/services/climate-change/pricing-pollution-how-it-will-work/output-based-pricing-system/federal-greenhouse-gas-offset-system/emission-factors-reference-values.html';
 export const ECCC_NATURAL_GAS_ALBERTA_2026_VERSION = '2026.1';
 export const ECCC_NATURAL_GAS_ALBERTA_2026_VALUE = '51.3756446991404';
+export const ECCC_NATURAL_GAS_ALBERTA_2026_M3_VALUE = '1.972311';
 
 const DISPLAY_NAME = 'Natural gas combustion - Alberta - 2026';
+const VOLUME_DISPLAY_NAME = 'Natural gas combustion - Alberta - 2026 - volume';
 const SOURCE_VERSION = '4.0 (September 2026)';
 const SOURCE_TABLES = 'Tables 1.3, 2.3 and 8';
 const REVIEWED_BY = 'CarbonLite paid-pilot methodology review';
 const METHODOLOGY =
   'Direct combustion CO2e per m3 = CO2 + (CH4 x 28) + (N2O x 265); divide by the ECCC 38.39 MJ/m3 HHV. The resulting g/MJ is numerically kg/GJ.';
+const VOLUME_METHODOLOGY =
+  'Direct combustion CO2e per m3 = CO2 + (CH4 x 28) + (N2O x 265); convert gCO2e/m3 directly to kgCO2e/m3.';
 
-function factorId(): string {
+function factorId(displayName = DISPLAY_NAME, inputUnit = 'GJ'): string {
   return `factor_${createHash('md5')
-    .update(`NATURAL_GAS|${DISPLAY_NAME}|GJ`)
+    .update(`NATURAL_GAS|${displayName}|${inputUnit}`)
     .digest('hex')}`;
 }
 
 export const ECCC_NATURAL_GAS_ALBERTA_2026_FACTOR_ID = factorId();
+export const ECCC_NATURAL_GAS_ALBERTA_2026_M3_FACTOR_ID = factorId(VOLUME_DISPLAY_NAME, 'm3');
 
 export const ecccNaturalGasAlberta2026Source = {
   sourceAuthority: 'Environment and Climate Change Canada',
@@ -55,6 +60,13 @@ export const ecccNaturalGasAlberta2026Factor = {
     'Alberta commercial/institutional stationary combustion of utility-supplied marketable natural gas, calendar year 2026.',
   isSystem: true,
   isActive: true,
+} satisfies Prisma.FactorCreateWithoutVersionsInput;
+
+export const ecccNaturalGasAlberta2026M3Factor = {
+  ...ecccNaturalGasAlberta2026Factor,
+  displayName: VOLUME_DISPLAY_NAME,
+  description:
+    'Direct volume factor for Alberta commercial/institutional stationary combustion of utility-supplied marketable natural gas, calendar year 2026.',
 } satisfies Prisma.FactorCreateWithoutVersionsInput;
 
 const methodologyProvenance = {
@@ -96,6 +108,21 @@ const methodologyProvenance = {
 
 const reviewNotes =
   '(1962 + 0.037 x 28 + 0.035 x 265) / 38.39 = 51.3756446991404 kgCO2e/GJ. This uses ECCC HHV, not the generic CRA 26.853 m3/GJ conversion. The separate 49.44 kgCO2e/GJ projection reference remains reference-only.';
+const volumeReviewNotes =
+  '1962 + (0.037 x 28) + (0.035 x 265) = 1972.311 gCO2e/m3 = 1.972311 kgCO2e/m3. This is a direct volume factor; no GJ-to-m3 conversion is applied.';
+
+const {
+  energyConversion: _energyConversion,
+  derivedFactorKgCO2ePerGJ: _derivedFactorKgCO2ePerGJ,
+  ...sharedVolumeProvenance
+} = methodologyProvenance;
+
+const volumeMethodologyProvenance = {
+  ...sharedVolumeProvenance,
+  methodologyMethod: VOLUME_METHODOLOGY,
+  quantityBasis: 'VOLUME',
+  derivedFactorKgCO2ePerM3: ECCC_NATURAL_GAS_ALBERTA_2026_M3_VALUE,
+};
 
 export const ecccNaturalGasAlberta2026Version = {
   factorId: ECCC_NATURAL_GAS_ALBERTA_2026_FACTOR_ID,
@@ -130,6 +157,18 @@ export const ecccNaturalGasAlberta2026Version = {
   methodologyProvenance,
 } satisfies Prisma.FactorVersionUncheckedCreateInput;
 
+export const ecccNaturalGasAlberta2026M3Version = {
+  ...ecccNaturalGasAlberta2026Version,
+  factorId: ECCC_NATURAL_GAS_ALBERTA_2026_M3_FACTOR_ID,
+  factorValue: new Prisma.Decimal(ECCC_NATURAL_GAS_ALBERTA_2026_M3_VALUE),
+  inputUnit: 'm3',
+  methodology: VOLUME_METHODOLOGY,
+  reviewNotes: volumeReviewNotes,
+  sourceColumn: 'CO2, CH4, N2O',
+  notes: volumeReviewNotes,
+  methodologyProvenance: volumeMethodologyProvenance,
+} satisfies Prisma.FactorVersionUncheckedCreateInput;
+
 export const ecccNaturalGasAlberta2026Legacy = {
   organizationId: null,
   name: DISPLAY_NAME,
@@ -161,16 +200,42 @@ export const ecccNaturalGasAlberta2026Legacy = {
   isDefault: true,
 } satisfies Prisma.ConversionFactorUncheckedCreateInput;
 
+export const ecccNaturalGasAlberta2026M3Legacy = {
+  ...ecccNaturalGasAlberta2026Legacy,
+  name: VOLUME_DISPLAY_NAME,
+  unit: 'm3',
+  factorValue: new Prisma.Decimal(ECCC_NATURAL_GAS_ALBERTA_2026_M3_VALUE),
+  methodology: VOLUME_METHODOLOGY,
+  notes: volumeReviewNotes,
+  methodologyProvenance: volumeMethodologyProvenance,
+} satisfies Prisma.ConversionFactorUncheckedCreateInput;
+
 /** Adds the reviewed identity; reruns restore only its authoritative numeric value. */
 export async function seedEcccNaturalGasAlberta2026(prisma: PrismaClient) {
   return prisma.$transaction(async (tx) => {
-    const [sameName, sameLegacyName] = await Promise.all([
-      tx.factor.findFirst({ where: { displayName: DISPLAY_NAME }, select: { id: true } }),
-      tx.conversionFactor.findFirst({ where: { name: DISPLAY_NAME }, select: { id: true } }),
+    const factorEntries = [
+      {
+        factorId: ECCC_NATURAL_GAS_ALBERTA_2026_FACTOR_ID,
+        factor: ecccNaturalGasAlberta2026Factor,
+        version: ecccNaturalGasAlberta2026Version,
+        legacy: ecccNaturalGasAlberta2026Legacy,
+      },
+      {
+        factorId: ECCC_NATURAL_GAS_ALBERTA_2026_M3_FACTOR_ID,
+        factor: ecccNaturalGasAlberta2026M3Factor,
+        version: ecccNaturalGasAlberta2026M3Version,
+        legacy: ecccNaturalGasAlberta2026M3Legacy,
+      },
+    ];
+    const [sameNames, sameLegacyNames] = await Promise.all([
+      tx.factor.findMany({ where: { displayName: { in: factorEntries.map(({ factor }) => factor.displayName) } }, select: { id: true, displayName: true } }),
+      tx.conversionFactor.findMany({ where: { name: { in: factorEntries.map(({ legacy }) => legacy.name) } }, select: { id: true, name: true } }),
     ]);
-    if ((sameName && sameName.id !== ECCC_NATURAL_GAS_ALBERTA_2026_FACTOR_ID) ||
-        (sameLegacyName && sameLegacyName.id !== ECCC_NATURAL_GAS_ALBERTA_2026_FACTOR_ID)) {
-      throw new Error(`A different record already uses the production factor name: ${DISPLAY_NAME}`);
+    for (const entry of factorEntries) {
+      if (sameNames.some((record) => record.displayName === entry.factor.displayName && record.id !== entry.factorId) ||
+          sameLegacyNames.some((record) => record.name === entry.legacy.name && record.id !== entry.factorId)) {
+        throw new Error(`A different record already uses the production factor name: ${entry.factor.displayName}`);
+      }
     }
 
     await tx.factorSource.upsert({
@@ -178,30 +243,36 @@ export async function seedEcccNaturalGasAlberta2026(prisma: PrismaClient) {
       update: {},
       create: { id: ECCC_NATURAL_GAS_ALBERTA_2026_SOURCE_ID, ...ecccNaturalGasAlberta2026Source },
     });
-    await tx.factor.upsert({
-      where: { id: ECCC_NATURAL_GAS_ALBERTA_2026_FACTOR_ID },
-      update: {},
-      create: { id: ECCC_NATURAL_GAS_ALBERTA_2026_FACTOR_ID, ...ecccNaturalGasAlberta2026Factor },
-    });
-    const version = await tx.factorVersion.upsert({
-      where: {
-        factorId_version: {
-          factorId: ECCC_NATURAL_GAS_ALBERTA_2026_FACTOR_ID,
-          version: ECCC_NATURAL_GAS_ALBERTA_2026_VERSION,
+    const versions = [];
+    for (const entry of factorEntries) {
+      await tx.factor.upsert({
+        where: { id: entry.factorId },
+        update: {},
+        create: { id: entry.factorId, ...entry.factor },
+      });
+      const version = await tx.factorVersion.upsert({
+        where: {
+          factorId_version: {
+            factorId: entry.factorId,
+            version: ECCC_NATURAL_GAS_ALBERTA_2026_VERSION,
+          },
         },
-      },
-      update: { factorValue: ecccNaturalGasAlberta2026Version.factorValue },
-      create: ecccNaturalGasAlberta2026Version,
-    });
-    await tx.conversionFactor.upsert({
-      where: { id: ECCC_NATURAL_GAS_ALBERTA_2026_FACTOR_ID },
-      update: { factorValue: ecccNaturalGasAlberta2026Legacy.factorValue },
-      create: { id: ECCC_NATURAL_GAS_ALBERTA_2026_FACTOR_ID, ...ecccNaturalGasAlberta2026Legacy },
-    });
+        update: { factorValue: entry.version.factorValue },
+        create: entry.version,
+      });
+      await tx.conversionFactor.upsert({
+        where: { id: entry.factorId },
+        update: { factorValue: entry.legacy.factorValue },
+        create: { id: entry.factorId, ...entry.legacy },
+      });
+      versions.push(version);
+    }
     return {
       sourceId: ECCC_NATURAL_GAS_ALBERTA_2026_SOURCE_ID,
       factorId: ECCC_NATURAL_GAS_ALBERTA_2026_FACTOR_ID,
-      factorVersionId: version.id,
+      factorVersionId: versions[0].id,
+      volumeFactorId: ECCC_NATURAL_GAS_ALBERTA_2026_M3_FACTOR_ID,
+      volumeFactorVersionId: versions[1].id,
     };
   });
 }

@@ -47,26 +47,26 @@ describe('production factor deployment gate (disposable PostgreSQL)', () => {
     await prisma.$disconnect();
   });
 
-  it('has one canonical manifest of 20 unique reviewed factors', () => {
-    expect(EXPECTED_PRODUCTION_FACTOR_COUNT).toBe(20);
-    expect(PRODUCTION_FACTOR_MANIFEST).toHaveLength(20);
-    expect(new Set(manifestIds).size).toBe(20);
+  it('has one canonical manifest of 21 unique reviewed factors', () => {
+    expect(EXPECTED_PRODUCTION_FACTOR_COUNT).toBe(21);
+    expect(PRODUCTION_FACTOR_MANIFEST).toHaveLength(21);
+    expect(new Set(manifestIds).size).toBe(21);
   });
 
   it('fails empty, loads once, verifies, and remains idempotent', async () => {
     const empty = await verifyProductionFactors(prisma);
     expect(empty).toMatchObject({ pass: false, present: 0, eligible: 0 });
-    expect(empty.missing).toHaveLength(20);
+    expect(empty.missing).toHaveLength(21);
 
     await loadProductionFactors(prisma, loadEnv);
     const first = await verifyProductionFactors(prisma);
-    expect(first).toMatchObject({ pass: true, present: 20, eligible: 20 });
+    expect(first).toMatchObject({ pass: true, present: 21, eligible: 21 });
 
     await loadProductionFactors(prisma, loadEnv);
     const second = await verifyProductionFactors(prisma);
-    expect(second).toMatchObject({ pass: true, present: 20, eligible: 20 });
-    expect(await prisma.factor.count({ where: { id: { in: manifestIds } } })).toBe(20);
-    expect(await prisma.factorVersion.count({ where: { factorId: { in: manifestIds } } })).toBe(20);
+    expect(second).toMatchObject({ pass: true, present: 21, eligible: 21 });
+    expect(await prisma.factor.count({ where: { id: { in: manifestIds } } })).toBe(21);
+    expect(await prisma.factorVersion.count({ where: { factorId: { in: manifestIds } } })).toBe(21);
   });
 
   it('detects missing, wrong-value, and governance-ineligible expected factors', async () => {
