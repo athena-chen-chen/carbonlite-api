@@ -19,7 +19,7 @@ import { CreateFactorSourceDto } from './dto/create-factor-source.dto';
 import { UpdateFactorSourceDto } from './dto/update-factor-source.dto';
 import { FactorSourcesService } from './factor-sources.service';
 
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, PlatformAdminGuard)
 @Controller('factor-sources')
 export class FactorSourcesController {
   constructor(private readonly factorSourcesService: FactorSourcesService) {}

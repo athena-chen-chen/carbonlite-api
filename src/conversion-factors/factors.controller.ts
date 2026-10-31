@@ -10,7 +10,7 @@ import { UserRole } from '@prisma/client';
 import { ConversionFactorsService } from './conversion-factors.service';
 import { CreateFactorVersionDto } from './dto/create-factor-version.dto';
 
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, PlatformAdminGuard)
 @Controller('factors')
 export class FactorsController {
   constructor(

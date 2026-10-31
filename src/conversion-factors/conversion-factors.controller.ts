@@ -19,6 +19,7 @@ import { AuthenticatedUser } from '../auth/auth.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { throwCapturedAppError } from '../common/monitoring/capture-app-error';
+import { isPlatformAdmin } from '../common/permissions/workspace-permissions';
 
 @UseGuards(JwtAuthGuard, WorkspaceMutationGuard)
 @Controller('conversion-factors')
@@ -67,12 +68,25 @@ export class ConversionFactorsController {
     @CurrentUser() user: AuthenticatedUser,
     @Query() query: ConversionFactorQueryDto,
   ) {
-    return this.conversionFactorsService.findAll(user.organizationId, query);
+    if (isPlatformAdmin(user) || user.accountType === 'INTERNAL_TEST' || user.accountType === 'PILOT_REVIEWER') {
+      return this.conversionFactorsService.findAll(user.organizationId, query);
+    }
+
+    return this.conversionFactorsService.findAllCustomerEligible(user.organizationId, query);
+  }
+
+  @Get('methodology')
+  customerMethodology() {
+    return this.conversionFactorsService.findCustomerMethodology();
   }
 
   @Get(':id')
   findOne(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
-    return this.conversionFactorsService.findOne(user.organizationId, id);
+    if (isPlatformAdmin(user) || user.accountType === 'INTERNAL_TEST' || user.accountType === 'PILOT_REVIEWER') {
+      return this.conversionFactorsService.findOne(user.organizationId, id);
+    }
+
+    return this.conversionFactorsService.findOneCustomerEligible(user.organizationId, id);
   }
 
   @Patch(':id')

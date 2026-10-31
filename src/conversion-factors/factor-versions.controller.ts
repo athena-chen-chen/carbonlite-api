@@ -10,7 +10,7 @@ import { ConversionFactorsService } from './conversion-factors.service';
 import { UpdateFactorVersionDraftDto } from './dto/update-factor-version-draft.dto';
 import { FactorVersionActionDto } from './dto/factor-version-action.dto';
 
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, PlatformAdminGuard)
 @Controller('factor-versions')
 export class FactorVersionsController {
   constructor(private readonly conversionFactorsService: ConversionFactorsService) {}

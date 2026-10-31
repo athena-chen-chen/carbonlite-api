@@ -835,6 +835,45 @@ export class ConversionFactorsService {
     };
   }
 
+  async findAllCustomerEligible(organizationId: string, query: ConversionFactorQueryDto) {
+    const page = query.page ?? 1;
+    const pageSize = query.pageSize ?? 20;
+    const candidates = await this.prisma.conversionFactor.findMany({
+      where: this.customerFactorWhere(organizationId, query),
+      orderBy: [
+        { isSystemDefault: 'asc' },
+        { isDefault: 'desc' },
+        { createdAt: 'desc' },
+      ],
+    });
+    const approved = candidates.filter(isInventoryFactorEligible);
+    const skip = (page - 1) * pageSize;
+
+    return {
+      items: approved.slice(skip, skip + pageSize),
+      page,
+      pageSize,
+      total: approved.length,
+      totalPages: Math.ceil(approved.length / pageSize),
+    };
+  }
+
+  async findCustomerMethodology() {
+    const candidates = await this.prisma.conversionFactor.findMany({
+      where: { isSystemDefault: true },
+      orderBy: [
+        { activityType: 'asc' },
+        { sourceYear: 'desc' },
+        { name: 'asc' },
+      ],
+    });
+    const items = candidates
+      .filter(isInventoryFactorEligible)
+      .map((factor) => this.toCustomerMethodologyDto(factor));
+
+    return { items, total: items.length };
+  }
+
   async findOne(organizationId: string, id: string) {
     const factor = await this.prisma.conversionFactor.findFirst({
       where: {
@@ -851,6 +890,109 @@ export class ConversionFactorsService {
     }
 
     return factor;
+  }
+
+  async findOneCustomerEligible(organizationId: string, id: string) {
+    const factor = await this.findOne(organizationId, id);
+    if (!isInventoryFactorEligible(factor)) {
+      throw new NotFoundException(`ConversionFactor ${id} not found.`);
+    }
+    return factor;
+  }
+
+  private customerFactorWhere(
+    organizationId: string,
+    query: ConversionFactorQueryDto,
+  ): Prisma.ConversionFactorWhereInput {
+    return {
+      OR: [{ isSystemDefault: true }, { organizationId }],
+      ...(query.type ? { type: query.type as FactorType } : {}),
+      ...(query.activityType ? { activityType: query.activityType as ActivityType } : {}),
+      ...(query.jurisdiction
+        ? { jurisdiction: { contains: query.jurisdiction, mode: 'insensitive' as const } }
+        : {}),
+      ...(query.sourceYear ? { sourceYear: query.sourceYear } : {}),
+      ...(query.search
+        ? {
+            AND: [{
+              OR: [
+                { name: { contains: query.search, mode: 'insensitive' as const } },
+                { unit: { contains: query.search, mode: 'insensitive' as const } },
+                { resultUnit: { contains: query.search, mode: 'insensitive' as const } },
+                { sourceName: { contains: query.search, mode: 'insensitive' as const } },
+                { sourceReference: { contains: query.search, mode: 'insensitive' as const } },
+                { sourceAuthority: { contains: query.search, mode: 'insensitive' as const } },
+                { jurisdiction: { contains: query.search, mode: 'insensitive' as const } },
+                { region: { contains: query.search, mode: 'insensitive' as const } },
+                { country: { contains: query.search, mode: 'insensitive' as const } },
+              ],
+            }],
+          }
+        : {}),
+    };
+  }
+
+  private toCustomerMethodologyDto(factor: {
+    activityType: ActivityType | null;
+    name: string;
+    country: string | null;
+    region: string | null;
+    jurisdiction: string | null;
+    unit: string;
+    factorValue: Prisma.Decimal;
+    resultUnit: string;
+    sourceAuthority: string | null;
+    sourceName: string | null;
+    sourceDocument: string | null;
+    sourceUrl: string | null;
+    sourceYear: number | null;
+    methodology: string | null;
+    methodologyProvenance: Prisma.JsonValue | null;
+    notes: string | null;
+  }) {
+    const provenance = factor.methodologyProvenance &&
+      typeof factor.methodologyProvenance === 'object' &&
+      !Array.isArray(factor.methodologyProvenance)
+      ? factor.methodologyProvenance as Record<string, unknown>
+      : {};
+    const activityType = String(factor.activityType ?? '');
+    const haulCategory = String(provenance.haulCategory ?? '').toUpperCase();
+    const sourceLabel = /environmental protection agency|\bepa\b/i.test(
+      `${factor.sourceAuthority ?? ''} ${factor.sourceName ?? ''}`,
+    ) ? 'EPA' : String(factor.sourceAuthority ?? factor.sourceName ?? 'Published source').trim();
+    const applicabilityYear = Number(provenance.factorYear ?? factor.sourceYear) || null;
+    const haulLabel = ['SHORT', 'MEDIUM', 'LONG'].includes(haulCategory)
+      ? `${haulCategory[0]}${haulCategory.slice(1).toLowerCase()} haul`
+      : null;
+    const displayName = activityType === 'AIR_TRAVEL' && haulLabel
+      ? `Air travel — ${haulLabel} — ${sourceLabel} ${applicabilityYear ?? ''}`.trim()
+      : activityType === 'NATURAL_GAS'
+        ? `${factor.name} — ${factor.unit}`
+        : factor.name;
+    const scope2Method = String(provenance.scope2AccountingMethod ?? '').toUpperCase();
+    const accountingBasis = scope2Method === 'LOCATION_BASED'
+      ? 'Scope 2 — Location-based'
+      : ['GASOLINE', 'DIESEL', 'NATURAL_GAS'].includes(activityType)
+        ? 'Scope 1 — Direct combustion'
+        : ['AIR_TRAVEL', 'HOTEL'].includes(activityType)
+          ? 'Scope 3 — Business travel'
+          : 'Direct CO2e';
+
+    return {
+      activityType,
+      displayName,
+      geography: factor.jurisdiction ?? factor.region ?? factor.country ?? 'Canada',
+      applicabilityYear,
+      factorValue: Number(factor.factorValue),
+      inputUnit: factor.unit,
+      resultUnit: factor.resultUnit,
+      source: [sourceLabel, factor.sourceDocument].filter(Boolean).join(' — '),
+      sourceUrl: factor.sourceUrl,
+      methodology: factor.methodology ?? 'Approved CarbonLite methodology.',
+      accountingBasis,
+      assumptions: factor.notes,
+      status: 'Approved' as const,
+    };
   }
 
   async update(organizationId: string, id: string, dto: UpdateConversionFactorDto, userId?: string) {
