@@ -1,5 +1,8 @@
 import { validate } from 'class-validator';
-import { CreatePilotReviewerDto } from './create-pilot-reviewer.dto';
+import {
+  CreatePilotReviewerDto,
+  InvitationPurpose,
+} from './create-pilot-reviewer.dto';
 
 const EMAIL_VALIDATION_MESSAGE =
   'Please enter a valid email address, for example name@example.com.';
@@ -16,6 +19,12 @@ describe('CreatePilotReviewerDto', () => {
     const errors = await validate(buildDto('  Reviewer@Example.com  '));
 
     expect(errors).toHaveLength(0);
+  });
+
+  it.each(Object.values(InvitationPurpose))('accepts invitation purpose %s', async (purpose) => {
+    const dto = buildDto('reviewer@example.com');
+    dto.invitationPurpose = purpose;
+    await expect(validate(dto)).resolves.toHaveLength(0);
   });
 
   it.each([

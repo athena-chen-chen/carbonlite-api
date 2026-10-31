@@ -5,10 +5,20 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { MembershipRole, OrganizationCustomerStatus, UserRole } from '@prisma/client';
+import {
+  MembershipRole,
+  OrganizationCustomerStatus,
+  Prisma,
+  UserRole,
+} from '@prisma/client';
 import type { AuthenticatedUser } from '../auth/auth.service';
 import { isPlatformAdmin } from '../common/permissions/workspace-permissions';
 import { PrismaService } from '../prisma/prisma.service';
+import {
+  getGoldenSampleActivityWhere,
+  GOLDEN_SAMPLE_REPORT_TITLE,
+} from '../sample-data/golden-sample-data.service';
+import { CleanupGoldenSampleDto } from './dto/cleanup-golden-sample.dto';
 import { ProvisionPaidPilotDto } from './dto/provision-paid-pilot.dto';
 
 const CUSTOMER_ACCOUNT_TYPE = 'CUSTOMER';
@@ -34,6 +44,18 @@ export class CustomerProvisioningService {
       }
       if (organization.customerStatus === OrganizationCustomerStatus.SUSPENDED) {
         throw new ConflictException('A suspended organization cannot be provisioned.');
+      }
+
+      const goldenSample = await this.findGoldenSampleArtifacts(
+        tx,
+        organization.id,
+      );
+      if (goldenSample.activityIds.length > 0 || goldenSample.reportCount > 0) {
+        throw new ConflictException({
+          code: 'DEMO_DATA_PRESENT',
+          message:
+            'Known Golden Sample artifacts must be removed with the guarded cleanup operation before provisioning.',
+        });
       }
 
       const primaryAdmin = await tx.user.findFirst({
@@ -149,6 +171,97 @@ export class CustomerProvisioningService {
         false,
       );
     });
+  }
+
+  async cleanupGoldenSampleArtifacts(
+    actor: AuthenticatedUser,
+    command: CleanupGoldenSampleDto,
+  ) {
+    this.assertAuthorized(actor, command.organizationId);
+    if (
+      command.confirmCleanup !== true ||
+      command.confirmationOrganizationId !== command.organizationId
+    ) {
+      throw new BadRequestException('Exact organization confirmation is required.');
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      const organization = await tx.organization.findUnique({
+        where: { id: command.organizationId },
+      });
+      if (!organization) throw new NotFoundException('Organization not found.');
+      if (organization.slug !== command.confirmationOrganizationSlug) {
+        throw new BadRequestException(
+          'Exact organization slug confirmation is required.',
+        );
+      }
+      const artifacts = await this.findGoldenSampleArtifacts(
+        tx,
+        organization.id,
+      );
+      const metricResults = artifacts.activityIds.length
+        ? await tx.metricResult.deleteMany({
+            where: {
+              organizationId: organization.id,
+              activityDataId: { in: artifacts.activityIds },
+            },
+          })
+        : { count: 0 };
+      const activities = await tx.activityData.deleteMany({
+        where: getGoldenSampleActivityWhere(organization.id),
+      });
+      const reports = await tx.report.deleteMany({
+        where: {
+          organizationId: organization.id,
+          title: GOLDEN_SAMPLE_REPORT_TITLE,
+        },
+      });
+
+      await tx.auditLog.create({
+        data: {
+          organizationId: organization.id,
+          userId: actor.id,
+          action: 'GOLDEN_SAMPLE_ARTIFACTS_CLEANED',
+          entityType: 'Organization',
+          entityId: organization.id,
+          description: 'Removed known Golden Sample artifacts before customer provisioning.',
+          newValue: {
+            activityRecordsDeleted: activities.count,
+            metricResultsDeleted: metricResults.count,
+            reportsDeleted: reports.count,
+          },
+        },
+      });
+
+      const removed =
+        activities.count + metricResults.count + reports.count;
+      return {
+        organizationId: organization.id,
+        status: removed > 0 ? 'CLEANED' : 'NOTHING_TO_CLEAN',
+        activityRecordsDeleted: activities.count,
+        metricResultsDeleted: metricResults.count,
+        reportsDeleted: reports.count,
+      };
+    });
+  }
+
+  private async findGoldenSampleArtifacts(
+    tx: Prisma.TransactionClient,
+    organizationId: string,
+  ) {
+    const [activities, reportCount] = await Promise.all([
+      tx.activityData.findMany({
+        where: getGoldenSampleActivityWhere(organizationId),
+        select: { id: true },
+      }),
+      tx.report.count({
+        where: { organizationId, title: GOLDEN_SAMPLE_REPORT_TITLE },
+      }),
+    ]);
+    return {
+      activityIds: activities.map(activity => activity.id),
+      reportCount,
+    };
   }
 
   private assertAuthorized(actor: AuthenticatedUser, organizationId: string) {

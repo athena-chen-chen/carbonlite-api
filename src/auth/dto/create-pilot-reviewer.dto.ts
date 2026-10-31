@@ -1,9 +1,18 @@
-import { IsDateString, IsOptional, IsString, Matches, MinLength } from 'class-validator';
+import { IsDateString, IsEnum, IsOptional, IsString, Matches, MinLength } from 'class-validator';
 
 const EMAIL_VALIDATION_MESSAGE =
   'Please enter a valid email address, for example name@example.com.';
 
+export enum InvitationPurpose {
+  DEMO = 'DEMO',
+  CUSTOMER = 'CUSTOMER',
+}
+
 export class CreatePilotReviewerDto {
+  @IsOptional()
+  @IsEnum(InvitationPurpose)
+  invitationPurpose?: InvitationPurpose;
+
   @IsString()
   @MinLength(2)
   name!: string;

@@ -5,6 +5,7 @@ import {
   ValidationPipe,
 } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
+import { NestExpressApplication } from '@nestjs/platform-express';
 import { AppModule } from '../../src/app.module';
 import { PrismaService } from '../../src/prisma/prisma.service';
 import { assertSafeTestDatabaseTarget } from './database-safety';
@@ -19,7 +20,7 @@ export async function createE2eApp(options?: {
     imports: [AppModule],
   }).compile();
 
-  const app = moduleRef.createNestApplication();
+  const app = moduleRef.createNestApplication<NestExpressApplication>();
   configureHttpSecurity(app, {
     ...process.env,
     APP_ENV: 'test',

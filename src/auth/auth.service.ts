@@ -12,6 +12,7 @@ import bcrypt from 'bcryptjs';
 import { createHash, randomBytes, timingSafeEqual } from 'crypto';
 import {
   MembershipRole,
+  Organization,
   OrganizationCustomerStatus,
   Prisma,
   UserRole,
@@ -20,7 +21,10 @@ import { PrismaService } from '../prisma/prisma.service';
 import { RegisterDto } from './dto/register.dto';
 import { AuditLogService } from '../audit-log/audit-log.service';
 import { ActivityTrackingService, trackOptionalActivity } from '../activity-tracking/activity-tracking.service';
-import { CreatePilotReviewerDto } from './dto/create-pilot-reviewer.dto';
+import {
+  CreatePilotReviewerDto,
+  InvitationPurpose,
+} from './dto/create-pilot-reviewer.dto';
 import { DeactivatePilotReviewerDto } from './dto/deactivate-pilot-reviewer.dto';
 import { RegeneratePilotReviewerInviteDto } from './dto/regenerate-pilot-reviewer-invite.dto';
 import { SetPasswordDto } from './dto/set-password.dto';
@@ -222,6 +226,8 @@ export class AuthService {
       DEFAULT_PILOT_WORKSPACE_NAME;
     const expiresAt = dto.expiresAt || dto.expires;
     const accountExpiresAt = expiresAt ? new Date(expiresAt) : null;
+    const invitationPurpose =
+      dto.invitationPurpose ?? InvitationPurpose.DEMO;
 
     if (!fullName) {
       throw new BadRequestException('Pilot reviewer name is required.');
@@ -240,25 +246,18 @@ export class AuthService {
     const { firstName, lastName } = this.splitName(fullName);
 
     const result = await this.prisma.$transaction(async (tx) => {
-      let workspace = dto.workspaceId
+      const existingWorkspace = dto.workspaceId
         ? await tx.organization.findUnique({ where: { id: dto.workspaceId } })
         : await this.findOrCreatePilotWorkspace(tx, workspaceName);
 
-      if (!workspace) {
+      if (!existingWorkspace) {
         throw new BadRequestException('Selected workspace was not found.');
       }
-
-      if (workspace.customerStatus === OrganizationCustomerStatus.PENDING) {
-        workspace = await tx.organization.update({
-          where: { id: workspace.id },
-          data: {
-            customerStatus:
-              workspace.name === DEFAULT_PILOT_WORKSPACE_NAME
-                ? OrganizationCustomerStatus.DEMO
-                : OrganizationCustomerStatus.PILOT,
-          },
-        });
-      }
+      const workspace = await this.prepareWorkspaceForInvitation(
+        tx,
+        existingWorkspace,
+        invitationPurpose,
+      );
 
       const existingUser = await tx.user.findUnique({ where: { email } });
       if (existingUser?.role === UserRole.ADMIN) {
@@ -310,15 +309,18 @@ export class AuthService {
         },
       });
 
-      await ensureGoldenSampleDataForWorkspace(tx, workspace.id, {
-        createdById: user.id,
-      });
+      if (invitationPurpose === InvitationPurpose.DEMO) {
+        await ensureGoldenSampleDataForWorkspace(tx, workspace.id, {
+          createdById: user.id,
+        });
+      }
 
       return { user, workspace };
     });
 
     return {
       success: true,
+      invitationPurpose,
       pilotReviewer: {
         name: this.formatUserName(result.user.firstName, result.user.lastName),
         email: result.user.email,
@@ -583,7 +585,8 @@ export class AuthService {
   ) {
     if (
       user.accountType !== PILOT_REVIEWER_ACCOUNT_TYPE ||
-      user.organization?.name !== GOLDEN_SAMPLE_WORKSPACE_NAME
+      user.organization?.customerStatus !== OrganizationCustomerStatus.DEMO ||
+      user.organization.allowDemoFactorsForCalculations !== true
     ) {
       return;
     }
@@ -666,11 +669,44 @@ export class AuthService {
       data: {
         name: workspaceName,
         slug: await this.createUniqueOrganizationSlug(tx, workspaceName),
-        allowDemoFactorsForCalculations: true,
+        allowDemoFactorsForCalculations: false,
+        customerStatus: OrganizationCustomerStatus.PENDING,
+      },
+    });
+  }
+
+  private async prepareWorkspaceForInvitation(
+    tx: Prisma.TransactionClient,
+    workspace: Organization,
+    invitationPurpose: InvitationPurpose,
+  ) {
+    if (
+      workspace.customerStatus === OrganizationCustomerStatus.ACTIVE ||
+      workspace.customerStatus === OrganizationCustomerStatus.SUSPENDED
+    ) {
+      throw new ConflictException(
+        'Active or suspended customer organizations cannot be prepared through the pilot invitation workflow.',
+      );
+    }
+
+    if (invitationPurpose === InvitationPurpose.DEMO) {
+      return tx.organization.update({
+        where: { id: workspace.id },
+        data: {
+          customerStatus: OrganizationCustomerStatus.DEMO,
+          allowDemoFactorsForCalculations: true,
+        },
+      });
+    }
+
+    return tx.organization.update({
+      where: { id: workspace.id },
+      data: {
         customerStatus:
-          workspaceName === DEFAULT_PILOT_WORKSPACE_NAME
-            ? OrganizationCustomerStatus.DEMO
-            : OrganizationCustomerStatus.PILOT,
+          workspace.customerStatus === OrganizationCustomerStatus.DEMO
+            ? OrganizationCustomerStatus.PILOT
+            : workspace.customerStatus,
+        allowDemoFactorsForCalculations: false,
       },
     });
   }

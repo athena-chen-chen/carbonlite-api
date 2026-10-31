@@ -14,8 +14,10 @@ describe('Admin pilot reviewers (e2e)', () => {
   let app: INestApplication;
   let prisma: PrismaService;
   const testRunId = uniqueTestId('pilot-reviewer');
+  const originalPublicRegistrationEnabled = process.env.PUBLIC_REGISTRATION_ENABLED;
 
   beforeAll(async () => {
+    process.env.PUBLIC_REGISTRATION_ENABLED = 'true';
     const e2e = await createE2eApp();
     app = e2e.app;
     prisma = e2e.prisma;
@@ -24,6 +26,11 @@ describe('Admin pilot reviewers (e2e)', () => {
   afterAll(async () => {
     await cleanupTestData(prisma, testRunId);
     await app.close();
+    if (originalPublicRegistrationEnabled === undefined) {
+      delete process.env.PUBLIC_REGISTRATION_ENABLED;
+    } else {
+      process.env.PUBLIC_REGISTRATION_ENABLED = originalPublicRegistrationEnabled;
+    }
   });
 
   it('creates a read-only pilot reviewer and returns an invite link', async () => {

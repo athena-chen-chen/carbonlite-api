@@ -7,6 +7,7 @@ import {
 import { MembershipRole, UserRole } from '@prisma/client';
 import bcrypt from 'bcryptjs';
 import { AuthService } from './auth.service';
+import { InvitationPurpose } from './dto/create-pilot-reviewer.dto';
 
 describe('AuthService login resilience', () => {
   const originalEnv = process.env;
@@ -137,6 +138,8 @@ describe('AuthService login resilience', () => {
       organization: {
         id: 'sample-workspace',
         name: 'CarbonLite Sample Workspace',
+        customerStatus: 'DEMO',
+        allowDemoFactorsForCalculations: true,
       },
     });
     prisma.user.update.mockResolvedValue({});
@@ -210,6 +213,8 @@ describe('AuthService login resilience', () => {
     const workspace = {
       id: 'sample-workspace',
       name: 'CarbonLite Sample Workspace',
+      customerStatus: 'DEMO',
+      allowDemoFactorsForCalculations: true,
     };
     const createdUser = {
       id: 'reviewer-1',
@@ -224,6 +229,7 @@ describe('AuthService login resilience', () => {
         findFirst: jest.fn().mockResolvedValue(workspace),
         findUnique: jest.fn(),
         create: jest.fn(),
+        update: jest.fn().mockResolvedValue(workspace),
         findUniqueOrThrow: jest.fn(),
       },
       user: {
@@ -335,6 +341,8 @@ describe('AuthService login resilience', () => {
     const workspace = {
       id: 'sample-workspace',
       name: 'CarbonLite Sample Workspace',
+      customerStatus: 'DEMO',
+      allowDemoFactorsForCalculations: true,
     };
     const createdUser = {
       id: 'reviewer-1',
@@ -349,6 +357,7 @@ describe('AuthService login resilience', () => {
         findFirst: jest.fn().mockResolvedValue(workspace),
         findUnique: jest.fn(),
         create: jest.fn(),
+        update: jest.fn().mockResolvedValue(workspace),
         findUniqueOrThrow: jest.fn(),
       },
       user: {
@@ -389,6 +398,80 @@ describe('AuthService login resilience', () => {
     expect(result.inviteLink).toMatch(
       /^https:\/\/www\.carbonliteapp\.ca\/set-password\?token=.+/,
     );
+  });
+
+  it('prepares a real customer invitation without seeding Golden Sample data', async () => {
+    process.env.APP_URL = 'http://localhost:5173';
+    const workspace = {
+      id: 'customer-workspace',
+      name: 'Real Customer',
+      customerStatus: 'PENDING',
+      allowDemoFactorsForCalculations: false,
+    };
+    const createdUser = {
+      id: 'customer-admin',
+      email: 'customer@example.com',
+      firstName: 'Customer',
+      lastName: 'Admin',
+      accountExpiresAt: null,
+      isActive: true,
+    };
+    const tx = {
+      organization: {
+        findFirst: jest.fn().mockResolvedValue(workspace),
+        findUnique: jest.fn(),
+        create: jest.fn(),
+        update: jest.fn().mockResolvedValue(workspace),
+      },
+      user: {
+        findUnique: jest.fn().mockResolvedValue(null),
+        create: jest.fn().mockResolvedValue(createdUser),
+        update: jest.fn(),
+      },
+      membership: {
+        deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
+        create: jest.fn().mockResolvedValue({}),
+      },
+      activityData: {
+        count: jest.fn(),
+        createMany: jest.fn(),
+      },
+      report: {
+        count: jest.fn(),
+        create: jest.fn(),
+      },
+    };
+    prisma.$transaction.mockImplementation((callback) => callback(tx));
+
+    await expect(service.createPilotReviewer(
+      {
+        id: 'admin-1',
+        email: 'admin@example.com',
+        organizationId: 'admin-org',
+        organizationName: 'Admin Org',
+        role: UserRole.ADMIN,
+        platformRole: UserRole.ADMIN,
+      },
+      {
+        name: 'Customer Admin',
+        email: 'customer@example.com',
+        workspaceName: 'Real Customer',
+        invitationPurpose: InvitationPurpose.CUSTOMER,
+      },
+    )).resolves.toMatchObject({
+      success: true,
+      invitationPurpose: InvitationPurpose.CUSTOMER,
+    });
+
+    expect(tx.organization.update).toHaveBeenCalledWith({
+      where: { id: workspace.id },
+      data: {
+        customerStatus: 'PENDING',
+        allowDemoFactorsForCalculations: false,
+      },
+    });
+    expect(tx.activityData.createMany).not.toHaveBeenCalled();
+    expect(tx.report.create).not.toHaveBeenCalled();
   });
 
   it('does not create pilot reviewer accounts in production when frontend URL is missing', async () => {
