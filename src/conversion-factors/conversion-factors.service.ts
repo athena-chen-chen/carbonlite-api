@@ -21,6 +21,7 @@ import {
   normalizeJurisdictionRegion,
   normalizeUnit,
 } from '../metrics/metrics.utils';
+import { airTravelFactorMatchesRoute } from '../domain/air-travel/air-travel-factor-selection';
 
 type ApplicableFactorInput = {
   activityType: string;
@@ -36,6 +37,7 @@ type ApplicableFactorInput = {
   allowPlaceholderFactors?: boolean | null;
   allowSystemFactors?: boolean | null;
   organizationId: string;
+  activityMetadata?: unknown;
 };
 
 type FactorMatchResult = {
@@ -505,7 +507,7 @@ export class ConversionFactorsService {
 
     const legacyMatches = legacyFactors.filter(isInventoryFactorEligible).filter((factor) => isFactorAllowedForWorkspace(factor, policy)).filter(
       (factor) => normalizeUnit(factor.unit) === normalizedInputUnit,
-    );
+    ).filter((factor) => airTravelFactorMatchesRoute(activityType, input.activityMetadata, factor));
     const organizationCustom = legacyMatches.find(
       (factor) =>
         factor.organizationId === input.organizationId &&
@@ -571,6 +573,7 @@ export class ConversionFactorsService {
         (allowPlaceholderFactors && version.confidenceLevel === 'DEMO'),
       )
       .filter((version) => normalizeUnit(version.inputUnit) === normalizedInputUnit)
+      .filter((version) => airTravelFactorMatchesRoute(activityType, input.activityMetadata, version))
       .filter((version) => countryMatches(version.jurisdictionCountry, country));
 
     const exactRegionYear = governedCandidates
@@ -1328,7 +1331,7 @@ function isTrackedOnlyActivity(activityType?: string | null) {
 }
 
 function allowsCountryLevelFallback(activityType?: string | null) {
-  return ['DIESEL', 'GASOLINE', 'NATURAL_GAS', 'HOTEL', 'PROPANE'].includes(
+  return ['DIESEL', 'GASOLINE', 'NATURAL_GAS', 'HOTEL', 'PROPANE', 'AIR_TRAVEL'].includes(
     String(activityType ?? '').toUpperCase(),
   );
 }

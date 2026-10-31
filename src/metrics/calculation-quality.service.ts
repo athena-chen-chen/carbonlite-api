@@ -22,6 +22,7 @@ import {
   SLOW_REQUEST_THRESHOLD_MS,
   timeAsync,
 } from '../common/monitoring/performance-logging';
+import { airTravelFactorMatchesRoute } from '../domain/air-travel/air-travel-factor-selection';
 
 export type CalculationStatus =
   | 'CALCULATED'
@@ -677,6 +678,7 @@ export class CalculationQualityService {
       if (!isInventoryFactorEligible(factor) || !isFactorAllowedForWorkspace(factor, policy)) return false;
       if (factor.activityType !== activityType) return false;
       if (!unitsCompatible(input.record.unit, factor.unit)) return false;
+      if (!airTravelFactorMatchesRoute(activityType, input.record.activityMetadata, factor)) return false;
       if (factor.sourceYear && factor.sourceYear > input.reportingYear) return false;
       return Number.isFinite(Number(factor.factorValue));
     }).sort((a, b) => Number(b.sourceYear ?? 0) - Number(a.sourceYear ?? 0));
@@ -704,6 +706,7 @@ export class CalculationQualityService {
       .filter((version) => isFactorAllowedForWorkspace(version, policy))
       .filter((version) => version.factor.activityType === activityType)
       .filter((version) => unitsCompatible(input.record.unit, version.inputUnit))
+      .filter((version) => airTravelFactorMatchesRoute(activityType, input.record.activityMetadata, version))
       .filter((version) => Number.isFinite(Number(version.factorValue)))
       .filter((version) => version.source?.isActive !== false)
       .filter((version) =>

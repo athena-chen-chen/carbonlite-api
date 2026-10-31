@@ -63,7 +63,7 @@ export class CalculationSnapshotsService {
         detail.calculationFormula = `${basis.rooms} rooms × ${basis.nights} nights = ${basis.roomNights} room-night; ${detail.calculationFormula}`;
       }
       const snapshot = { contractVersion: 1, version, calculatedAt: calculatedAt.toISOString(), actorUserId: actorUserId ?? null,
-        input: { activityType: row.activityType, quantity: Number(row.quantity), unit: row.unit, recordDate: new Date(row.recordDate).toISOString(), country: row.jurisdictionCountry ?? null, region: row.jurisdictionRegion ?? null, activityBasis: row.hotelActivityBasis ?? null, airTravelRoute: row.airTravelRoute ?? null },
+        input: { activityType: row.activityType, quantity: Number(row.quantity), unit: row.unit, recordDate: new Date(row.recordDate).toISOString(), country: row.jurisdictionCountry ?? null, region: row.jurisdictionRegion ?? null, activityBasis: row.hotelActivityBasis ?? null, activityMetadata: row.activityMetadata ?? null, airTravelRoute: row.airTravelRoute ?? null },
         factor: { id: detail.factorId, versionId: detail.factorVersionId, value: detail.factorValue, unit: detail.factorInputUnit, resultUnit: detail.factorResultUnit, provenance: detail.factorProvenance },
         conversion: { inputQuantity: Number(row.quantity), inputUnit: row.unit, calculationQuantity: detail.calculationQuantity ?? Number(row.quantity), factorInputUnit: detail.factorInputUnit },
         result: { value: detail.calculatedEmissionsKgCO2e, unit: 'kgCO2e', scope: fields.scope }, detail };
