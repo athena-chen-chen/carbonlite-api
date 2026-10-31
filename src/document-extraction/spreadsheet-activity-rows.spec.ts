@@ -2,10 +2,8 @@ import * as XLSX from 'xlsx';
 import { parseSpreadsheetActivityRows } from './spreadsheet-activity-rows';
 import { DocumentExtractionService } from './document-extraction.service';
 import { openai } from '../openai/openai.client';
-import { access, readFile } from 'fs/promises';
 
 jest.mock('../openai/openai.client', () => ({ openai: { responses: { create: jest.fn() } } }));
-jest.mock('fs/promises', () => ({ access: jest.fn(), stat: jest.fn().mockResolvedValue({ size: 1000 }), readFile: jest.fn() }));
 
 function workbook(rows: unknown[][]) {
   const w = XLSX.utils.book_new();
@@ -41,9 +39,8 @@ describe('Uploaded tabular workbook extraction', () => {
     prisma.$transaction.mockImplementation(callback => callback(prisma));
     const audit = { log: jest.fn() };
     const tracking = { track: jest.fn() };
-    (access as jest.Mock).mockResolvedValue(undefined);
-    (readFile as jest.Mock).mockResolvedValue(buffer);
-    const service = new DocumentExtractionService(prisma as never, audit as never, tracking as never, null as never);
+    const storage = { exists: jest.fn().mockResolvedValue(true), read: jest.fn().mockResolvedValue(buffer) };
+    const service = new DocumentExtractionService(prisma as never, audit as never, tracking as never, null as never, storage as never);
     const result = await service.extract('org', 'document', 'actor');
     expect(openai.responses.create).not.toHaveBeenCalled();
     expect(result).toMatchObject({ status: 'REVIEW_REQUIRED', sourceRowCount: 4, extractedRowCount: 4, possibleMissingRows: false });
@@ -51,6 +48,7 @@ describe('Uploaded tabular workbook extraction', () => {
     expect(result.parsedActivities[1].jurisdictionRegion.value).toBeNull();
     expect(result.parsedActivities[2].quantity.value).toBeNull();
     expect(prisma.documentExtraction.upsert).toHaveBeenCalledWith(expect.objectContaining({ create: expect.objectContaining({ organizationId: 'org', extractedRowCount: 4 }) }));
+    expect(storage.read).toHaveBeenCalledWith('workbook');
   });
 
   it('rejects unrecognized tables instead of silently returning model-selected rows', () => {

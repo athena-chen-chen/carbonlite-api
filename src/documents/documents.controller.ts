@@ -17,7 +17,6 @@ import {
   Headers,
 } from '@nestjs/common';
 import { DocumentUploadInterceptor } from './document-upload-storage';
-import { createReadStream } from 'fs';
 import { Response } from 'express';
 import { DocumentsService } from './documents.service';
 import { PaginationQueryDto } from '../common/dto/pagination-query.dto';
@@ -131,8 +130,7 @@ export class DocumentsController {
       'Content-Disposition': `inline; filename="${this.escapeFileName(file.fileName)}"`,
     });
 
-    // TODO: Long-term production storage should use S3/Supabase Storage instead of local Render disk.
-    return new StreamableFile(createReadStream(file.absolutePath));
+    return new StreamableFile(file.contents);
   }
 
   @Delete(':id')

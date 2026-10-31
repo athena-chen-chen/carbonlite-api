@@ -1,21 +1,20 @@
 import { writeSafeError } from '../common/logging/safe-log';
-import { assertReviewRowLimit, readBoundedDocumentFile, validateDocumentContent, validateDocumentType } from '../documents/document-resource-policy';
+import { assertDocumentSize, assertReviewRowLimit, validateDocumentContent, validateDocumentType } from '../documents/document-resource-policy';
 import { extractionWorkload, withExtractionDeadline, EXTRACTION_TIMEOUT_MS, MAX_PROVIDER_OUTPUT_CHARACTERS, MAX_PROVIDER_OUTPUT_TOKENS } from './extraction-workload';
 import { CalculationSnapshotsService } from '../metrics/calculation-snapshots.service';
 import {
   BadRequestException,
   HttpException,
+  Inject,
   Injectable,
   InternalServerErrorException,
   Logger,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import type { ResponseInputContent } from 'openai/resources/responses/responses';
 import { PrismaService } from '../prisma/prisma.service';
 import { openai } from '../openai/openai.client';
-import { access } from 'fs/promises';
-import { constants } from 'fs';
-import { join } from 'path';
 import { ActivityType, Prisma, SpreadsheetImportReviewRow } from '@prisma/client';
 import { AuditLogService } from '../audit-log/audit-log.service';
 import { ActivityTrackingService, trackOptionalActivity } from '../activity-tracking/activity-tracking.service';
@@ -38,6 +37,12 @@ import {
 } from '../common/monitoring/performance-logging';
 import { deriveHotelActivityBasis, readHotelBasisColumns, type HotelActivityBasis } from './hotel-activity-basis';
 import { canonicalizeAirTravelActivity, type AirTravelActivityMetadataV1 } from '../domain/air-travel/air-travel';
+import {
+  DOCUMENT_STORAGE,
+  DocumentStorage,
+  DocumentStorageNotFoundError,
+  documentStorageKey,
+} from '../documents/document-storage';
 
 type ConfidenceLevel = 'high' | 'medium' | 'low';
 
@@ -138,6 +143,7 @@ export class DocumentExtractionService {
     private readonly auditLog: AuditLogService,
     private readonly activityTracking: ActivityTrackingService,
     private readonly snapshots: CalculationSnapshotsService,
+    @Optional() @Inject(DOCUMENT_STORAGE) private readonly storage?: DocumentStorage,
   ) {}
 
   async extract(
@@ -197,23 +203,24 @@ export class DocumentExtractionService {
       },
     });
 
-    const relativePath = document.fileUrl.replace(/^\/+/, '');
-    const absolutePath = join(process.cwd(), relativePath);
     this.logger.log(
-      `[DocumentExtraction] retry extract documentId=${documentId} filePath=${absolutePath} storageKey=${document.fileUrl}`,
+      `[DocumentExtraction] retry extract documentId=${documentId} storageKey=${document.fileUrl}`,
     );
 
     try {
       this.validateSupportedFile(document);
 
       try {
-        await access(absolutePath, constants.R_OK);
+        if (!this.storage || !(await this.storage.exists(documentStorageKey(document.fileUrl)))) {
+          throw new DocumentStorageNotFoundError(document.fileUrl);
+        }
         this.logger.log(
-          `[DocumentExtraction] file exists documentId=${documentId} filePath=${absolutePath}`,
+          `[DocumentExtraction] file exists documentId=${documentId} storageKey=${document.fileUrl}`,
         );
-      } catch {
+      } catch (error) {
+        if (!(error instanceof DocumentStorageNotFoundError)) throw error;
         this.logger.warn(
-          `[DocumentExtraction] file missing documentId=${documentId} filePath=${absolutePath} storageKey=${document.fileUrl}`,
+          `[DocumentExtraction] file missing documentId=${documentId} storageKey=${document.fileUrl}`,
         );
         await this.prisma.document.update({
           where: { id: documentId },
@@ -246,7 +253,8 @@ export class DocumentExtractionService {
         });
       }
 
-      const fileBuffer = await readBoundedDocumentFile(absolutePath);
+      const fileBuffer = await this.storage!.read(documentStorageKey(document.fileUrl));
+      assertDocumentSize(fileBuffer.length);
       validateDocumentContent(document.fileName, fileBuffer);
       if (/\.xlsx?$/i.test(document.fileName)) {
         return await this.extractStructuredActivityRecords({ organizationId, userId, documentId, fileName: document.fileName, fileBuffer }, parseSpreadsheetActivityRows(fileBuffer), 'EXCEL');
@@ -534,7 +542,7 @@ export class DocumentExtractionService {
 
       if (this.isMissingFileError(error)) {
         this.logger.warn(
-          `[DocumentExtraction] file missing during read documentId=${documentId} filePath=${absolutePath} storageKey=${document.fileUrl}`,
+          `[DocumentExtraction] file missing during read documentId=${documentId} storageKey=${document.fileUrl}`,
         );
         await this.prisma.document.update({
           where: { id: documentId },
@@ -1003,6 +1011,7 @@ If it contains a utility bill, prefer ELECTRICITY or NATURAL_GAS.
   }
 
   private isMissingFileError(error: unknown) {
+    if (error instanceof DocumentStorageNotFoundError) return true;
     const code = (error as { code?: string } | null)?.code;
     return code === 'ENOENT' || code === 'ENOTDIR';
   }

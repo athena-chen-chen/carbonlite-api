@@ -5,6 +5,8 @@ import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { readFile, stat } from 'node:fs/promises';
 import { extname } from 'node:path';
+import { resolve } from 'node:path';
+import { tmpdir } from 'node:os';
 import { TextDecoder } from 'node:util';
 
 // Match the existing browser contract. Exact 10 MiB files are accepted.
@@ -38,7 +40,11 @@ export function validateDocumentType(fileName: string, mimeType?: string | null)
 }
 
 export const documentUploadOptions: MulterOptions = {
-  storage: documentDiskStorage(),
+  // Multipart bytes are staged only long enough to validate and copy them into
+  // DocumentStorage. This directory is not source-evidence persistence.
+  storage: documentDiskStorage(resolve(
+    process.env.DOCUMENT_UPLOAD_TEMP_PATH || `${tmpdir()}/carbonlite-document-uploads`,
+  )),
   limits: {
     // Busboy emits its size-limit event on reaching this value, not exceeding it.
     fileSize: MAX_DOCUMENT_UPLOAD_BYTES + 1,

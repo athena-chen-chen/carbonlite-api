@@ -17,12 +17,14 @@ import { SentryTestController } from './sentry-test.controller';
 import { FacilitiesModule } from './facilities/facilities.module';
 import { OrganizationsModule } from './organizations/organizations.module';
 import { SpreadsheetImportModule } from './spreadsheet-import/spreadsheet-import.module';
+import { DocumentStorageModule } from './documents/document-storage.module';
 
 @Module({
   imports: [
     PrismaModule,
     AuditLogModule,
     ActivityTrackingModule,
+    DocumentStorageModule,
     AuthModule,
     ActivityDataModule,
     MetricsModule,

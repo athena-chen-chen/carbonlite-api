@@ -3,7 +3,6 @@ import { DocumentExtractionService } from './document-extraction.service';
 import { openai } from '../openai/openai.client';
 
 jest.mock('../openai/openai.client', () => ({ openai: { responses: { create: jest.fn() } } }));
-jest.mock('fs/promises', () => ({ access: jest.fn(), stat: jest.fn().mockResolvedValue({ size: 30 }), readFile: jest.fn().mockResolvedValue(Buffer.from('%PDF-1.4\nfixture\n%%EOF')) }));
 afterEach(() => jest.restoreAllMocks());
 it('F16 omits provider credentials, raw message/stack and document content from final extraction logs', async () => {
   const error = Object.assign(new Error('secret-provider-error'), { status: 502,
@@ -14,7 +13,8 @@ it('F16 omits provider credentials, raw message/stack and document content from 
   const document = { id: 'doc-1', fileName: 'bill.pdf', fileUrl: '/uploads/bill.pdf', mimeType: 'application/pdf', type: 'PDF', status: 'UPLOADED' };
   const prisma: any = { document: { findFirst: jest.fn().mockResolvedValue(document), update: jest.fn() }, $transaction: jest.fn() };
   prisma.$transaction.mockImplementation((callback: (client: unknown) => unknown) => callback(prisma));
-  const service = new DocumentExtractionService(prisma, { log: jest.fn() } as never, { track: jest.fn() } as never, null as never);
+  const storage = { exists: jest.fn().mockResolvedValue(true), read: jest.fn().mockResolvedValue(Buffer.from('%PDF-1.4\nfixture\n%%EOF')) };
+  const service = new DocumentExtractionService(prisma, { log: jest.fn() } as never, { track: jest.fn() } as never, null as never, storage as never);
   const logs = ['error', 'warn', 'log'].map(method => jest.spyOn(Logger.prototype, method as 'error').mockImplementation(() => undefined));
   await expect(service.extract('org-1', 'doc-1')).rejects.toThrow('Extraction failed. Please try again or upload the file again.');
   const output = JSON.stringify(logs.map(log => log.mock.calls));

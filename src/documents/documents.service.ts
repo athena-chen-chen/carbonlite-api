@@ -3,16 +3,25 @@ import { inspectSpreadsheetContainer } from '../document-extraction/spreadsheet-
 import {
   ConflictException,
   ForbiddenException,
+  Inject,
   Injectable,
   Logger,
   NotFoundException,
+  ServiceUnavailableException,
 } from '@nestjs/common';
-import { access, unlink } from 'fs/promises';
-import { join } from 'path';
+import { unlink } from 'fs/promises';
 import { PrismaService } from '../prisma/prisma.service';
 import { PaginationQueryDto } from '../common/dto/pagination-query.dto';
 import { AuditLogService } from '../audit-log/audit-log.service';
 import { ActivityTrackingService, trackOptionalActivity } from '../activity-tracking/activity-tracking.service';
+import {
+  createDocumentStorageKey,
+  DOCUMENT_STORAGE,
+  DocumentStorage,
+  DocumentStorageNotFoundError,
+  documentStorageKey,
+  persistedDocumentStorageUrl,
+} from './document-storage';
 
 @Injectable()
 export class DocumentsService {
@@ -22,6 +31,7 @@ export class DocumentsService {
     private readonly prisma: PrismaService,
     private readonly auditLog: AuditLogService,
     private readonly activityTracking: ActivityTrackingService,
+    @Inject(DOCUMENT_STORAGE) private readonly storage: DocumentStorage,
   ) {}
 
   async upload(
@@ -32,6 +42,7 @@ export class DocumentsService {
     allowDuplicate = false,
   ) {
     let created;
+    let savedStorageKey: string | undefined;
     try {
       assertDocumentSize(file.size);
       const extension = validateDocumentType(file.originalname, file.mimetype);
@@ -46,13 +57,15 @@ export class DocumentsService {
       if (existingDocument && !allowDuplicate) throw new ConflictException({
         message: 'This file appears to have already been uploaded.', existingDocument,
       });
+      savedStorageKey = createDocumentStorageKey(organizationId, file.originalname);
+      await this.storage.save(savedStorageKey, buffer);
       created = await this.prisma.$transaction(async tx => {
         const created = await tx.document.create({
           data: {
             organizationId,
             uploadedById: userId,
             fileName: file.originalname,
-            fileUrl: `/uploads/${file.filename}`,
+            fileUrl: persistedDocumentStorageUrl(savedStorageKey!),
             mimeType: file.mimetype,
             fileSize: file.size,
             fileHash,
@@ -73,9 +86,22 @@ export class DocumentsService {
       });
 
     } catch (error) {
-      // Before metadata exists, every failure must remove the rejected source.
-      await unlink(file.path).catch(() => this.logger.warn('Rejected upload cleanup failed.'));
+      if (savedStorageKey && !created) {
+        try {
+          await this.storage.delete(savedStorageKey);
+        } catch (cleanupError) {
+          this.logger.error(
+            `Upload compensation failed storageKey=${savedStorageKey}`,
+            cleanupError instanceof Error ? cleanupError.stack : undefined,
+          );
+          throw new ServiceUnavailableException(
+            'Document upload failed and source cleanup requires attention.',
+          );
+        }
+      }
       throw error;
+    } finally {
+      await unlink(file.path).catch(() => this.logger.warn('Temporary upload cleanup failed.'));
     }
 
     await trackOptionalActivity(this.activityTracking, {
@@ -174,12 +200,28 @@ export class DocumentsService {
       throw new ForbiddenException('You cannot view this document.');
     }
 
-    const relativePath = document.fileUrl.replace(/^\/+/, '');
-    const absolutePath = join(process.cwd(), relativePath);
-
     try {
-      await access(absolutePath);
-    } catch {
+      const contents = await this.storage.read(documentStorageKey(document.fileUrl));
+
+      await trackOptionalActivity(this.activityTracking, {
+        organizationId,
+        userId,
+        eventName: 'DOCUMENT_VIEWED',
+        entityType: 'Document',
+        entityId: id,
+        metadata: {
+          mimeType: document.mimeType,
+        },
+        userAgent,
+      });
+
+      return {
+        fileName: document.fileName,
+        mimeType: document.mimeType || 'application/octet-stream',
+        contents,
+      };
+    } catch (error) {
+      if (!(error instanceof DocumentStorageNotFoundError)) throw error;
       this.logger.warn(
         `Uploaded file missing organizationId=${organizationId} documentId=${id} storageKey=${document.fileUrl}`,
       );
@@ -188,33 +230,41 @@ export class DocumentsService {
       );
     }
 
-    await trackOptionalActivity(this.activityTracking, {
-      organizationId,
-      userId,
-      eventName: 'DOCUMENT_VIEWED',
-      entityType: 'Document',
-      entityId: id,
-      metadata: {
-        mimeType: document.mimeType,
-      },
-      userAgent,
-    });
-
-    return {
-      fileName: document.fileName,
-      mimeType: document.mimeType || 'application/octet-stream',
-      absolutePath,
-    };
   }
 
   async remove(organizationId: string, id: string, userId?: string) {
+    const ownedDocument = await this.prisma.document.findUnique({ where: { id } });
+    if (!ownedDocument) throw new NotFoundException(`Document ${id} not found.`);
+    if (ownedDocument.organizationId !== organizationId) {
+      throw new ForbiddenException('You cannot delete this document.');
+    }
+
+    let sourceEvidence: 'DELETED' | 'ALREADY_MISSING';
+    try {
+      sourceEvidence = await this.storage.delete(documentStorageKey(ownedDocument.fileUrl)) === 'DELETED'
+        ? 'DELETED'
+        : 'ALREADY_MISSING';
+    } catch (error) {
+      this.logger.error(
+        `Source evidence deletion failed organizationId=${organizationId} documentId=${id}`,
+        error instanceof Error ? error.stack : undefined,
+      );
+      throw new ServiceUnavailableException(
+        'Source evidence could not be deleted. The document was retained for a safe retry.',
+      );
+    }
+
     return this.prisma.$transaction(async (tx) => {
       const document = await tx.document.findUnique({
         where: { id },
       });
 
       if (!document) {
-        throw new NotFoundException(`Document ${id} not found.`);
+        return {
+          deletedDocument: false,
+          deletedActivityRecords: 0,
+          sourceEvidence,
+        };
       }
 
       if (document.organizationId !== organizationId) {
@@ -246,6 +296,7 @@ export class DocumentsService {
           oldValue: JSON.parse(
             JSON.stringify({
               document,
+              sourceEvidence,
               deletedActivityRecords: 0,
               preservedActivityRecords,
             }),
@@ -263,6 +314,7 @@ export class DocumentsService {
           metadata: {
             deletedActivityRecords: 0,
             preservedActivityRecords,
+            sourceEvidence,
           },
         },
       });
@@ -270,6 +322,7 @@ export class DocumentsService {
       return {
         deletedDocument: true,
         deletedActivityRecords: 0,
+        sourceEvidence,
       };
     });
   }
