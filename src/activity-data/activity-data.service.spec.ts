@@ -1,5 +1,13 @@
 import { Prisma } from '@prisma/client';
 import { ActivityDataService } from './activity-data.service';
+import { CalculationQualityService } from '../metrics/calculation-quality.service';
+import { CalculationSnapshotsService } from '../metrics/calculation-snapshots.service';
+import {
+  ECCC_NATURAL_GAS_ALBERTA_2026_M3_FACTOR_ID,
+  ecccNaturalGasAlberta2026M3Factor,
+  ecccNaturalGasAlberta2026M3Version,
+  ecccNaturalGasAlberta2026Source,
+} from '../../prisma/library/eccc-natural-gas-alberta-2026';
 
 const originalEnvironment = process.env;
 
@@ -111,6 +119,89 @@ describe('ActivityDataService canonical calculation persistence', () => {
       }),
     });
     expect(result).toMatchObject(canonicalFields);
+  });
+
+  it('persists a calculated Natural Gas m3 snapshot and returns it to Data Records', async () => {
+    const stored: any[] = [];
+    const governedVolumeFactor = {
+      id: 'natural-gas-volume-version-2026',
+      ...ecccNaturalGasAlberta2026M3Version,
+      factor: {
+        id: ECCC_NATURAL_GAS_ALBERTA_2026_M3_FACTOR_ID,
+        ...ecccNaturalGasAlberta2026M3Factor,
+      },
+      source: { id: ecccNaturalGasAlberta2026M3Version.sourceId, ...ecccNaturalGasAlberta2026Source },
+    };
+    const calculationClient = {
+      ...prisma,
+      organization: {
+        ...prisma.organization,
+        findUniqueOrThrow: jest.fn().mockResolvedValue({
+          id: 'org-1',
+          country: 'Canada',
+          provinceState: 'Alberta',
+          allowDemoFactorsForCalculations: false,
+        }),
+      },
+      conversionFactor: { findMany: jest.fn().mockResolvedValue([]) },
+      factorVersion: { findMany: jest.fn().mockResolvedValue([governedVolumeFactor]) },
+      activityData: {
+        ...prisma.activityData,
+        create: jest.fn().mockImplementation(({ data }) => {
+          const row = { ...data, facility: null, asset: null, document: null };
+          stored.push(row);
+          return Promise.resolve(row);
+        }),
+        findMany: jest.fn().mockImplementation(() => Promise.resolve(stored)),
+        count: jest.fn().mockImplementation(() => Promise.resolve(stored.length)),
+      },
+    } as any;
+    calculationClient.$transaction = jest.fn().mockImplementation((input) =>
+      Array.isArray(input) ? Promise.all(input) : input(calculationClient),
+    );
+    const quality = new CalculationQualityService(calculationClient);
+    const snapshots = new CalculationSnapshotsService(calculationClient, quality);
+    service = new ActivityDataService(
+      calculationClient,
+      auditLog as never,
+      activityTracking as never,
+      snapshots,
+    );
+
+    const created = await service.create('org-1', {
+      activityType: 'NATURAL_GAS',
+      recordDate: '2026-06-30',
+      jurisdictionCountry: 'Canada',
+      jurisdictionRegion: 'Alberta',
+      quantity: 100,
+      unit: 'm3',
+      sourceType: 'MANUAL',
+      sourceReference: 'Natural Gas m3 persistence regression',
+    }, 'actor-1');
+    const records = await service.findAll('org-1', {});
+
+    expect(created).toMatchObject({
+      unit: 'm3',
+      calculationStatus: 'CALCULATED',
+      matchedFactorId: 'natural-gas-volume-version-2026',
+      matchedFactorValue: 1.972311,
+      calculatedEmissionsKgCO2e: 197.231,
+    });
+    expect(created.calculationSnapshot).toMatchObject({
+      input: { activityType: 'NATURAL_GAS', quantity: 100, unit: 'm3' },
+      factor: {
+        id: ECCC_NATURAL_GAS_ALBERTA_2026_M3_FACTOR_ID,
+        versionId: 'natural-gas-volume-version-2026',
+        value: 1.972311,
+        unit: 'm3',
+      },
+      result: { value: 197.231, unit: 'kgCO2e', scope: 'SCOPE_1' },
+    });
+    expect(records.items[0]).toMatchObject({
+      calculationStatus: 'CALCULATED',
+      calculatedEmissionsKgCO2e: 197.231,
+    });
+    expect(records.items[0].calculationMessage).not.toMatch(/Missing Factor/i);
   });
 
   it('persists canonical calculation fields on update', async () => {

@@ -211,9 +211,12 @@ export const ecccNaturalGasAlberta2026M3Legacy = {
 } satisfies Prisma.ConversionFactorUncheckedCreateInput;
 
 /** Adds the reviewed identity; reruns restore only its authoritative numeric value. */
-export async function seedEcccNaturalGasAlberta2026(prisma: PrismaClient) {
+export async function seedEcccNaturalGasAlberta2026(
+  prisma: PrismaClient,
+  options: { volumeOnly?: boolean } = {},
+) {
   return prisma.$transaction(async (tx) => {
-    const factorEntries = [
+    const allFactorEntries = [
       {
         factorId: ECCC_NATURAL_GAS_ALBERTA_2026_FACTOR_ID,
         factor: ecccNaturalGasAlberta2026Factor,
@@ -227,6 +230,7 @@ export async function seedEcccNaturalGasAlberta2026(prisma: PrismaClient) {
         legacy: ecccNaturalGasAlberta2026M3Legacy,
       },
     ];
+    const factorEntries = options.volumeOnly ? allFactorEntries.slice(1) : allFactorEntries;
     const [sameNames, sameLegacyNames] = await Promise.all([
       tx.factor.findMany({ where: { displayName: { in: factorEntries.map(({ factor }) => factor.displayName) } }, select: { id: true, displayName: true } }),
       tx.conversionFactor.findMany({ where: { name: { in: factorEntries.map(({ legacy }) => legacy.name) } }, select: { id: true, name: true } }),
@@ -269,10 +273,10 @@ export async function seedEcccNaturalGasAlberta2026(prisma: PrismaClient) {
     }
     return {
       sourceId: ECCC_NATURAL_GAS_ALBERTA_2026_SOURCE_ID,
-      factorId: ECCC_NATURAL_GAS_ALBERTA_2026_FACTOR_ID,
-      factorVersionId: versions[0].id,
+      factorId: options.volumeOnly ? undefined : ECCC_NATURAL_GAS_ALBERTA_2026_FACTOR_ID,
+      factorVersionId: options.volumeOnly ? undefined : versions[0].id,
       volumeFactorId: ECCC_NATURAL_GAS_ALBERTA_2026_M3_FACTOR_ID,
-      volumeFactorVersionId: versions[1].id,
+      volumeFactorVersionId: versions[options.volumeOnly ? 0 : 1].id,
     };
   });
 }

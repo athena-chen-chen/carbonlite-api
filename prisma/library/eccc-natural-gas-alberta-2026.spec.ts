@@ -298,4 +298,42 @@ describe('ECCC Alberta natural-gas 2026 production factor', () => {
       factorValue: ecccNaturalGasAlberta2026M3Legacy.factorValue,
     });
   });
+
+  it('can load only the reviewed volume identity without rewriting the GJ factor', async () => {
+    const tx = {
+      factor: {
+        findMany: jest.fn().mockResolvedValue([]),
+        upsert: jest.fn().mockImplementation(({ create }) => Promise.resolve(create)),
+      },
+      factorSource: {
+        upsert: jest.fn().mockImplementation(({ create }) => Promise.resolve(create)),
+      },
+      factorVersion: {
+        upsert: jest.fn().mockImplementation(({ create }) =>
+          Promise.resolve({ id: 'natural-gas-volume-version-2026', ...create })),
+      },
+      conversionFactor: {
+        findMany: jest.fn().mockResolvedValue([]),
+        upsert: jest.fn().mockImplementation(({ create }) => Promise.resolve(create)),
+      },
+    };
+    const prisma = {
+      $transaction: jest.fn().mockImplementation((callback) => callback(tx)),
+    } as unknown as PrismaClient;
+
+    const result = await seedEcccNaturalGasAlberta2026(prisma, { volumeOnly: true });
+
+    expect(tx.factor.upsert).toHaveBeenCalledTimes(1);
+    expect(tx.factorVersion.upsert).toHaveBeenCalledTimes(1);
+    expect(tx.conversionFactor.upsert).toHaveBeenCalledTimes(1);
+    expect(tx.factor.upsert.mock.calls[0][0].where).toEqual({
+      id: ECCC_NATURAL_GAS_ALBERTA_2026_M3_FACTOR_ID,
+    });
+    expect(result).toMatchObject({
+      factorId: undefined,
+      factorVersionId: undefined,
+      volumeFactorId: ECCC_NATURAL_GAS_ALBERTA_2026_M3_FACTOR_ID,
+      volumeFactorVersionId: 'natural-gas-volume-version-2026',
+    });
+  });
 });

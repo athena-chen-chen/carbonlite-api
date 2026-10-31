@@ -10,11 +10,12 @@ async function main() {
   const { env, summary } = loadEnvironment('neon');
   const flag = '--confirmed-development-endpoint=';
   const confirmedEndpoint = process.argv.slice(2).find(arg => arg.startsWith(flag))?.slice(flag.length);
+  const volumeOnly = process.argv.includes('--volume-only');
   assertNaturalGasDevelopmentTarget(env, confirmedEndpoint);
   const prisma = new PrismaClient({ datasourceUrl: env.DATABASE_URL });
   try {
-    const result = await seedEcccNaturalGasAlberta2026(prisma);
-    console.log(JSON.stringify({ target: summary, ...result }));
+    const result = await seedEcccNaturalGasAlberta2026(prisma, { volumeOnly });
+    console.log(JSON.stringify({ target: summary, mode: volumeOnly ? 'volume-only' : 'full', ...result }));
   } finally {
     await prisma.$disconnect();
   }
