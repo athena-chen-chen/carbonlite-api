@@ -18,6 +18,7 @@ import { FacilitiesModule } from './facilities/facilities.module';
 import { OrganizationsModule } from './organizations/organizations.module';
 import { SpreadsheetImportModule } from './spreadsheet-import/spreadsheet-import.module';
 import { DocumentStorageModule } from './documents/document-storage.module';
+import { WorkspaceErasureModule } from './workspace-erasure/workspace-erasure.module';
 
 @Module({
   imports: [
@@ -25,6 +26,7 @@ import { DocumentStorageModule } from './documents/document-storage.module';
     AuditLogModule,
     ActivityTrackingModule,
     DocumentStorageModule,
+    WorkspaceErasureModule,
     AuthModule,
     ActivityDataModule,
     MetricsModule,
