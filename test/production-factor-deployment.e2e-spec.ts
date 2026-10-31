@@ -9,11 +9,22 @@ import {
   EXPECTED_PRODUCTION_FACTOR_COUNT,
   PRODUCTION_FACTOR_MANIFEST,
 } from '../prisma/library/production-factor-manifest';
+import {
+  ECCC_NATURAL_GAS_ALBERTA_2026_FACTOR_ID,
+  ECCC_NATURAL_GAS_ALBERTA_2026_M3_FACTOR_ID,
+  ECCC_NATURAL_GAS_ALBERTA_2026_M3_VALUE,
+  ECCC_NATURAL_GAS_ALBERTA_2026_VALUE,
+} from '../prisma/library/eccc-natural-gas-alberta-2026';
 
 const prisma = new PrismaClient();
 const manifestIds = PRODUCTION_FACTOR_MANIFEST.map((entry) => entry.factorId);
 const sourceIds = [...new Set(PRODUCTION_FACTOR_MANIFEST.map((entry) => entry.sourceId))];
-const syntheticIds = ['test-duplicate-production-factor', 'test-legacy-alberta-053'];
+const syntheticIds = [
+  'test-duplicate-production-factor',
+  'test-legacy-alberta-053',
+  'test-legacy-natural-gas',
+  'test-reference-only-natural-gas',
+];
 const loadEnv = {
   DATABASE_URL: process.env.DATABASE_URL,
   NODE_ENV: 'test',
@@ -51,6 +62,16 @@ describe('production factor deployment gate (disposable PostgreSQL)', () => {
     expect(EXPECTED_PRODUCTION_FACTOR_COUNT).toBe(21);
     expect(PRODUCTION_FACTOR_MANIFEST).toHaveLength(21);
     expect(new Set(manifestIds).size).toBe(21);
+    expect(PRODUCTION_FACTOR_MANIFEST).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        factorId: ECCC_NATURAL_GAS_ALBERTA_2026_FACTOR_ID,
+        version: expect.objectContaining({ inputUnit: 'GJ', factorValue: new Prisma.Decimal(ECCC_NATURAL_GAS_ALBERTA_2026_VALUE) }),
+      }),
+      expect.objectContaining({
+        factorId: ECCC_NATURAL_GAS_ALBERTA_2026_M3_FACTOR_ID,
+        version: expect.objectContaining({ inputUnit: 'm3', factorValue: new Prisma.Decimal(ECCC_NATURAL_GAS_ALBERTA_2026_M3_VALUE) }),
+      }),
+    ]));
   });
 
   it('fails empty, loads once, verifies, and remains idempotent', async () => {
@@ -87,6 +108,37 @@ describe('production factor deployment gate (disposable PostgreSQL)', () => {
     await prisma.factorVersion.updateMany({ where: { factorId: expected.factorId }, data: { verified: true } });
   });
 
+  it('requires both distinct Natural Gas activity-unit identities and the exact m3 value', async () => {
+    const naturalGasEntries = PRODUCTION_FACTOR_MANIFEST.filter((entry) => entry.factor.activityType === 'NATURAL_GAS');
+    expect(naturalGasEntries).toHaveLength(2);
+    expect(new Set(naturalGasEntries.map((entry) => entry.selectionKey)).size).toBe(2);
+
+    await prisma.factorVersion.updateMany({
+      where: { factorId: ECCC_NATURAL_GAS_ALBERTA_2026_M3_FACTOR_ID },
+      data: { status: 'DRAFT' },
+    });
+    await prisma.factorVersion.delete({
+      where: { factorId_version: { factorId: ECCC_NATURAL_GAS_ALBERTA_2026_M3_FACTOR_ID, version: '2026.1' } },
+    });
+    const missingM3 = await verifyProductionFactors(prisma);
+    expect(missingM3.pass).toBe(false);
+    expect(missingM3.missing).toContain(`${ECCC_NATURAL_GAS_ALBERTA_2026_M3_FACTOR_ID}@2026.1`);
+    await loadProductionFactors(prisma, loadEnv);
+    expect((await verifyProductionFactors(prisma)).pass).toBe(true);
+
+    await prisma.factorVersion.updateMany({
+      where: { factorId: ECCC_NATURAL_GAS_ALBERTA_2026_M3_FACTOR_ID },
+      data: { factorValue: new Prisma.Decimal('1.9') },
+    });
+    const wrongM3 = await verifyProductionFactors(prisma);
+    expect(wrongM3.pass).toBe(false);
+    expect(wrongM3.invalid).toContain(`${ECCC_NATURAL_GAS_ALBERTA_2026_M3_FACTOR_ID}: factor value mismatch`);
+    await loadProductionFactors(prisma, loadEnv);
+    expect(await verifyProductionFactors(prisma)).toMatchObject({
+      pass: true, present: 21, eligible: 21, missing: [], duplicates: [], legacyViolations: [],
+    });
+  });
+
   it('detects a competing eligible identity and an eligible Alberta 0.53 violation', async () => {
     const expected = PRODUCTION_FACTOR_MANIFEST.find((entry) =>
       entry.factor.activityType === 'ELECTRICITY' && entry.version.jurisdictionRegion === 'Alberta')!;
@@ -104,6 +156,30 @@ describe('production factor deployment gate (disposable PostgreSQL)', () => {
     });
     expect((await verifyProductionFactors(prisma)).legacyViolations).toContain(`${syntheticIds[1]}: legacy Alberta 0.53 is eligible`);
     await prisma.conversionFactor.delete({ where: { id: syntheticIds[1] } });
+  });
+
+  it('blocks legacy Natural Gas while ignoring reference-only Natural Gas', async () => {
+    const expected = PRODUCTION_FACTOR_MANIFEST.find((entry) =>
+      entry.factorId === ECCC_NATURAL_GAS_ALBERTA_2026_M3_FACTOR_ID)!;
+    await prisma.conversionFactor.create({
+      data: {
+        id: syntheticIds[2], ...expected.legacy, name: 'Legacy Natural Gas 1.89',
+        factorValue: new Prisma.Decimal('1.89'), sourceYear: 2025,
+      },
+    });
+    expect((await verifyProductionFactors(prisma)).legacyViolations)
+      .toContain(`${syntheticIds[2]}: old/generic Natural Gas factor is eligible`);
+    await prisma.conversionFactor.delete({ where: { id: syntheticIds[2] } });
+
+    await prisma.conversionFactor.create({
+      data: {
+        id: syntheticIds[3], ...expected.legacy, name: 'Natural Gas reference only',
+        factorValue: new Prisma.Decimal('1.89'), sourceYear: 2025,
+        verified: false, verificationStatus: 'INTERNAL_REVIEW_REQUIRED', applicability: 'REFERENCE_ONLY',
+      },
+    });
+    expect((await verifyProductionFactors(prisma)).pass).toBe(true);
+    await prisma.conversionFactor.delete({ where: { id: syntheticIds[3] } });
   });
 
   it('keeps EGDF blocked and proves verification is read-only', async () => {

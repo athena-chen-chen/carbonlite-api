@@ -183,6 +183,9 @@ export async function verifyProductionFactors(prisma: PrismaClient): Promise<Pro
       legacyViolations.add(`${id}: legacy Alberta 0.53 is eligible`);
     }
     if (id === ALBERTA_EGDF_FACTOR_ID) legacyViolations.add(`${id}: Alberta EGDF is eligible for inventory use`);
+    if (!expectedIds.has(id) && activityType === 'NATURAL_GAS') {
+      legacyViolations.add(`${id}: old/generic Natural Gas factor is eligible`);
+    }
     if (!expectedIds.has(id) && activityType === 'HOTEL' && unit !== 'room-night') {
       legacyViolations.add(`${id}: old/generic Hotel factor is eligible`);
     }
