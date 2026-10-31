@@ -1,0 +1,192 @@
+import {
+  BadRequestException,
+  ConflictException,
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
+import { MembershipRole, OrganizationCustomerStatus, UserRole } from '@prisma/client';
+import type { AuthenticatedUser } from '../auth/auth.service';
+import { isPlatformAdmin } from '../common/permissions/workspace-permissions';
+import { PrismaService } from '../prisma/prisma.service';
+import { ProvisionPaidPilotDto } from './dto/provision-paid-pilot.dto';
+
+const CUSTOMER_ACCOUNT_TYPE = 'CUSTOMER';
+
+@Injectable()
+export class CustomerProvisioningService {
+  constructor(private readonly prisma: PrismaService) {}
+
+  async provisionPaidPilotOrganization(
+    actor: AuthenticatedUser,
+    command: ProvisionPaidPilotDto,
+  ) {
+    this.assertAuthorized(actor, command.organizationId);
+    this.assertConfirmed(command);
+
+    return this.prisma.$transaction(async (tx) => {
+      const organization = await tx.organization.findUnique({
+        where: { id: command.organizationId },
+      });
+      if (!organization) throw new NotFoundException('Organization not found.');
+      if (organization.slug !== command.confirmationOrganizationSlug) {
+        throw new BadRequestException('Exact organization slug confirmation is required.');
+      }
+      if (organization.customerStatus === OrganizationCustomerStatus.SUSPENDED) {
+        throw new ConflictException('A suspended organization cannot be provisioned.');
+      }
+
+      const primaryAdmin = await tx.user.findFirst({
+        where: {
+          id: command.primaryAdminUserId,
+          organizationId: organization.id,
+          isActive: true,
+        },
+      });
+      if (!primaryAdmin) {
+        throw new BadRequestException(
+          'Primary customer administrator must be an active user in the target organization.',
+        );
+      }
+      if (primaryAdmin.role === UserRole.ADMIN) {
+        throw new ConflictException(
+          'A platform administrator cannot be assigned as the customer administrator.',
+        );
+      }
+
+      const membership = await tx.membership.findUnique({
+        where: {
+          userId_organizationId: {
+            userId: primaryAdmin.id,
+            organizationId: organization.id,
+          },
+        },
+      });
+      const correctlyProvisioned =
+        organization.customerStatus === OrganizationCustomerStatus.ACTIVE &&
+        organization.provisionedAt !== null &&
+        organization.allowDemoFactorsForCalculations === false &&
+        membership?.role === MembershipRole.OWNER &&
+        primaryAdmin.accountType === CUSTOMER_ACCOUNT_TYPE &&
+        primaryAdmin.accountExpiresAt === null;
+
+      if (correctlyProvisioned) {
+        return this.result(
+          organization.id,
+          primaryAdmin.id,
+          organization.provisionedAt!,
+          'ALREADY_PROVISIONED',
+          true,
+        );
+      }
+      if (organization.customerStatus === OrganizationCustomerStatus.ACTIVE) {
+        throw new ConflictException(
+          'Organization is already active with different provisioning state.',
+        );
+      }
+
+      await tx.membership.upsert({
+        where: {
+          userId_organizationId: {
+            userId: primaryAdmin.id,
+            organizationId: organization.id,
+          },
+        },
+        create: {
+          userId: primaryAdmin.id,
+          organizationId: organization.id,
+          role: MembershipRole.OWNER,
+        },
+        update: { role: MembershipRole.OWNER },
+      });
+      await tx.user.update({
+        where: { id: primaryAdmin.id },
+        data: {
+          accountType: CUSTOMER_ACCOUNT_TYPE,
+          accountExpiresAt: null,
+        },
+      });
+
+      const provisionedAt = new Date();
+      const provisioned = await tx.organization.update({
+        where: { id: organization.id },
+        data: {
+          customerStatus: OrganizationCustomerStatus.ACTIVE,
+          provisionedAt,
+          allowDemoFactorsForCalculations: false,
+          isActive: true,
+        },
+      });
+      await tx.auditLog.create({
+        data: {
+          organizationId: organization.id,
+          userId: actor.id,
+          action: 'CUSTOMER_ORGANIZATION_PROVISIONED',
+          entityType: 'Organization',
+          entityId: organization.id,
+          description: 'Provisioned paid-pilot customer organization.',
+          oldValue: {
+            customerStatus: organization.customerStatus,
+            allowDemoFactorsForCalculations:
+              organization.allowDemoFactorsForCalculations,
+          },
+          newValue: {
+            customerStatus: provisioned.customerStatus,
+            allowDemoFactorsForCalculations:
+              provisioned.allowDemoFactorsForCalculations,
+            primaryAdminUserId: primaryAdmin.id,
+            result: 'PROVISIONED',
+            provisionedAt: provisionedAt.toISOString(),
+          },
+        },
+      });
+
+      return this.result(
+        organization.id,
+        primaryAdmin.id,
+        provisionedAt,
+        'PROVISIONED',
+        false,
+      );
+    });
+  }
+
+  private assertAuthorized(actor: AuthenticatedUser, organizationId: string) {
+    if (!isPlatformAdmin(actor)) {
+      throw new ForbiddenException(
+        'Only a platform administrator can provision a customer organization.',
+      );
+    }
+    if (actor.organizationId === organizationId) {
+      throw new ForbiddenException(
+        'A platform administrator cannot provision their active organization.',
+      );
+    }
+  }
+
+  private assertConfirmed(command: ProvisionPaidPilotDto) {
+    if (
+      command.confirmProvision !== true ||
+      command.confirmationOrganizationId !== command.organizationId
+    ) {
+      throw new BadRequestException('Exact organization confirmation is required.');
+    }
+  }
+
+  private result(
+    organizationId: string,
+    primaryAdminUserId: string,
+    provisionedAt: Date,
+    status: 'PROVISIONED' | 'ALREADY_PROVISIONED',
+    alreadyProvisioned: boolean,
+  ) {
+    return {
+      organizationId,
+      status,
+      primaryAdminUserId,
+      provisionedAt: provisionedAt.toISOString(),
+      alreadyProvisioned,
+      warnings: [],
+    };
+  }
+}

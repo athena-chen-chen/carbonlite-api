@@ -19,6 +19,7 @@ import { OrganizationsModule } from './organizations/organizations.module';
 import { SpreadsheetImportModule } from './spreadsheet-import/spreadsheet-import.module';
 import { DocumentStorageModule } from './documents/document-storage.module';
 import { WorkspaceErasureModule } from './workspace-erasure/workspace-erasure.module';
+import { CustomerProvisioningModule } from './customer-provisioning/customer-provisioning.module';
 
 @Module({
   imports: [
@@ -27,6 +28,7 @@ import { WorkspaceErasureModule } from './workspace-erasure/workspace-erasure.mo
     ActivityTrackingModule,
     DocumentStorageModule,
     WorkspaceErasureModule,
+    CustomerProvisioningModule,
     AuthModule,
     ActivityDataModule,
     MetricsModule,

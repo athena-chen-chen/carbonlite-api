@@ -10,7 +10,12 @@ import {
 import { JwtService } from '@nestjs/jwt';
 import bcrypt from 'bcryptjs';
 import { createHash, randomBytes, timingSafeEqual } from 'crypto';
-import { MembershipRole, Prisma, UserRole } from '@prisma/client';
+import {
+  MembershipRole,
+  OrganizationCustomerStatus,
+  Prisma,
+  UserRole,
+} from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { RegisterDto } from './dto/register.dto';
 import { AuditLogService } from '../audit-log/audit-log.service';
@@ -232,12 +237,24 @@ export class AuthService {
     const { firstName, lastName } = this.splitName(fullName);
 
     const result = await this.prisma.$transaction(async (tx) => {
-      const workspace = dto.workspaceId
+      let workspace = dto.workspaceId
         ? await tx.organization.findUnique({ where: { id: dto.workspaceId } })
         : await this.findOrCreatePilotWorkspace(tx, workspaceName);
 
       if (!workspace) {
         throw new BadRequestException('Selected workspace was not found.');
+      }
+
+      if (workspace.customerStatus === OrganizationCustomerStatus.PENDING) {
+        workspace = await tx.organization.update({
+          where: { id: workspace.id },
+          data: {
+            customerStatus:
+              workspace.name === DEFAULT_PILOT_WORKSPACE_NAME
+                ? OrganizationCustomerStatus.DEMO
+                : OrganizationCustomerStatus.PILOT,
+          },
+        });
       }
 
       const existingUser = await tx.user.findUnique({ where: { email } });
@@ -647,6 +664,10 @@ export class AuthService {
         name: workspaceName,
         slug: await this.createUniqueOrganizationSlug(tx, workspaceName),
         allowDemoFactorsForCalculations: true,
+        customerStatus:
+          workspaceName === DEFAULT_PILOT_WORKSPACE_NAME
+            ? OrganizationCustomerStatus.DEMO
+            : OrganizationCustomerStatus.PILOT,
       },
     });
   }

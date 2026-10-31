@@ -14,6 +14,14 @@ enum MembershipRole {
   VIEWER
 }
 
+enum OrganizationCustomerStatus {
+  PENDING
+  PILOT
+  ACTIVE
+  SUSPENDED
+  DEMO
+}
+
 enum FacilityType {
   OFFICE
   PLANT
@@ -255,6 +263,8 @@ model Organization {
   timezone                        String?
   defaultReportingYear            Int?
   allowDemoFactorsForCalculations Boolean  @default(false)
+  customerStatus                  OrganizationCustomerStatus @default(PENDING)
+  provisionedAt                   DateTime?
   isActive                        Boolean  @default(true)
   createdAt                       DateTime @default(now())
   updatedAt                       DateTime @updatedAt
