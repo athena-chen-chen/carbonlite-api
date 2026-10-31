@@ -19,6 +19,43 @@ it('captures server-owned input, actor, factor and result and ignores forged cli
   expect(row.calculationSnapshot).toMatchObject({ contractVersion: 1, version: 1, actorUserId: 'actor', input: { quantity: 980, unit: 'kWh' }, factor: { value: .53 }, result: { value: 519.4, scope: 'SCOPE_2' } });
   expect(row.calculatedAt).toBeInstanceOf(Date);
 });
+it('captures canonical Hotel room-night derivation and factor provenance', async () => {
+  const { service, factor } = setup('HOTEL', 7.4, 'room-night');
+  factor.sourceYear = 2026;
+  factor.sourceVersion = '2026';
+  const basis = { rooms: 2, nights: 3, roomNights: 6, derivation: 'ROOMS_X_NIGHTS' };
+  const row = await service.prepareCreate((service as any).prisma, {
+    ...input('HOTEL', 6, 'room-night'),
+    sourceReference: 'Hotel folio',
+    hotelActivityBasis: basis,
+  }, 'actor');
+
+  expect(row.calculationStatus).toBe('CALCULATED');
+  expect(row.calculatedEmissionsKgCO2e).toBeCloseTo(44.4, 10);
+  expect(row.calculationSnapshot).toMatchObject({
+    input: {
+      activityType: 'HOTEL',
+      quantity: 6,
+      unit: 'room-night',
+      activityBasis: basis,
+    },
+    factor: {
+      id: 'factor',
+      value: 7.4,
+      unit: 'room-night',
+      resultUnit: 'kgCO2e',
+    },
+    conversion: {
+      inputQuantity: 6,
+      inputUnit: 'room-night',
+      calculationQuantity: 6,
+      factorInputUnit: 'room-night',
+    },
+    result: { value: 44.4, unit: 'kgCO2e', scope: 'SCOPE_3' },
+  });
+  expect(row.calculationSnapshot.detail.calculationFormula)
+    .toBe('2 rooms × 3 nights = 6 room-night; 6 room-night × 7.4 kgCO2e/room-night = 44.4 kgCO2e');
+});
 it('derives Air Travel activity server-side without creating a fake emissions snapshot', async () => {
   const { service, client } = setup('DIESEL', 2.68, 'L');
   const row = await service.prepareCreate(client, {

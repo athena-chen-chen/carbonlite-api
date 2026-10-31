@@ -1,7 +1,21 @@
 import { LEGITIMATE_OFFICIAL_FACTOR } from '../test-support/legitimate-factor-metadata';
 import { Prisma } from '@prisma/client';
 import { CalculationQualityService } from './calculation-quality.service';
-import { normalizeJurisdictionRegion } from './metrics.utils';
+import { normalizeJurisdictionRegion, normalizeUnit } from './metrics.utils';
+import { ECCC_ELECTRICITY_CANADA_2026_PACK } from '../../prisma/library/eccc-electricity-canada-2026';
+import {
+  ECCC_NATURAL_GAS_ALBERTA_2026_FACTOR_ID,
+  ecccNaturalGasAlberta2026Legacy,
+} from '../../prisma/library/eccc-natural-gas-alberta-2026';
+import {
+  ECCC_GASOLINE_2026_FACTOR_ID,
+  ecccGasoline2026Legacy,
+} from '../../prisma/library/eccc-refined-petroleum-2026';
+import {
+  DESNZ_HOTEL_CANADA_2026_FACTOR_ID,
+  desnzHotelCanada2026Legacy,
+} from '../../prisma/library/desnz-hotel-canada-2026';
+import { EPA_AIR_TRAVEL_2025_PACK } from '../../prisma/library/epa-air-travel-2025';
 
 describe('CalculationQualityService', () => {
   const service = new CalculationQualityService(null as never);
@@ -121,6 +135,117 @@ describe('CalculationQualityService', () => {
       factorValue: 1.89,
       calculatedEmissionsKgCO2e: 1890,
     });
+  });
+
+  it.each([
+    [3, 22.2],
+    [6, 44.4],
+  ])('calculates %s canonical Hotel room-night exactly once', (quantity, emissions) => {
+    const result = service.evaluate({
+      organization,
+      records: [record({
+        activityType: 'HOTEL',
+        quantity: new Prisma.Decimal(quantity),
+        unit: 'room-night',
+        recordDate: new Date('2026-06-30T00:00:00.000Z'),
+        jurisdictionCountry: 'Canada',
+      })],
+      factors: [factor({
+        id: 'hotel-canada-2026',
+        name: 'Hotel stay - Canada - occupied room-night - 2026',
+        activityType: 'HOTEL',
+        jurisdiction: 'Canada',
+        country: 'Canada',
+        unit: 'room-night',
+        factorValue: new Prisma.Decimal(7.4),
+        sourceYear: 2026,
+      })],
+    });
+
+    expect(normalizeUnit('room-night')).toBe('room-night');
+    expect(result.totalEstimatedEmissionsKgCO2e).toBeCloseTo(emissions, 10);
+    expect(result.recordsCalculated).toBe(1);
+    expect(result.calculationDetails).toHaveLength(1);
+    expect(result.calculationDetails[0]).toMatchObject({
+      status: 'CALCULATED',
+      activityQuantity: quantity,
+      calculationQuantity: quantity,
+      calculationUnit: 'room-night',
+      factorId: 'hotel-canada-2026',
+      factorValue: 7.4,
+      factorInputUnit: 'room-night',
+      calculatedEmissionsKgCO2e: emissions,
+    });
+  });
+
+  it('keeps generic Hotel nights unmatched and excluded from totals', () => {
+    const result = service.evaluate({
+      organization,
+      records: [record({
+        activityType: 'HOTEL',
+        quantity: new Prisma.Decimal(3),
+        unit: 'nights',
+        recordDate: new Date('2026-06-30T00:00:00.000Z'),
+        jurisdictionCountry: 'Canada',
+      })],
+      factors: [factor({
+        id: 'hotel-canada-2026',
+        activityType: 'HOTEL',
+        jurisdiction: 'Canada',
+        country: 'Canada',
+        unit: 'room-night',
+        factorValue: new Prisma.Decimal(7.4),
+        sourceYear: 2026,
+      })],
+    });
+
+    expect(result.totalEstimatedEmissionsKgCO2e).toBe(0);
+    expect(result.recordsCalculated).toBe(0);
+    expect(result.calculationDetails[0]).toMatchObject({
+      status: 'MISSING_FACTOR',
+      calculatedEmissionsKgCO2e: null,
+      availableUnitsForActivityType: ['room-night'],
+    });
+  });
+
+  it('includes canonical Hotel emissions once in the paid-pilot mixed aggregate', () => {
+    const albertaElectricity = ECCC_ELECTRICITY_CANADA_2026_PACK.find(
+      (entry) => entry.definition.code === 'AB',
+    )!;
+    const mediumAir = EPA_AIR_TRAVEL_2025_PACK.find(
+      (entry) => entry.definition.haulCategory === 'MEDIUM',
+    )!;
+    const factors = [
+      { id: albertaElectricity.factorId, ...albertaElectricity.legacy },
+      { id: ECCC_NATURAL_GAS_ALBERTA_2026_FACTOR_ID, ...ecccNaturalGasAlberta2026Legacy },
+      { id: ECCC_GASOLINE_2026_FACTOR_ID, ...ecccGasoline2026Legacy },
+      { id: DESNZ_HOTEL_CANADA_2026_FACTOR_ID, ...desnzHotelCanada2026Legacy },
+      { id: mediumAir.factorId, ...mediumAir.legacy },
+    ] as any;
+    const result = service.evaluate({
+      organization,
+      records: [
+        record({ id: 'electricity', activityType: 'ELECTRICITY', quantity: new Prisma.Decimal(1250), unit: 'kWh', recordDate: new Date('2026-06-30'), jurisdictionCountry: 'Canada', jurisdictionRegion: 'Alberta' }),
+        record({ id: 'natural-gas', activityType: 'NATURAL_GAS', quantity: new Prisma.Decimal(8.5), unit: 'GJ', recordDate: new Date('2026-06-30'), jurisdictionCountry: 'Canada', jurisdictionRegion: 'Alberta' }),
+        record({ id: 'gasoline', activityType: 'GASOLINE', quantity: new Prisma.Decimal(350), unit: 'L', recordDate: new Date('2026-06-30'), jurisdictionCountry: 'Canada', jurisdictionRegion: 'Alberta' }),
+        record({ id: 'hotel', activityType: 'HOTEL', quantity: new Prisma.Decimal(6), unit: 'room-night', recordDate: new Date('2026-06-30'), jurisdictionCountry: 'Canada', jurisdictionRegion: 'Alberta' }),
+        record({ id: 'air', activityType: 'AIR_TRAVEL', quantity: new Prisma.Decimal('5377.3586266'), unit: 'passenger-km', recordDate: new Date('2025-06-30'), jurisdictionCountry: 'Canada', jurisdictionRegion: 'Alberta', activityMetadata: { schemaVersion: 1, type: 'AIR_TRAVEL', originAirport: 'YYC', destinationAirport: 'YYZ', passengerCount: 1, tripType: 'ROUND_TRIP' } }),
+        record({ id: 'unresolved', activityType: 'HOTEL', quantity: new Prisma.Decimal(3), unit: 'widgets', recordDate: new Date('2026-06-30'), jurisdictionCountry: 'Canada', jurisdictionRegion: 'Alberta' }),
+      ],
+      factors,
+    });
+
+    const calculated = result.calculationDetails.filter((detail) => detail.status === 'CALCULATED');
+    const hotel = calculated.filter((detail) => detail.activityDataId === 'hotel');
+    expect(hotel).toHaveLength(1);
+    expect(hotel[0].calculatedEmissionsKgCO2e).toBeCloseTo(44.4, 10);
+    expect(result.calculationDetails.find((detail) => detail.activityDataId === 'unresolved'))
+      .toMatchObject({ status: 'INVALID_UNIT', calculatedEmissionsKgCO2e: null });
+    expect(result.totalEstimatedEmissionsKgCO2e).toBeCloseTo(
+      calculated.reduce((total, detail) => total + detail.calculatedEmissionsKgCO2e!, 0),
+      10,
+    );
+    expect(calculated).toHaveLength(5);
   });
 
   it('does not calculate electricity without a province', () => {

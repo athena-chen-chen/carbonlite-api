@@ -1331,6 +1331,7 @@ function isUnsupportedActivityUnit(unit: string) {
     'tonne',
     'ton-km',
     'passenger-km',
+    'room-night',
     'km',
     'kg',
   ]);
