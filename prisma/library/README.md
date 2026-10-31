@@ -53,9 +53,29 @@ corporate inventory matching. No offset workflow is introduced.
 
 For review, run the seed twice on the confirmed development branch, verify one
 record per stable identity, compare pre-existing factor records, and confirm
-1000 kWh of Alberta corporate electricity in 2026 still yields 530 kgCO2e using
-the existing 0.53 factor. Focused backend coverage is in
+Alberta EGDF remains excluded from ordinary corporate Scope 2. The legacy 0.53
+factor is also blocked; the separately reviewed Canada 2026 location-based pack
+uses 0.438 kgCO2e/kWh for Alberta. Focused EGDF coverage is in
 `alberta-egdf-2026.spec.ts`; the sibling frontend's
 `src/test/officialAlbertaEgdf.test.tsx` renders these exact seed records and tests
 both original and equivalent-unit offset candidates. Keep Golden A/B/C at
 579.40 / 338.06 / 2428.44 kgCO2e.
+
+## Canada 2026 location-based Scope 2 electricity
+
+The reviewed 13-jurisdiction production pack is defined in
+`eccc-electricity-canada-2026.ts`; its methodology and provenance are documented
+in `ECCC_ELECTRICITY_CANADA_2026.md`. It uses ECCC Version 4.0, Table 5.3 and
+requires an exact province/territory and exact 2026 activity year. No national,
+prior-year, or nearest-year electricity fallback is allowed.
+
+The guarded development-only load is:
+
+```sh
+npm run seed:eccc-electricity-canada:neon -- --confirmed-development-endpoint=<confirmed-endpoint-id>
+```
+
+It uses `.env.neon.local`, requires explicit confirmation of that configured
+Neon development endpoint, and refuses production, staging, or main-like
+targets. Reruns preserve stable identities and restore only authoritative factor
+values. Existing calculation snapshots are not rewritten.

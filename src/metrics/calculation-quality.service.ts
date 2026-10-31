@@ -687,6 +687,7 @@ export class CalculationQualityService {
       (factor) =>
         factor.organizationId === input.organizationId &&
         factor.verified &&
+        (activityType !== 'ELECTRICITY' || factor.sourceYear === input.reportingYear) &&
         countryMatches(factor.country, input.jurisdictionCountry) &&
         regionMatchesExactly(factor.region || factor.jurisdiction, input.jurisdictionRegion),
     );
@@ -751,7 +752,7 @@ export class CalculationQualityService {
       };
     }
 
-    const priorYear = governedCandidates
+    const priorYear = activityType === 'ELECTRICITY' ? undefined : governedCandidates
       .filter((version) => typeof version.factorYear === 'number' && version.factorYear < input.reportingYear)
       .filter((version) =>
         regionMatchesExactly(version.jurisdictionRegion, input.jurisdictionRegion) ||
@@ -771,7 +772,7 @@ export class CalculationQualityService {
       };
     }
 
-    const nearestYear = governedCandidates
+    const nearestYear = activityType === 'ELECTRICITY' ? undefined : governedCandidates
       .filter((version) =>
         regionMatchesExactly(version.jurisdictionRegion, input.jurisdictionRegion) ||
         (allowsCountryLevelFallback(activityType) &&
@@ -802,6 +803,7 @@ export class CalculationQualityService {
       (factor) =>
         factor.isSystemDefault &&
         factor.verified &&
+        (activityType !== 'ELECTRICITY' || factor.sourceYear === input.reportingYear) &&
         countryMatches(factor.country, input.jurisdictionCountry) &&
         regionMatchesExactly(factor.region || factor.jurisdiction, input.jurisdictionRegion),
     );
@@ -1048,6 +1050,13 @@ export class CalculationQualityService {
       costCad: record.costCad === null || record.costCad === undefined ? null : Number(record.costCad),
       costCurrency: record.costCurrency,
       notes: record.notes,
+      ...(record.activityType === 'ELECTRICITY' ? {
+        scopeLabel: 'Scope 2 — Location-based',
+        scope2AccountingMethod: 'LOCATION_BASED',
+        marketBasedScope2Status: 'NOT_CALCULATED',
+        marketBasedScope2Message:
+          'Market-based Scope 2 not calculated unless qualifying contractual data is provided.',
+      } : {}),
     };
   }
 }

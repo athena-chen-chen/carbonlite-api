@@ -491,6 +491,14 @@ export class ConversionFactorsService {
       });
     }
 
+    if (activityType === 'ELECTRICITY' && !recordYear) {
+      return noApplicableFactor({
+        status: 'NO_MATCH',
+        matchedBy: 'NO_MATCH',
+        message: 'Electricity requires a defensible activity year and an approved exact-year factor.',
+      });
+    }
+
     const legacyFactors = await this.prisma.conversionFactor.findMany({
       where: {
         type: 'EMISSION',
@@ -603,7 +611,7 @@ export class ConversionFactorsService {
       });
     }
 
-    const priorYear = governedCandidates
+    const priorYear = activityType === 'ELECTRICITY' ? undefined : governedCandidates
       .filter((version) => typeof version.factorYear === 'number' && Number(version.factorYear) < Number(recordYear))
       .filter((version) =>
         regionMatchesExactly(version.jurisdictionRegion, region) ||

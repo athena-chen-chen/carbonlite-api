@@ -20,6 +20,7 @@
     "seed:eccc-natural-gas-alberta:neon": "node --import tsx scripts/seed-eccc-natural-gas-alberta-2026.mjs",
     "seed:desnz-hotel-canada:neon": "node --import tsx scripts/seed-desnz-hotel-canada-2026.mjs",
     "seed:epa-air-travel:neon": "node --import tsx scripts/seed-epa-air-travel-2025.mjs",
+    "seed:eccc-electricity-canada:neon": "node --import tsx scripts/seed-eccc-electricity-canada-2026.mjs",
     "seed:sample-workspace": "tsx scripts/seed-sample-workspace.ts",
     "reset:user-password": "node scripts/reset-user-password.mjs"
   },

@@ -335,6 +335,9 @@ describe('CalculationQualityService', () => {
       status: 'VERIFIED',
       confidenceLevel: 'OFFICIAL_GOVERNMENT',
       verified: true,
+      verificationStatus: 'VERIFIED',
+      applicability: 'CORPORATE_INVENTORY',
+      emissionBasis: 'DIRECT_CO2E',
       reviewedBy: 'reviewer-1',
       reviewedAt: new Date(),
       reviewNotes: null,
@@ -521,7 +524,7 @@ describe('CalculationQualityService', () => {
     });
   });
 
-  it('infers Alberta electricity jurisdiction from utility source metadata', () => {
+  it('infers jurisdiction but fails closed when only a different-year electricity factor exists', () => {
     const result = service.evaluate({
       organization: { ...organization, provinceState: null, country: null },
       records: [
@@ -548,16 +551,12 @@ describe('CalculationQualityService', () => {
       ],
     });
 
-    expect(result.totalEstimatedEmissionsKgCO2e).toBe(2268.4);
+    expect(result.totalEstimatedEmissionsKgCO2e).toBe(0);
     expect(result.calculationDetails[0]).toMatchObject({
-      status: 'CALCULATED',
+      status: 'MISSING_FACTOR',
       jurisdictionRegion: 'Alberta',
       jurisdictionSource: 'source',
       jurisdictionAssumed: true,
-      matchingStatus: 'MATCHED',
-      matchedBy: 'NEAREST_YEAR',
-      factorPriority: 'GOVERNED_NEAREST_YEAR',
-      factorSelectionReason: 'NEAREST_YEAR_PROXY',
     });
   });
 
@@ -639,7 +638,7 @@ describe('CalculationQualityService', () => {
     expect(normalizeJurisdictionRegion(null)).toBeNull();
   });
 
-  it('uses nearest prior year factor with warning', () => {
+  it('fails closed instead of using a prior-year electricity factor', () => {
     const result = service.evaluate({
       organization,
       records: [
@@ -656,15 +655,11 @@ describe('CalculationQualityService', () => {
       governedFactors: [governedFactor()],
     });
 
-    expect(result.totalEstimatedEmissionsKgCO2e).toBe(500);
+    expect(result.totalEstimatedEmissionsKgCO2e).toBe(0);
     expect(result.calculationDetails[0]).toMatchObject({
-      matchingStatus: 'MATCHED',
-      matchedBy: 'PRIOR_YEAR',
-      factorSelectionReason: 'PRIOR_YEAR_FALLBACK',
-      factorYear: 2025,
+      status: 'MISSING_FACTOR',
       recordYear: 2026,
     });
-    expect(result.calculationDetails[0].factorSelectionExplanation).toContain('No exact 2026 factor was available');
   });
 
   it('uses country-level fuel factor when province-specific factor is absent', () => {
@@ -993,10 +988,10 @@ describe('CalculationQualityService', () => {
       expect(detail.calculatedEmissionsKgCO2e).toBeNull();
       expect(evaluate('m3', 100).calculationDetails[0].status).toBe('MISSING_FACTOR');
     });
-    it('legacy null governance remains valid, direct basis remains matchable', () => {
+    it('keeps legacy null governance fail-closed', () => {
       for (const emissionBasis of [undefined, null, 'DIRECT_CO2E']) {
         const result = service.evaluate({ organization, records: [record()], factors: [factor({ applicability: null, emissionBasis })] });
-        expect(result.totalEstimatedEmissionsKgCO2e).toBe(268);
+        expect(result.totalEstimatedEmissionsKgCO2e).toBe(0);
       }
     });
   });

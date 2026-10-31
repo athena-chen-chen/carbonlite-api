@@ -1,5 +1,6 @@
 import { BadRequestException } from '@nestjs/common';
 import { ActivityType, RecordSourceType } from '@prisma/client';
+import { LEGITIMATE_OFFICIAL_FACTOR } from '../test-support/legitimate-factor-metadata';
 import {
   buildJsonActivityPreview,
   parseJsonActivityPayload,
@@ -21,11 +22,12 @@ const electricityFactor = {
   name: 'Electricity - Alberta',
   activityType: ActivityType.ELECTRICITY,
   unit: 'kWh',
-  factorValue: 0.53,
+  factorValue: 0.438,
   resultUnit: 'kgCO2e',
   region: 'Alberta',
   country: 'Canada',
   sourceYear: 2026,
+  ...LEGITIMATE_OFFICIAL_FACTOR,
 };
 
 function electricityPreviewFactor(input: {
@@ -46,10 +48,32 @@ function electricityPreviewFactor(input: {
     region: input.province,
     country: 'Canada',
     sourceYear: input.sourceYear,
+    ...LEGITIMATE_OFFICIAL_FACTOR,
   };
 }
 
 const manualEntryElectricityFactors = [
+  electricityPreviewFactor({
+    id: 'electricity-ab-2026',
+    name: 'Electricity - Alberta - 2026 Location-based',
+    province: 'Alberta',
+    sourceYear: 2026,
+    factorValue: 0.438,
+  }),
+  electricityPreviewFactor({
+    id: 'electricity-bc-2026',
+    name: 'Electricity - British Columbia - 2026 Location-based',
+    province: 'British Columbia',
+    sourceYear: 2026,
+    factorValue: 0.018,
+  }),
+  electricityPreviewFactor({
+    id: 'electricity-on-2026',
+    name: 'Electricity - Ontario - 2026 Location-based',
+    province: 'Ontario',
+    sourceYear: 2026,
+    factorValue: 0.059,
+  }),
   electricityPreviewFactor({
     id: 'electricity-sk-2026',
     name: 'Electricity - Saskatchewan',
@@ -113,6 +137,7 @@ const groundTransportFactor = {
   jurisdiction: 'Canada - National',
   country: 'Canada',
   sourceYear: 2025,
+  ...LEGITIMATE_OFFICIAL_FACTOR,
 };
 
 describe('JSON activity records', () => {
@@ -170,7 +195,7 @@ describe('JSON activity records', () => {
     });
   });
 
-  it('matches Manual Entry preview Electricity + Alberta + kWh + 2026 to the latest Alberta prior-year factor', () => {
+  it('matches Manual Entry preview Electricity + Alberta + kWh + exact 2026 factor', () => {
     const preview = buildJsonActivityPreview({
       records: [
         {
@@ -193,20 +218,20 @@ describe('JSON activity records', () => {
       matchedFactorStatus: 'Matched',
       reportTreatment: 'Included',
       matchedFactor: {
-        id: 'electricity-ab-2025',
-        name: 'Electricity - Alberta',
-        factorValue: 0.53,
-        value: 0.53,
+        id: 'electricity-ab-2026',
+        name: 'Electricity - Alberta - 2026 Location-based',
+        factorValue: 0.438,
+        value: 0.438,
         unit: 'kWh',
-        sourceYear: 2025,
+        sourceYear: 2026,
         jurisdictionRegion: 'Alberta',
       },
-      estimatedEmissionsKgCO2e: 53,
+      estimatedEmissionsKgCO2e: 43.8,
       estimatedEmissionsStatus: 'Calculated',
     });
   });
 
-  it('matches Manual Entry preview Electricity + BC + kWh + 2026 to the BC prior-year factor', () => {
+  it('matches Manual Entry preview Electricity + BC + kWh + exact 2026 factor', () => {
     const preview = buildJsonActivityPreview({
       records: [
         {
@@ -226,15 +251,15 @@ describe('JSON activity records', () => {
     expect(preview.records[0]).toMatchObject({
       matchedFactorStatus: 'Matched',
       matchedFactor: {
-        id: 'electricity-bc-2025',
-        factorValue: 0.02,
-        sourceYear: 2025,
+        id: 'electricity-bc-2026',
+        factorValue: 0.018,
+        sourceYear: 2026,
       },
-      estimatedEmissionsKgCO2e: 2,
+      estimatedEmissionsKgCO2e: 1.8,
     });
   });
 
-  it('matches Manual Entry preview Electricity + ON + kWh + 2026 to the Ontario prior-year factor', () => {
+  it('matches Manual Entry preview Electricity + ON + kWh + exact 2026 factor', () => {
     const preview = buildJsonActivityPreview({
       records: [
         {
@@ -254,11 +279,11 @@ describe('JSON activity records', () => {
     expect(preview.records[0]).toMatchObject({
       matchedFactorStatus: 'Matched',
       matchedFactor: {
-        id: 'electricity-on-2025',
-        factorValue: 0.12,
-        sourceYear: 2025,
+        id: 'electricity-on-2026',
+        factorValue: 0.059,
+        sourceYear: 2026,
       },
-      estimatedEmissionsKgCO2e: 12,
+      estimatedEmissionsKgCO2e: 5.9,
     });
   });
 
@@ -283,9 +308,9 @@ describe('JSON activity records', () => {
       matchedFactorStatus: 'Matched',
       reportTreatment: 'Included',
       matchedFactor: {
-        id: 'electricity-ab-2025',
-        name: 'Electricity - Alberta',
-        sourceYear: 2025,
+        id: 'electricity-ab-2026',
+        name: 'Electricity - Alberta - 2026 Location-based',
+        sourceYear: 2026,
       },
       estimatedEmissionsKgCO2e: null,
       estimatedEmissionsStatus: 'Waiting for quantity',
@@ -296,7 +321,7 @@ describe('JSON activity records', () => {
     );
   });
 
-  it('uses the latest prior-year Manual Entry preview factor instead of an older prior year', () => {
+  it('fails closed when Manual Entry preview has only prior-year electricity factors', () => {
     const preview = buildJsonActivityPreview({
       records: [
         {
@@ -328,9 +353,10 @@ describe('JSON activity records', () => {
       ],
     });
 
-    expect(preview.records[0].matchedFactor).toMatchObject({
-      id: 'electricity-ab-2025',
-      sourceYear: 2025,
+    expect(preview.records[0]).toMatchObject({
+      matchedFactorStatus: 'Missing Factor',
+      reportTreatment: 'Excluded',
+      canImport: false,
     });
   });
 
@@ -351,7 +377,7 @@ describe('JSON activity records', () => {
       factors: manualEntryElectricityFactors,
     });
 
-    expect(preview.records[0].matchedFactor?.id).toBe('electricity-ab-2025');
+    expect(preview.records[0].matchedFactor?.id).toBe('electricity-ab-2026');
     expect(preview.importItems[0]).toMatchObject({
       activityType: ActivityType.ELECTRICITY,
       jurisdictionRegion: 'Alberta',

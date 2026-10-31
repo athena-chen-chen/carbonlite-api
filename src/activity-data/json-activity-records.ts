@@ -377,6 +377,7 @@ export function findBestJsonPreviewFactorMatch(input: {
   const selectedFactor = selectFactorForRecordYear(
     jurisdictionMatches,
     input.recordYear,
+    input.definition.prismaType === ActivityType.ELECTRICITY,
   );
 
   return selectedFactor
@@ -487,6 +488,7 @@ function jurisdictionCompatible(
 function selectFactorForRecordYear(
   factors: FactorCandidate[],
   recordYear: number | null,
+  exactYearRequired = false,
 ) {
   const withYears = factors
     .map((factor) => ({
@@ -501,6 +503,8 @@ function selectFactorForRecordYear(
       .sort((a, b) => compareFactorCandidates(a.factor, b.factor))[0];
     if (exact) return exact.factor;
 
+    if (exactYearRequired) return null;
+
     const prior = withYears
       .filter((item) => item.year <= recordYear)
       .sort((a, b) => b.year - a.year || compareFactorCandidates(a.factor, b.factor))[0];
@@ -508,6 +512,8 @@ function selectFactorForRecordYear(
 
     return null;
   }
+
+  if (exactYearRequired) return null;
 
   const latest = withYears.sort(
     (a, b) => b.year - a.year || compareFactorCandidates(a.factor, b.factor),
