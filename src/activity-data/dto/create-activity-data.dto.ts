@@ -2,19 +2,56 @@ import {
   IsBoolean,
   IsDateString,
   IsEnum,
+  Equals,
+  IsInt,
   IsNumber,
+  Matches,
+  Min,
   IsPositive,
   IsOptional,
   IsString,
   MaxLength,
+  ValidateIf,
+  ValidateNested,
 } from 'class-validator';
-import { Type } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import { ActivityType, RecordSourceType } from '@prisma/client';
 
 export {
   ActivityType as ActivityTypeDto,
   RecordSourceType as RecordSourceTypeDto,
 } from '@prisma/client';
+
+export class AirTravelActivityMetadataDto {
+  @Type(() => Number)
+  @IsInt()
+  @Equals(1)
+  schemaVersion!: 1;
+
+  @IsString()
+  @Matches(/^AIR_TRAVEL$/)
+  type!: 'AIR_TRAVEL';
+
+  @Transform(({ value }) => String(value ?? '').trim().toUpperCase())
+  @Matches(/^[A-Z]{3}$/)
+  originAirport!: string;
+
+  @Transform(({ value }) => String(value ?? '').trim().toUpperCase())
+  @Matches(/^[A-Z]{3}$/)
+  destinationAirport!: string;
+
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  passengerCount!: number;
+
+  @Transform(({ value }) => String(value ?? '').trim().toUpperCase())
+  @IsEnum(['ONE_WAY', 'ROUND_TRIP'])
+  tripType!: 'ONE_WAY' | 'ROUND_TRIP';
+}
+
+const hasAirTravelMetadata = (value: CreateActivityDataDto) =>
+  value.activityMetadata?.type === 'AIR_TRAVEL';
 
 export class CreateActivityDataDto {
   @IsOptional()
@@ -74,13 +111,20 @@ export class CreateActivityDataDto {
   @IsDateString()
   periodEnd?: string;
 
+  @ValidateIf((value: CreateActivityDataDto) => !hasAirTravelMetadata(value))
   @IsNumber()
   @IsPositive({ message: 'Quantity must be a positive number.' })
-  quantity!: number;
+  quantity?: number;
 
+  @ValidateIf((value: CreateActivityDataDto) => !hasAirTravelMetadata(value))
   @IsString()
   @MaxLength(40)
-  unit!: string;
+  unit?: string;
+
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => AirTravelActivityMetadataDto)
+  activityMetadata?: AirTravelActivityMetadataDto;
 
   @IsOptional()
   @IsNumber()

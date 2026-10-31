@@ -75,6 +75,21 @@ describe('Uploaded tabular workbook extraction', () => {
     expect(rows[2]).toMatchObject({ quantity: null, unit: '' });
     expect(rows[3]).toMatchObject({ quantity: null, unit: '' });
   });
+
+  it('derives Air Travel passenger-km from complete route semantics and preserves source cells', () => {
+    const rows = parseSpreadsheetActivityRows(workbook([
+      ['Activity', 'Origin Airport', 'Destination Airport', 'Passengers', 'Trip Type', 'Date'],
+      ['Air Travel', 'YYC', 'YYZ', 1, 'ROUND_TRIP', '2026-04-01'],
+      ['Air Travel', 'YYC', 'YYZ', null, 'ROUND_TRIP', '2026-04-02'],
+    ]));
+    expect(rows[0]).toMatchObject({
+      unit: 'passenger-km',
+      activityMetadata: { schemaVersion: 1, type: 'AIR_TRAVEL', originAirport: 'YYC', destinationAirport: 'YYZ', passengerCount: 1, tripType: 'ROUND_TRIP' },
+      rawSourceRow: { 'Origin Airport': 'YYC', 'Destination Airport': 'YYZ', Passengers: 1, 'Trip Type': 'ROUND_TRIP' },
+    });
+    expect(rows[0].quantity).toBeCloseTo(5377.3586266, 6);
+    expect(rows[1]).toMatchObject({ quantity: null, unit: '' });
+  });
 });
 
 describe('Workbook re-extraction identity compatibility', () => {

@@ -2,6 +2,7 @@ import { assertDocumentSize, MAX_SPREADSHEET_CELLS, MAX_SPREADSHEET_COLUMNS, MAX
 import { BadRequestException } from '@nestjs/common';
 import * as XLSX from 'xlsx';
 import { deriveHotelActivityBasis } from './hotel-activity-basis';
+import { canonicalizeAirTravelActivity } from '../domain/air-travel/air-travel';
 
 const key = (value: unknown) => String(value ?? '').toLowerCase().replace(/[^a-z0-9]/g, '');
 const aliases = {
@@ -10,6 +11,10 @@ const aliases = {
   quantity: ['quantity', 'consumption', 'qty', 'amount', 'usage'],
   rooms: ['rooms', 'roomcount', 'numberofrooms'],
   nights: ['nights', 'nightcount', 'numberofnights'],
+  originAirport: ['originairport', 'origin', 'fromairport'],
+  destinationAirport: ['destinationairport', 'destination', 'toairport'],
+  passengerCount: ['passengercount', 'passengers', 'numberofpassengers'],
+  tripType: ['triptype', 'direction', 'journeytype'],
   unit: ['unit', 'units', 'uom', 'measurement'],
   jurisdictionCountry: ['jurisdictioncountry', 'country'],
   jurisdictionRegion: ['jurisdictionregion', 'province', 'jurisdiction', 'region', 'state', 'stateprovince', 'facilityprovince'],
@@ -54,7 +59,8 @@ export function parseSpreadsheetActivityRows(buffer: Buffer) {
   const headerIndex = grid.findIndex(row => {
     const headers = row.map(key);
     return aliases.activityType.some(a => headers.includes(a)) &&
-      (aliases.quantity.some(a => headers.includes(a)) || aliases.nights.some(a => headers.includes(a)));
+      (aliases.quantity.some(a => headers.includes(a)) || aliases.nights.some(a => headers.includes(a)) ||
+        (aliases.originAirport.some(a => headers.includes(a)) && aliases.destinationAirport.some(a => headers.includes(a))));
   });
   if (headerIndex < 0) throw new BadRequestException('No activity/quantity table found. Use spreadsheet import to review the column mapping.');
   const headers = grid[headerIndex].map(key);
@@ -90,7 +96,20 @@ export function parseSpreadsheetActivityRows(buffer: Buffer) {
       rooms: read(row, 'rooms'),
       nights: read(row, 'nights'),
     });
-    const quantity = hotelBasis.status === 'DERIVED'
+    const airTravelMetadata = String(activityType ?? '').trim().toUpperCase().replace(/[\s-]+/g, '_') === 'AIR_TRAVEL'
+      ? {
+          schemaVersion: 1, type: 'AIR_TRAVEL',
+          originAirport: read(row, 'originAirport'), destinationAirport: read(row, 'destinationAirport'),
+          passengerCount: read(row, 'passengerCount'), tripType: read(row, 'tripType'),
+        }
+      : null;
+    let airTravel: ReturnType<typeof canonicalizeAirTravelActivity> | null = null;
+    try {
+      if (airTravelMetadata) airTravel = canonicalizeAirTravelActivity({ activityType: 'AIR_TRAVEL', activityMetadata: airTravelMetadata });
+    } catch { /* Invalid or incomplete route remains a review row. */ }
+    const quantity = airTravel?.derivedRoute
+      ? airTravel.quantity as number
+      : hotelBasis.status === 'DERIVED'
       ? hotelBasis.basis.roomNights
       : hotelBasis.status === 'INCOMPLETE' && hotelBasis.nights
       ? hotelBasis.nights
@@ -101,7 +120,9 @@ export function parseSpreadsheetActivityRows(buffer: Buffer) {
     return [{
       activityType: String(activityType ?? ''), recordDate: dateOnly(rawDate),
       quantity,
-      unit: hotelBasis.status === 'DERIVED'
+      unit: airTravel?.derivedRoute
+        ? 'passenger-km'
+        : hotelBasis.status === 'DERIVED'
         ? 'room-night'
         : hotelBasis.status === 'INCOMPLETE' && hotelBasis.nights
         ? 'nights'
@@ -109,6 +130,7 @@ export function parseSpreadsheetActivityRows(buffer: Buffer) {
         ? String(read(row, 'unit') ?? '')
         : '',
       hotelActivityBasis: hotelBasis.status === 'DERIVED' ? hotelBasis.basis : undefined,
+      activityMetadata: airTravel?.activityMetadata ?? undefined,
       jurisdictionCountry: String(read(row, 'jurisdictionCountry') ?? 'Canada'),
       jurisdictionRegion: read(row, 'jurisdictionRegion'), facilityName: read(row, 'facilityName'),
       sourceReference: read(row, 'sourceReference'), notes: read(row, 'notes'),

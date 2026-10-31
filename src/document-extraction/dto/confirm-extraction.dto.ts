@@ -4,6 +4,7 @@ import {
 } from 'class-validator';
 import { Transform, Type } from 'class-transformer';
 import { MAX_EXTRACTED_REVIEW_ROWS } from '../../documents/document-resource-policy';
+import { AirTravelActivityMetadataDto } from '../../activity-data/dto/create-activity-data.dto';
 
 // Preserve the service's parseable string dates; date interpretation remains separate.
 const IsImportDate = () => ValidateBy({
@@ -51,6 +52,11 @@ export class ParsedActivityDto {
   @IsNumber()
   @IsPositive()
   nights?: number;
+
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => AirTravelActivityMetadataDto)
+  activityMetadata?: AirTravelActivityMetadataDto;
 
   @IsOptional()
   @IsString()

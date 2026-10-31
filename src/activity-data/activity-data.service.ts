@@ -34,6 +34,7 @@ import {
 import { CLEAR_ACTIVITY_RECORDS_CONFIRMATION } from './dto/clear-activity-records.dto';
 import { RESET_DEMO_DATA_CONFIRMATION } from './dto/reset-demo-data.dto';
 import { deriveHotelActivityBasis } from '../document-extraction/hotel-activity-basis';
+import { AirTravelActivityError, canonicalizeAirTravelActivity } from '../domain/air-travel/air-travel';
 
 @Injectable()
 export class ActivityDataService {
@@ -49,6 +50,10 @@ export class ActivityDataService {
   async create(organizationId: string, dto: CreateActivityDataDto, userId?: string) {
     await this.validateRelations(organizationId, dto);
     const hotelActivity = canonicalHotelActivityInput(dto);
+    const airTravelActivity = canonicalAirTravelActivityInput({
+      activityType: dto.activityType, quantity: hotelActivity.quantity, unit: hotelActivity.unit,
+      activityMetadata: dto.activityMetadata,
+    });
 
     const data = {
       organizationId,
@@ -65,9 +70,11 @@ export class ActivityDataService {
       recordYear: dto.recordYear ?? getDateOnlyYear(dto.recordDate),
       periodStart: dto.periodStart ? new Date(dto.periodStart) : null,
       periodEnd: dto.periodEnd ? new Date(dto.periodEnd) : null,
-      quantity: new Prisma.Decimal(hotelActivity.quantity),
-      unit: hotelActivity.unit,
+      quantity: new Prisma.Decimal(Number(airTravelActivity.quantity)),
+      unit: String(airTravelActivity.unit),
       hotelActivityBasis: hotelActivity.basis,
+      activityMetadata: airTravelActivity.activityMetadata ?? Prisma.DbNull,
+      airTravelRoute: airTravelActivity.derivedRoute,
       sourceType: dto.sourceType,
       sourceReference: dto.sourceReference ?? null,
       sourceFileName: dto.sourceFileName ?? null,
@@ -135,6 +142,10 @@ export class ActivityDataService {
     const parseTimer = new PerfTimer();
     const rows = dto.items.map((item) => {
       const hotelActivity = canonicalHotelActivityInput(item);
+      const airTravelActivity = canonicalAirTravelActivityInput({
+        activityType: item.activityType, quantity: hotelActivity.quantity, unit: hotelActivity.unit,
+        activityMetadata: item.activityMetadata,
+      });
       return {
       organizationId,
       facilityId: item.facilityId ?? null,
@@ -150,9 +161,11 @@ export class ActivityDataService {
       recordYear: item.recordYear ?? getDateOnlyYear(item.recordDate),
       periodStart: item.periodStart ? new Date(item.periodStart) : null,
       periodEnd: item.periodEnd ? new Date(item.periodEnd) : null,
-      quantity: new Prisma.Decimal(hotelActivity.quantity),
-      unit: hotelActivity.unit,
+      quantity: new Prisma.Decimal(Number(airTravelActivity.quantity)),
+      unit: String(airTravelActivity.unit),
       hotelActivityBasis: hotelActivity.basis,
+      activityMetadata: airTravelActivity.activityMetadata ?? Prisma.DbNull,
+      airTravelRoute: airTravelActivity.derivedRoute,
       sourceType: item.sourceType as RecordSourceType,
       sourceReference: item.sourceReference ?? null,
       sourceFileName: item.sourceFileName ?? null,
@@ -353,6 +366,12 @@ export class ActivityDataService {
   async update(organizationId: string, id: string, dto: UpdateActivityDataDto, userId?: string) {
     const existing = await this.ensureExists(organizationId, id);
     await this.validateRelations(organizationId, dto);
+    const airTravelActivity = canonicalAirTravelActivityInput({
+      activityType: dto.activityType ?? existing.activityType,
+      quantity: dto.quantity ?? Number(existing.quantity),
+      unit: dto.unit ?? existing.unit,
+      activityMetadata: dto.activityMetadata === undefined ? existing.activityMetadata : dto.activityMetadata,
+    });
 
     const updated = await this.prisma.$transaction(async tx => {
       const row = await tx.activityData.update({
@@ -391,8 +410,15 @@ export class ActivityDataService {
           ...(dto.periodEnd !== undefined
             ? { periodEnd: dto.periodEnd ? new Date(dto.periodEnd) : null }
             : {}),
-          ...(dto.quantity !== undefined ? { quantity: new Prisma.Decimal(dto.quantity) } : {}),
-          ...(dto.unit !== undefined ? { unit: dto.unit } : {}),
+          ...((dto.quantity !== undefined || airTravelActivity.derivedRoute)
+            ? { quantity: new Prisma.Decimal(Number(airTravelActivity.quantity)) }
+            : {}),
+          ...((dto.unit !== undefined || airTravelActivity.derivedRoute)
+            ? { unit: String(airTravelActivity.unit) }
+            : {}),
+          ...(dto.activityMetadata !== undefined || airTravelActivity.derivedRoute
+            ? { activityMetadata: airTravelActivity.activityMetadata ?? Prisma.DbNull }
+            : {}),
           ...(dto.sourceType !== undefined
             ? { sourceType: dto.sourceType as RecordSourceType }
             : {}),
@@ -1113,6 +1139,15 @@ function canonicalHotelActivityInput(dto: Pick<CreateActivityDataDto, 'activityT
   return result.status === 'DERIVED'
     ? { quantity: result.basis.roomNights, unit: 'room-night', basis: result.basis }
     : { quantity: dto.quantity, unit: dto.unit, basis: undefined };
+}
+
+function canonicalAirTravelActivityInput(input: Parameters<typeof canonicalizeAirTravelActivity>[0]) {
+  try {
+    return canonicalizeAirTravelActivity(input);
+  } catch (error) {
+    if (error instanceof AirTravelActivityError) throw new BadRequestException(error.message);
+    throw error;
+  }
 }
 
 function normalizeProvinceInput(value: string) {

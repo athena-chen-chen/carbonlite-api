@@ -28,6 +28,8 @@ export function normalizeUnit(unit: string): string {
     kilometers: 'km',
     kilometre: 'km',
     kilometres: 'km',
+    'passenger-km': 'passenger-km',
+    pkm: 'passenger-km',
     kwh: 'kwh',
     kwhr: 'kwh',
     'kw h': 'kwh',

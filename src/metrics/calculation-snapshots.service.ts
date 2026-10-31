@@ -4,6 +4,7 @@ import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CalculationQualityService } from './calculation-quality.service';
 import { scopeForActivity } from './calculation-snapshot';
+import { canonicalizeAirTravelActivity } from '../domain/air-travel/air-travel';
 
 const derivedKeys = ['matchingStatus','reportTreatment','scope','matchedFactorId','matchedFactorName','matchedFactorSourceYear','matchedFactorValue','matchedFactorUnit','matchedFactorVersion','matchedFactorSourceAuthority','matchedFactorSourceDocument','matchedFactorVerificationStatus','matchedFactorConfidenceLevel','matchedFactorAssumptions','factorSelectionReason','factorSelectionExplanation','calculatedEmissionsKgCO2e','calculationStatus','calculationMessage','calculationSnapshot','calculationVersion','calculatedAt'];
 const json = (value: unknown) => JSON.parse(JSON.stringify(value));
@@ -14,9 +15,18 @@ export class CalculationSnapshotsService {
   async prepareCreate(client: Prisma.TransactionClient | PrismaService, input: any, actorUserId?: string) {
     const row = { ...input, id: input.id ?? randomUUID(), createdAt: input.createdAt ?? new Date(), updatedAt: new Date() };
     for (const key of derivedKeys) delete row[key];
+    const airTravel = canonicalizeAirTravelActivity(row);
+    if (airTravel.derivedRoute) {
+      row.quantity = airTravel.quantity;
+      row.unit = airTravel.unit;
+      row.activityMetadata = airTravel.activityMetadata;
+      row.airTravelRoute = airTravel.derivedRoute;
+    }
     const hotelActivityBasis = row.hotelActivityBasis;
     delete row.hotelActivityBasis;
-    return { ...row, ...await this.fields(client, { ...row, hotelActivityBasis }, actorUserId, 1) };
+    const airTravelRoute = row.airTravelRoute;
+    delete row.airTravelRoute;
+    return { ...row, ...await this.fields(client, { ...row, hotelActivityBasis, airTravelRoute }, actorUserId, 1) };
   }
 
   async fields(client: Prisma.TransactionClient | PrismaService, row: any, actorUserId: string | undefined, version: number) {
@@ -53,7 +63,7 @@ export class CalculationSnapshotsService {
         detail.calculationFormula = `${basis.rooms} rooms × ${basis.nights} nights = ${basis.roomNights} room-night; ${detail.calculationFormula}`;
       }
       const snapshot = { contractVersion: 1, version, calculatedAt: calculatedAt.toISOString(), actorUserId: actorUserId ?? null,
-        input: { activityType: row.activityType, quantity: Number(row.quantity), unit: row.unit, recordDate: new Date(row.recordDate).toISOString(), country: row.jurisdictionCountry ?? null, region: row.jurisdictionRegion ?? null, activityBasis: row.hotelActivityBasis ?? null },
+        input: { activityType: row.activityType, quantity: Number(row.quantity), unit: row.unit, recordDate: new Date(row.recordDate).toISOString(), country: row.jurisdictionCountry ?? null, region: row.jurisdictionRegion ?? null, activityBasis: row.hotelActivityBasis ?? null, airTravelRoute: row.airTravelRoute ?? null },
         factor: { id: detail.factorId, versionId: detail.factorVersionId, value: detail.factorValue, unit: detail.factorInputUnit, resultUnit: detail.factorResultUnit, provenance: detail.factorProvenance },
         conversion: { inputQuantity: Number(row.quantity), inputUnit: row.unit, calculationQuantity: detail.calculationQuantity ?? Number(row.quantity), factorInputUnit: detail.factorInputUnit },
         result: { value: detail.calculatedEmissionsKgCO2e, unit: 'kgCO2e', scope: fields.scope }, detail };
@@ -65,9 +75,10 @@ export class CalculationSnapshotsService {
 
   async recalculate(client: Prisma.TransactionClient, row: any, actorUserId?: string) {
     const previousHotelBasis = row.calculationSnapshot?.input?.activityBasis ?? null;
+    const airTravel = canonicalizeAirTravelActivity(row);
     const fields = await this.fields(
       client,
-      { ...row, hotelActivityBasis: previousHotelBasis },
+      { ...row, quantity: airTravel.quantity, unit: airTravel.unit, activityMetadata: airTravel.activityMetadata ?? row.activityMetadata, hotelActivityBasis: previousHotelBasis, airTravelRoute: airTravel.derivedRoute },
       actorUserId,
       (row.calculationVersion ?? 0) + 1,
     );

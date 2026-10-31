@@ -37,6 +37,7 @@ import {
   timeSync,
 } from '../common/monitoring/performance-logging';
 import { deriveHotelActivityBasis, readHotelBasisColumns, type HotelActivityBasis } from './hotel-activity-basis';
+import { canonicalizeAirTravelActivity, type AirTravelActivityMetadataV1 } from '../domain/air-travel/air-travel';
 
 type ConfidenceLevel = 'high' | 'medium' | 'low';
 
@@ -50,6 +51,7 @@ type ParsedActivityRaw = {
   rooms?: number | null;
   nights?: number | null;
   hotelActivityBasis?: HotelActivityBasis;
+  activityMetadata?: AirTravelActivityMetadataV1;
   periodRole?: string | null;
   usageType?: string | null;
   comparisonType?: string | null;
@@ -111,6 +113,7 @@ type ParsedActivityWithConfidence = {
   rooms?: ConfidenceField<number>;
   nights?: ConfidenceField<number>;
   hotelActivityBasis?: HotelActivityBasis;
+  activityMetadata?: AirTravelActivityMetadataV1;
   periodRole?: string | null;
   usageType?: string | null;
   comparisonType?: string | null;
@@ -296,7 +299,7 @@ export class DocumentExtractionService {
                   'Preserve optional costCad only when explicitly supplied for that activity; never infer it from invoice totals or charges. Missing cost must be null; explicit zero is valid. ' +
                   'If a value is missing, return null where allowed. ' +
                   'Supported activityType values: ELECTRICITY, NATURAL_GAS, DIESEL, GASOLINE, AIR_TRAVEL, STEAM, WATER, WASTE, HOTEL, SHIPPING, CUSTOM. ' +
-                  'Prefer consumption units such as kWh, MWh, GJ, m3, liters, and km. For HOTEL, extract rooms and nights separately when both are explicit; never assume a missing room count.',
+                  'Prefer consumption units such as kWh, MWh, GJ, m3, liters, and km. For HOTEL, extract rooms and nights separately when both are explicit; never assume a missing room count. For AIR_TRAVEL, extract IATA originAirport, destinationAirport, passengerCount, and ONE_WAY or ROUND_TRIP; never infer a missing passenger count or trip type.',
               },
             ],
           },
@@ -347,6 +350,10 @@ export class DocumentExtractionService {
                       unit: { type: 'string' },
                       rooms: { anyOf: [{ type: 'number' }, { type: 'null' }] },
                       nights: { anyOf: [{ type: 'number' }, { type: 'null' }] },
+                      originAirport: { anyOf: [{ type: 'string' }, { type: 'null' }] },
+                      destinationAirport: { anyOf: [{ type: 'string' }, { type: 'null' }] },
+                      passengerCount: { anyOf: [{ type: 'number' }, { type: 'null' }] },
+                      tripType: { anyOf: [{ type: 'string' }, { type: 'null' }] },
                       periodRole: {
                         type: 'string',
                         enum: [
@@ -382,6 +389,10 @@ export class DocumentExtractionService {
                       'unit',
                       'rooms',
                       'nights',
+                      'originAirport',
+                      'destinationAirport',
+                      'passengerCount',
+                      'tripType',
                       'periodRole',
                       'jurisdictionCountry',
                       'jurisdictionRegion',
@@ -862,6 +873,11 @@ If it contains a utility bill, prefer ELECTRICITY or NATURAL_GAS.
     activity: Record<string, unknown>,
     fallbackSourceReference: string,
   ): ParsedActivityRaw {
+    const activityType = this.normalizeActivityType(
+      this.readAliasedField(activity, [
+        'activityType', 'Activity Type', 'activity type', 'ActivityType', 'category', 'Category',
+      ]),
+    );
     const quantity = Number(
       this.readAliasedField(activity, [
         'quantity',
@@ -872,18 +888,21 @@ If it contains a utility bill, prefer ELECTRICITY or NATURAL_GAS.
         'Usage',
       ]),
     );
+    let airTravel: ReturnType<typeof canonicalizeAirTravelActivity> | null = null;
+    if (activityType === 'AIR_TRAVEL') {
+      try {
+        airTravel = canonicalizeAirTravelActivity({ activityType, activityMetadata: {
+          schemaVersion: 1, type: 'AIR_TRAVEL',
+          originAirport: this.readAliasedField(activity, ['originAirport', 'Origin Airport']),
+          destinationAirport: this.readAliasedField(activity, ['destinationAirport', 'Destination Airport']),
+          passengerCount: this.readAliasedField(activity, ['passengerCount', 'Passengers']),
+          tripType: this.readAliasedField(activity, ['tripType', 'Trip Type']),
+        } });
+      } catch { /* Incomplete extraction remains reviewable. */ }
+    }
 
     return {
-      activityType: this.normalizeActivityType(
-        this.readAliasedField(activity, [
-          'activityType',
-          'Activity Type',
-          'activity type',
-          'ActivityType',
-          'category',
-          'Category',
-        ]),
-      ),
+      activityType,
       recordDate: this.readAliasedField(activity, [
         'recordDate',
         'Record Date',
@@ -912,8 +931,9 @@ If it contains a utility bill, prefer ELECTRICITY or NATURAL_GAS.
           'End Date',
         ]),
       ),
-      quantity: Number.isFinite(quantity) ? quantity : NaN,
-      unit: this.readAliasedField(activity, ['unit', 'Unit', 'units', 'Units']),
+      quantity: airTravel?.derivedRoute ? Number(airTravel.quantity) : Number.isFinite(quantity) ? quantity : NaN,
+      unit: airTravel?.derivedRoute ? 'passenger-km' : this.readAliasedField(activity, ['unit', 'Unit', 'units', 'Units']),
+      activityMetadata: airTravel?.activityMetadata ?? undefined,
       rooms: this.readOptionalNumber(activity, ['rooms', 'Rooms', 'roomCount', 'Room Count']),
       nights: this.readOptionalNumber(activity, ['nights', 'Nights', 'nightCount', 'Night Count']),
       periodRole: this.normalizeOptionalText(
@@ -1163,6 +1183,7 @@ If it contains a utility bill, prefer ELECTRICITY or NATURAL_GAS.
                 quantity: normalized.quantity,
                 unit: normalized.unit,
                 hotelActivityBasis: normalized.hotelActivityBasis,
+                activityMetadata: normalized.activityMetadata ?? Prisma.DbNull,
                 sourceType: 'DOCUMENT_AI' as any,
                 sourceReference: normalized.sourceReference ?? null,
                 sourceDocumentId: documentId,
@@ -1446,6 +1467,7 @@ If it contains a utility bill, prefer ELECTRICITY or NATURAL_GAS.
         confidence: activity.nights > 0 ? 'high' : 'low',
       },
       hotelActivityBasis: activity.hotelActivityBasis,
+      activityMetadata: activity.activityMetadata,
       periodRole: activity.periodRole ?? null,
       usageType: activity.usageType ?? null,
       comparisonType: activity.comparisonType ?? null,
@@ -1585,6 +1607,21 @@ If it contains a utility bill, prefer ELECTRICITY or NATURAL_GAS.
       rooms: this.readAliasedField(activity, ['rooms', 'Rooms', 'roomCount', 'Room Count']),
       nights: this.readAliasedField(activity, ['nights', 'Nights', 'nightCount', 'Night Count']),
     });
+    let airTravel: ReturnType<typeof canonicalizeAirTravelActivity> | null = null;
+    if (normalizedActivityType === 'AIR_TRAVEL') {
+      const suppliedMetadata = this.readAliasedField(activity, ['activityMetadata']);
+      const routeMetadata = suppliedMetadata && typeof suppliedMetadata === 'object'
+        ? suppliedMetadata
+        : {
+            schemaVersion: 1, type: 'AIR_TRAVEL',
+            originAirport: this.readAliasedField(activity, ['originAirport', 'Origin Airport', 'origin']),
+            destinationAirport: this.readAliasedField(activity, ['destinationAirport', 'Destination Airport', 'destination']),
+            passengerCount: this.readAliasedField(activity, ['passengerCount', 'Passengers', 'passengers']),
+            tripType: this.readAliasedField(activity, ['tripType', 'Trip Type']),
+          };
+      try { airTravel = canonicalizeAirTravelActivity({ activityType: normalizedActivityType, activityMetadata: routeMetadata }); }
+      catch { /* Incomplete route remains Needs Review. */ }
+    }
     const normalized: ParsedActivityRaw = {
       activityType: normalizedActivityType,
       recordDate: this.readAliasedField(activity, [
@@ -1593,7 +1630,7 @@ If it contains a utility bill, prefer ELECTRICITY or NATURAL_GAS.
         'date',
         'Date',
       ]),
-      quantity: hotelBasis.status === 'DERIVED' ? hotelBasis.basis.roomNights : Number(
+      quantity: airTravel?.derivedRoute ? Number(airTravel.quantity) : hotelBasis.status === 'DERIVED' ? hotelBasis.basis.roomNights : Number(
         this.readAliasedField(activity, [
           'quantity',
           'Quantity',
@@ -1603,12 +1640,13 @@ If it contains a utility bill, prefer ELECTRICITY or NATURAL_GAS.
           'Usage',
         ]),
       ),
-      unit: hotelBasis.status === 'DERIVED'
+      unit: airTravel?.derivedRoute ? 'passenger-km' : hotelBasis.status === 'DERIVED'
         ? 'room-night'
         : this.readAliasedField(activity, ['unit', 'Unit', 'units', 'Units']),
       rooms: hotelBasis.status === 'DERIVED' ? hotelBasis.basis.rooms : undefined,
       nights: hotelBasis.status === 'DERIVED' ? hotelBasis.basis.nights : undefined,
       hotelActivityBasis: hotelBasis.status === 'DERIVED' ? hotelBasis.basis : undefined,
+      activityMetadata: airTravel?.activityMetadata ?? undefined,
       periodRole: this.normalizeOptionalText(
         this.readAliasedField(activity, ['periodRole', 'Period Role', 'period role']),
       ),
@@ -1751,11 +1789,26 @@ If it contains a utility bill, prefer ELECTRICITY or NATURAL_GAS.
       activityType: this.normalizeActivityType(row.activityType),
       ...(rawSourceRow ? readHotelBasisColumns(rawSourceRow) : {}),
     });
+    let airTravel: ReturnType<typeof canonicalizeAirTravelActivity> | null = null;
+    if (this.normalizeActivityType(row.activityType) === 'AIR_TRAVEL' && rawSourceRow) {
+      const read = (aliases: string[]) => {
+        const entry = Object.entries(rawSourceRow).find(([name]) => aliases.includes(name.toLowerCase().replace(/[^a-z0-9]/g, '')));
+        return entry?.[1];
+      };
+      try {
+        airTravel = canonicalizeAirTravelActivity({ activityType: 'AIR_TRAVEL', activityMetadata: {
+          schemaVersion: 1, type: 'AIR_TRAVEL', originAirport: read(['originairport','origin','fromairport']),
+          destinationAirport: read(['destinationairport','destination','toairport']),
+          passengerCount: read(['passengercount','passengers','numberofpassengers']), tripType: read(['triptype','direction','journeytype']),
+        } });
+      } catch { /* Staged invalid route remains blocked. */ }
+    }
     return {
       activityType: this.normalizeActivityType(row.activityType),
       recordDate: row.recordDate.toISOString().slice(0, 10),
-      quantity: hotelBasis.status === 'DERIVED' ? hotelBasis.basis.roomNights : Number(row.quantity),
-      unit: hotelBasis.status === 'DERIVED' ? 'room-night' : row.unit,
+      quantity: airTravel?.derivedRoute ? Number(airTravel.quantity) : hotelBasis.status === 'DERIVED' ? hotelBasis.basis.roomNights : Number(row.quantity),
+      unit: airTravel?.derivedRoute ? 'passenger-km' : hotelBasis.status === 'DERIVED' ? 'room-night' : row.unit,
+      activityMetadata: airTravel?.activityMetadata ?? undefined,
       jurisdictionCountry: normalizeJurisdictionCountry(row.jurisdictionCountry) ?? row.jurisdictionCountry,
       jurisdictionRegion: normalizeJurisdictionRegion(row.jurisdictionRegion) ?? row.jurisdictionRegion,
       facilityName: row.facilityName,

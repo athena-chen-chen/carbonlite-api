@@ -19,6 +19,18 @@ it('captures server-owned input, actor, factor and result and ignores forged cli
   expect(row.calculationSnapshot).toMatchObject({ contractVersion: 1, version: 1, actorUserId: 'actor', input: { quantity: 980, unit: 'kWh' }, factor: { value: .53 }, result: { value: 519.4, scope: 'SCOPE_2' } });
   expect(row.calculatedAt).toBeInstanceOf(Date);
 });
+it('derives Air Travel activity server-side without creating a fake emissions snapshot', async () => {
+  const { service, client } = setup('DIESEL', 2.68, 'L');
+  const row = await service.prepareCreate(client, {
+    ...input('AIR_TRAVEL', 1, 'km'),
+    activityMetadata: { schemaVersion: 1, type: 'AIR_TRAVEL', originAirport: 'YYC', destinationAirport: 'YYZ', passengerCount: 1, tripType: 'ROUND_TRIP', passengerKm: 1 },
+  }, 'actor');
+  expect(Number(row.quantity)).toBeCloseTo(5377.3586266, 6);
+  expect(row.unit).toBe('passenger-km');
+  expect(row.activityMetadata).not.toHaveProperty('passengerKm');
+  expect(row.calculationStatus).not.toBe('CALCULATED');
+  expect(row.calculationSnapshot).toBe(Prisma.DbNull);
+});
 it('preserves a confirmed Alberta electricity snapshot after the live factor becomes unsupported', async () => {
   const { service, client, factor, quality } = setup('ELECTRICITY', .53, 'kWh');
   const row = await service.prepareCreate(client, input('ELECTRICITY', 980, 'kWh'), 'actor');

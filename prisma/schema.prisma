@@ -388,6 +388,7 @@ model ActivityData {
   calculatedEmissionsKgCO2e Float?
   calculationStatus         String?
   calculationMessage        String?
+  activityMetadata          Json?
   calculationSnapshot       Json?
   calculationVersion        Int @default(0)
   calculatedAt              DateTime?
