@@ -8,6 +8,7 @@ import { AppModule } from './app.module';
 import { GlobalExceptionFilter } from './common/filters/global-exception.filter';
 import { PerfTimer, SLOW_REQUEST_THRESHOLD_MS } from './common/monitoring/performance-logging';
 import { initSentry } from './sentry';
+import { configureHttpSecurity } from './common/security/http-security';
 
 async function bootstrap() {
   initSentry();
@@ -34,7 +35,7 @@ async function bootstrap() {
     next();
   });
 
-  app.enableCors();
+  configureHttpSecurity(app);
   app.setGlobalPrefix('api', {
     exclude: [{ path: 'debug/sentry', method: RequestMethod.GET }],
   });

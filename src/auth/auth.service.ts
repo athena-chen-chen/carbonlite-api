@@ -28,6 +28,7 @@ import {
   GOLDEN_SAMPLE_WORKSPACE_NAME,
   ensureGoldenSampleDataForWorkspace,
 } from '../sample-data/golden-sample-data.service';
+import { assertPublicRegistrationEnabled } from '../common/security/security-policy';
 
 export type AuthenticatedUser = {
   allowDemoFactorsForCalculations?: boolean;
@@ -78,6 +79,8 @@ export class AuthService {
   ) {}
 
   async register(dto: RegisterDto) {
+    assertPublicRegistrationEnabled();
+
     const email = dto.email.toLowerCase().trim();
     const organizationName = dto.organizationName.trim();
     const passwordHash = await bcrypt.hash(dto.password, 10);

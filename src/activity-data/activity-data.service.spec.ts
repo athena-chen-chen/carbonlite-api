@@ -1,6 +1,8 @@
 import { Prisma } from '@prisma/client';
 import { ActivityDataService } from './activity-data.service';
 
+const originalEnvironment = process.env;
+
 const canonicalFields = {
   matchingStatus: 'MATCHED',
   reportTreatment: 'INCLUDED',
@@ -60,6 +62,9 @@ describe('ActivityDataService canonical calculation persistence', () => {
     report: {
       updateMany: jest.fn(),
     },
+    organization: {
+      findUnique: jest.fn(),
+    },
   };
   const auditLog = { log: jest.fn() };
   const activityTracking = { track: jest.fn() };
@@ -67,13 +72,25 @@ describe('ActivityDataService canonical calculation persistence', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    process.env = {
+      ...originalEnvironment,
+      APP_ENV: 'development',
+      DEMO_RESET_ENABLED: 'true',
+    };
     prisma.$transaction.mockImplementation((callback) => callback(prisma));
+    prisma.organization.findUnique.mockResolvedValue({
+      allowDemoFactorsForCalculations: true,
+    });
     service = new ActivityDataService(
       prisma as never,
       auditLog as never,
       activityTracking as never,
       { prepareCreate: jest.fn(async (_client, data) => data), recalculate: jest.fn(async (_client, row) => row) } as never,
     );
+  });
+
+  afterAll(() => {
+    process.env = originalEnvironment;
   });
 
   it('persists canonical calculation fields on create and returns them', async () => {
@@ -585,5 +602,38 @@ describe('ActivityDataService canonical calculation persistence', () => {
 
     expect(prisma.activityData.deleteMany).not.toHaveBeenCalled();
     expect(prisma.document.deleteMany).not.toHaveBeenCalled();
+  });
+
+  it('rejects demo reset in production before querying or deleting data', async () => {
+    process.env.APP_ENV = 'production';
+
+    await expect(
+      service.resetDemoDataForOrganization(
+        'org-1',
+        'admin-1',
+        'RESET DEMO DATA',
+      ),
+    ).rejects.toThrow('Demo data reset is disabled.');
+
+    expect(prisma.organization.findUnique).not.toHaveBeenCalled();
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it('rejects demo reset for a real customer workspace', async () => {
+    prisma.organization.findUnique.mockResolvedValue({
+      allowDemoFactorsForCalculations: false,
+    });
+
+    await expect(
+      service.resetDemoDataForOrganization(
+        'customer-org',
+        'admin-1',
+        'RESET DEMO DATA',
+      ),
+    ).rejects.toThrow(
+      'Demo data reset is only available for synthetic demo workspaces.',
+    );
+
+    expect(prisma.$transaction).not.toHaveBeenCalled();
   });
 });

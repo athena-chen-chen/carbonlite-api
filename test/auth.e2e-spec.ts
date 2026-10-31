@@ -13,16 +13,40 @@ describe('Auth MVP (e2e)', () => {
   let app: INestApplication;
   let prisma: PrismaService;
   const testRunId = uniqueTestId('auth');
+  const originalPublicRegistrationEnabled =
+    process.env.PUBLIC_REGISTRATION_ENABLED;
 
   beforeAll(async () => {
+    process.env.PUBLIC_REGISTRATION_ENABLED = 'true';
     const e2e = await createE2eApp();
     app = e2e.app;
     prisma = e2e.prisma;
   });
 
+  beforeEach(() => {
+    process.env.PUBLIC_REGISTRATION_ENABLED = 'true';
+  });
+
   afterAll(async () => {
     await cleanupTestData(prisma, testRunId);
     await app.close();
+    if (originalPublicRegistrationEnabled === undefined) {
+      delete process.env.PUBLIC_REGISTRATION_ENABLED;
+    } else {
+      process.env.PUBLIC_REGISTRATION_ENABLED = originalPublicRegistrationEnabled;
+    }
+  });
+
+  it('denies public registration when server configuration is disabled', async () => {
+    process.env.PUBLIC_REGISTRATION_ENABLED = 'false';
+    await request(app.getHttpServer())
+      .post('/api/auth/register')
+      .send({
+        organizationName: `${testRunId} Denied Org`,
+        email: `denied-${testRunId}@carbonlite-e2e.test`,
+        password: 'Fictional-Test-Only!2026',
+      })
+      .expect(403);
   });
 
   it('registers a new user and organization', async () => {

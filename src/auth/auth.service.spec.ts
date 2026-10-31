@@ -51,6 +51,7 @@ describe('AuthService login resilience', () => {
       LOCAL_DEMO_USER_ID: 'local-demo-user',
       LOCAL_DEMO_ORGANIZATION_ID: 'local-demo-organization',
       LOCAL_DEMO_ORGANIZATION_NAME: 'CarbonLite Pilot Demo Workspace',
+      PUBLIC_REGISTRATION_ENABLED: 'false',
     };
     jwt.signAsync.mockResolvedValue('local-demo-token');
     jwt.verifyAsync.mockReset();
@@ -68,6 +69,18 @@ describe('AuthService login resilience', () => {
       auditLog as never,
       activityTracking as never,
     );
+  });
+
+  it('denies public registration unless the server explicitly enables it', async () => {
+    await expect(
+      service.register({
+        organizationName: 'Unapproved Organization',
+        email: 'unapproved@example.com',
+        password: 'Fictional-Test-Only!2026',
+      }),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+
+    expect(prisma.$transaction).not.toHaveBeenCalled();
   });
 
   afterAll(() => {

@@ -4,6 +4,7 @@ import {
   Injectable,
   NotFoundException,
   BadRequestException,
+  ForbiddenException,
   Logger,
 } from '@nestjs/common';
 import { Prisma, RecordSourceType, ActivityType, ReportStatus } from '@prisma/client';
@@ -35,6 +36,7 @@ import { CLEAR_ACTIVITY_RECORDS_CONFIRMATION } from './dto/clear-activity-record
 import { RESET_DEMO_DATA_CONFIRMATION } from './dto/reset-demo-data.dto';
 import { deriveHotelActivityBasis } from '../document-extraction/hotel-activity-basis';
 import { AirTravelActivityError, canonicalizeAirTravelActivity } from '../domain/air-travel/air-travel';
+import { assertDemoResetRuntimeEnabled } from '../common/security/security-policy';
 
 @Injectable()
 export class ActivityDataService {
@@ -832,6 +834,17 @@ export class ActivityDataService {
   ) {
     if (confirmation !== RESET_DEMO_DATA_CONFIRMATION) {
       throw new BadRequestException('Confirmation text is invalid.');
+    }
+
+    assertDemoResetRuntimeEnabled();
+    const organization = await this.prisma.organization.findUnique({
+      where: { id: organizationId },
+      select: { allowDemoFactorsForCalculations: true },
+    });
+    if (!organization?.allowDemoFactorsForCalculations) {
+      throw new ForbiddenException(
+        'Demo data reset is only available for synthetic demo workspaces.',
+      );
     }
 
     const result = await this.prisma.$transaction(async tx => {
