@@ -18,6 +18,7 @@
     "seed:alberta-egdf:neon": "node --import tsx scripts/seed-alberta-egdf-2026.mjs",
     "seed:eccc-refined-petroleum:localdb": "node --import tsx scripts/seed-eccc-refined-petroleum-2026.mjs",
     "seed:eccc-natural-gas-alberta:neon": "node --import tsx scripts/seed-eccc-natural-gas-alberta-2026.mjs",
+    "seed:desnz-hotel-canada:neon": "node --import tsx scripts/seed-desnz-hotel-canada-2026.mjs",
     "seed:sample-workspace": "tsx scripts/seed-sample-workspace.ts",
     "reset:user-password": "node scripts/reset-user-password.mjs"
   },
