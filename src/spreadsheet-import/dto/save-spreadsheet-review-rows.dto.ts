@@ -15,6 +15,7 @@ import {
   SpreadsheetImportSourceType,
   SpreadsheetReviewRowStatus,
 } from '@prisma/client';
+import { AirTravelActivityMetadataDto } from '../../activity-data/dto/create-activity-data.dto';
 
 export class SpreadsheetReviewIssueDto {
   @IsString()
@@ -64,9 +65,15 @@ export class SpreadsheetReviewRowDto {
   @MaxLength(120)
   rawQuantity?: string;
 
+  @IsOptional()
   @IsString()
   @MaxLength(40)
-  unit!: string;
+  unit?: string;
+
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => AirTravelActivityMetadataDto)
+  activityMetadata?: AirTravelActivityMetadataDto;
 
   @IsOptional()
   @IsString()

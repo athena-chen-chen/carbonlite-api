@@ -1113,7 +1113,7 @@ If it contains a utility bill, prefer ELECTRICITY or NATURAL_GAS.
             activity.jurisdictionRegion = supplied(['jurisdictionRegion','province','region','Province']) ? activity.jurisdictionRegion : staged.jurisdictionRegion;
             activity.facilityName = supplied(['facilityName','facility','site','location']) ? activity.facilityName : staged.facilityName;
             const fields = await this.snapshots.fields(tx, { ...activity, id: staged.id, organizationId, quantity: new Prisma.Decimal(activity.quantity), recordDate: new Date(activity.recordDate), createdAt: staged.createdAt, document: null }, userId, 1);
-            const editable = { activityType: activity.activityType, quantity: new Prisma.Decimal(activity.quantity), unit: activity.unit, recordDate: new Date(activity.recordDate), jurisdictionCountry: activity.jurisdictionCountry, jurisdictionRegion: activity.jurisdictionRegion, facilityName: activity.facilityName };
+            const editable = { activityType: activity.activityType, quantity: new Prisma.Decimal(activity.quantity), unit: activity.unit, activityMetadata: activity.activityMetadata ? activity.activityMetadata as unknown as Prisma.InputJsonValue : Prisma.JsonNull, recordDate: new Date(activity.recordDate), jurisdictionCountry: activity.jurisdictionCountry, jurisdictionRegion: activity.jurisdictionRegion, facilityName: activity.facilityName };
             const { calculationSnapshot, calculationVersion, calculatedAt, ...stagedFields } = fields;
             const updated = await tx.spreadsheetImportReviewRow.update({ where: { id: staged.id, organizationId }, data: { ...editable, ...stagedFields, status: fields.calculationStatus === 'CALCULATED' ? 'READY' : fields.calculationStatus === 'TRACKED_ONLY' ? 'TRACKED_ONLY' : 'NEEDS_REVIEW', issues: [] } });
             Object.assign(staged, updated);
@@ -1780,7 +1780,7 @@ If it contains a utility bill, prefer ELECTRICITY or NATURAL_GAS.
     row: SpreadsheetImportReviewRow,
   ): NormalizedImportActivity | null {
     if (!this.isSpreadsheetReviewRowImportEligible(row)) return null;
-    if (!row.activityType || !row.recordDate || !row.quantity || !row.unit) return null;
+    if (!row.activityType || !row.recordDate) return null;
 
     const rawSourceRow = row.rawSourceRow && typeof row.rawSourceRow === 'object' && !Array.isArray(row.rawSourceRow)
       ? row.rawSourceRow as Record<string, unknown>
@@ -1790,24 +1790,28 @@ If it contains a utility bill, prefer ELECTRICITY or NATURAL_GAS.
       ...(rawSourceRow ? readHotelBasisColumns(rawSourceRow) : {}),
     });
     let airTravel: ReturnType<typeof canonicalizeAirTravelActivity> | null = null;
-    if (this.normalizeActivityType(row.activityType) === 'AIR_TRAVEL' && rawSourceRow) {
+    if (this.normalizeActivityType(row.activityType) === 'AIR_TRAVEL') {
       const read = (aliases: string[]) => {
-        const entry = Object.entries(rawSourceRow).find(([name]) => aliases.includes(name.toLowerCase().replace(/[^a-z0-9]/g, '')));
+        const entry = Object.entries(rawSourceRow ?? {}).find(([name]) => aliases.includes(name.toLowerCase().replace(/[^a-z0-9]/g, '')));
         return entry?.[1];
       };
       try {
-        airTravel = canonicalizeAirTravelActivity({ activityType: 'AIR_TRAVEL', activityMetadata: {
+        const persistedMetadata = row.activityMetadata && typeof row.activityMetadata === 'object' && !Array.isArray(row.activityMetadata)
+          ? row.activityMetadata
+          : null;
+        airTravel = canonicalizeAirTravelActivity({ activityType: 'AIR_TRAVEL', activityMetadata: persistedMetadata ?? {
           schemaVersion: 1, type: 'AIR_TRAVEL', originAirport: read(['originairport','origin','fromairport']),
           destinationAirport: read(['destinationairport','destination','toairport']),
           passengerCount: read(['passengercount','passengers','numberofpassengers']), tripType: read(['triptype','direction','journeytype']),
         } });
       } catch { /* Staged invalid route remains blocked. */ }
     }
+    if (!airTravel?.derivedRoute && (!row.quantity || !row.unit)) return null;
     return {
       activityType: this.normalizeActivityType(row.activityType),
       recordDate: row.recordDate.toISOString().slice(0, 10),
       quantity: airTravel?.derivedRoute ? Number(airTravel.quantity) : hotelBasis.status === 'DERIVED' ? hotelBasis.basis.roomNights : Number(row.quantity),
-      unit: airTravel?.derivedRoute ? 'passenger-km' : hotelBasis.status === 'DERIVED' ? 'room-night' : row.unit,
+      unit: airTravel?.derivedRoute ? 'passenger-km' : hotelBasis.status === 'DERIVED' ? 'room-night' : row.unit!,
       activityMetadata: airTravel?.activityMetadata ?? undefined,
       jurisdictionCountry: normalizeJurisdictionCountry(row.jurisdictionCountry) ?? row.jurisdictionCountry,
       jurisdictionRegion: normalizeJurisdictionRegion(row.jurisdictionRegion) ?? row.jurisdictionRegion,

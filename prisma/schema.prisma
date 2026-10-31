@@ -444,6 +444,7 @@ model SpreadsheetImportReviewRow {
   notes                     String?
   issues                    Json
   rawSourceRow              Json?
+  activityMetadata          Json?
   matchingStatus            String?
   reportTreatment           String?
   scope                     String?
