@@ -1,0 +1,136 @@
+import { Prisma, PrismaClient } from '@prisma/client';
+import { seedAlbertaEgdf2026, ALBERTA_EGDF_FACTOR_ID, ALBERTA_EGDF_SOURCE_ID } from '../prisma/library/alberta-egdf-2026';
+import {
+  assertProductionFactorLoadAllowed,
+  loadProductionFactors,
+  verifyProductionFactors,
+} from '../prisma/library/production-factor-deployment';
+import {
+  EXPECTED_PRODUCTION_FACTOR_COUNT,
+  PRODUCTION_FACTOR_MANIFEST,
+} from '../prisma/library/production-factor-manifest';
+
+const prisma = new PrismaClient();
+const manifestIds = PRODUCTION_FACTOR_MANIFEST.map((entry) => entry.factorId);
+const sourceIds = [...new Set(PRODUCTION_FACTOR_MANIFEST.map((entry) => entry.sourceId))];
+const syntheticIds = ['test-duplicate-production-factor', 'test-legacy-alberta-053'];
+const loadEnv = {
+  DATABASE_URL: process.env.DATABASE_URL,
+  NODE_ENV: 'test',
+  APP_ENV: 'test',
+  ALLOW_PRODUCTION_FACTOR_LOAD: 'true',
+};
+
+async function cleanDeploymentFactors() {
+  await prisma.conversionFactor.deleteMany({ where: { id: { in: [...manifestIds, ...syntheticIds, ALBERTA_EGDF_FACTOR_ID] } } });
+  await prisma.factorVersion.updateMany({
+    where: { factorId: { in: [...manifestIds, ...syntheticIds, ALBERTA_EGDF_FACTOR_ID] } },
+    data: { status: 'DRAFT' },
+  });
+  await prisma.factor.deleteMany({ where: { id: { in: [...manifestIds, ...syntheticIds, ALBERTA_EGDF_FACTOR_ID] } } });
+  await prisma.factorSource.deleteMany({ where: { id: { in: [...sourceIds, ALBERTA_EGDF_SOURCE_ID] } } });
+}
+
+async function deploymentTableSnapshot() {
+  return Promise.all([
+    prisma.factor.findMany({ orderBy: { id: 'asc' }, select: { id: true, updatedAt: true } }),
+    prisma.factorVersion.findMany({ orderBy: { id: 'asc' }, select: { id: true, updatedAt: true } }),
+    prisma.factorSource.findMany({ orderBy: { id: 'asc' }, select: { id: true, updatedAt: true } }),
+    prisma.conversionFactor.findMany({ orderBy: { id: 'asc' }, select: { id: true, updatedAt: true } }),
+  ]);
+}
+
+describe('production factor deployment gate (disposable PostgreSQL)', () => {
+  beforeAll(cleanDeploymentFactors);
+  afterAll(async () => {
+    await cleanDeploymentFactors();
+    await prisma.$disconnect();
+  });
+
+  it('has one canonical manifest of 20 unique reviewed factors', () => {
+    expect(EXPECTED_PRODUCTION_FACTOR_COUNT).toBe(20);
+    expect(PRODUCTION_FACTOR_MANIFEST).toHaveLength(20);
+    expect(new Set(manifestIds).size).toBe(20);
+  });
+
+  it('fails empty, loads once, verifies, and remains idempotent', async () => {
+    const empty = await verifyProductionFactors(prisma);
+    expect(empty).toMatchObject({ pass: false, present: 0, eligible: 0 });
+    expect(empty.missing).toHaveLength(20);
+
+    await loadProductionFactors(prisma, loadEnv);
+    const first = await verifyProductionFactors(prisma);
+    expect(first).toMatchObject({ pass: true, present: 20, eligible: 20 });
+
+    await loadProductionFactors(prisma, loadEnv);
+    const second = await verifyProductionFactors(prisma);
+    expect(second).toMatchObject({ pass: true, present: 20, eligible: 20 });
+    expect(await prisma.factor.count({ where: { id: { in: manifestIds } } })).toBe(20);
+    expect(await prisma.factorVersion.count({ where: { factorId: { in: manifestIds } } })).toBe(20);
+  });
+
+  it('detects missing, wrong-value, and governance-ineligible expected factors', async () => {
+    const expected = PRODUCTION_FACTOR_MANIFEST.find((entry) => entry.factor.activityType === 'ELECTRICITY')!;
+    await prisma.factorVersion.updateMany({ where: { factorId: expected.factorId }, data: { status: 'DRAFT' } });
+    await prisma.factorVersion.delete({
+      where: { factorId_version: { factorId: expected.factorId, version: String(expected.version.version) } },
+    });
+    expect((await verifyProductionFactors(prisma)).missing).toContain(`${expected.factorId}@${expected.version.version}`);
+    await loadProductionFactors(prisma, loadEnv);
+
+    await prisma.factorVersion.updateMany({ where: { factorId: expected.factorId }, data: { factorValue: new Prisma.Decimal('999') } });
+    expect((await verifyProductionFactors(prisma)).invalid).toContain(`${expected.factorId}: factor value mismatch`);
+    await loadProductionFactors(prisma, loadEnv);
+
+    await prisma.factorVersion.updateMany({ where: { factorId: expected.factorId }, data: { verified: false } });
+    expect((await verifyProductionFactors(prisma)).invalid).toContain(`${expected.factorId}: governance-ineligible`);
+    await prisma.factorVersion.updateMany({ where: { factorId: expected.factorId }, data: { verified: true } });
+  });
+
+  it('detects a competing eligible identity and an eligible Alberta 0.53 violation', async () => {
+    const expected = PRODUCTION_FACTOR_MANIFEST.find((entry) =>
+      entry.factor.activityType === 'ELECTRICITY' && entry.version.jurisdictionRegion === 'Alberta')!;
+    await prisma.conversionFactor.create({
+      data: { id: syntheticIds[0], ...expected.legacy, name: `${expected.legacy.name} duplicate` },
+    });
+    expect((await verifyProductionFactors(prisma)).duplicates.some((reason) => reason.includes(syntheticIds[0]))).toBe(true);
+    await prisma.conversionFactor.delete({ where: { id: syntheticIds[0] } });
+
+    await prisma.conversionFactor.create({
+      data: {
+        id: syntheticIds[1], ...expected.legacy, name: 'Legacy Alberta electricity 0.53',
+        factorValue: new Prisma.Decimal('0.53'),
+      },
+    });
+    expect((await verifyProductionFactors(prisma)).legacyViolations).toContain(`${syntheticIds[1]}: legacy Alberta 0.53 is eligible`);
+    await prisma.conversionFactor.delete({ where: { id: syntheticIds[1] } });
+  });
+
+  it('keeps EGDF blocked and proves verification is read-only', async () => {
+    await seedAlbertaEgdf2026(prisma);
+    const before = await deploymentTableSnapshot();
+    const result = await verifyProductionFactors(prisma);
+    const after = await deploymentTableSnapshot();
+    expect(result.pass).toBe(true);
+    expect(result.legacyViolations).toEqual([]);
+    expect(after).toEqual(before);
+  });
+
+  it('requires explicit opt-in before loader writes and a recognized production environment', async () => {
+    expect(() => assertProductionFactorLoadAllowed({
+      DATABASE_URL: 'postgresql://user:secret@db.example/prod', APP_ENV: 'production',
+    })).toThrow('ALLOW_PRODUCTION_FACTOR_LOAD=true');
+    expect(() => assertProductionFactorLoadAllowed({
+      DATABASE_URL: 'postgresql://user:secret@prod-db.example/carbonlite', APP_ENV: 'test',
+      ALLOW_PRODUCTION_FACTOR_LOAD: 'true',
+    })).toThrow('production-like database target');
+    expect(() => assertProductionFactorLoadAllowed({
+      DATABASE_URL: process.env.DATABASE_URL, APP_ENV: 'production', ALLOW_PRODUCTION_FACTOR_LOAD: 'true',
+    })).not.toThrow();
+    const noWritePrisma = { $transaction: jest.fn() } as unknown as PrismaClient;
+    await expect(loadProductionFactors(noWritePrisma, {
+      DATABASE_URL: process.env.DATABASE_URL, APP_ENV: 'production',
+    })).rejects.toThrow('ALLOW_PRODUCTION_FACTOR_LOAD=true');
+    expect(noWritePrisma.$transaction).not.toHaveBeenCalled();
+  });
+});
