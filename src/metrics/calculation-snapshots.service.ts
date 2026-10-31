@@ -14,7 +14,9 @@ export class CalculationSnapshotsService {
   async prepareCreate(client: Prisma.TransactionClient | PrismaService, input: any, actorUserId?: string) {
     const row = { ...input, id: input.id ?? randomUUID(), createdAt: input.createdAt ?? new Date(), updatedAt: new Date() };
     for (const key of derivedKeys) delete row[key];
-    return { ...row, ...await this.fields(client, row, actorUserId, 1) };
+    const hotelActivityBasis = row.hotelActivityBasis;
+    delete row.hotelActivityBasis;
+    return { ...row, ...await this.fields(client, { ...row, hotelActivityBasis }, actorUserId, 1) };
   }
 
   async fields(client: Prisma.TransactionClient | PrismaService, row: any, actorUserId: string | undefined, version: number) {
@@ -45,8 +47,13 @@ export class CalculationSnapshotsService {
     if (calculated) {
       const calculatedAt = new Date();
       detail.scope = fields.scope;
+      if (row.hotelActivityBasis) {
+        const basis = row.hotelActivityBasis;
+        detail.activityBasis = basis;
+        detail.calculationFormula = `${basis.rooms} rooms × ${basis.nights} nights = ${basis.roomNights} room-night; ${detail.calculationFormula}`;
+      }
       const snapshot = { contractVersion: 1, version, calculatedAt: calculatedAt.toISOString(), actorUserId: actorUserId ?? null,
-        input: { activityType: row.activityType, quantity: Number(row.quantity), unit: row.unit, recordDate: new Date(row.recordDate).toISOString(), country: row.jurisdictionCountry ?? null, region: row.jurisdictionRegion ?? null },
+        input: { activityType: row.activityType, quantity: Number(row.quantity), unit: row.unit, recordDate: new Date(row.recordDate).toISOString(), country: row.jurisdictionCountry ?? null, region: row.jurisdictionRegion ?? null, activityBasis: row.hotelActivityBasis ?? null },
         factor: { id: detail.factorId, versionId: detail.factorVersionId, value: detail.factorValue, unit: detail.factorInputUnit, resultUnit: detail.factorResultUnit, provenance: detail.factorProvenance },
         conversion: { inputQuantity: Number(row.quantity), inputUnit: row.unit, calculationQuantity: detail.calculationQuantity ?? Number(row.quantity), factorInputUnit: detail.factorInputUnit },
         result: { value: detail.calculatedEmissionsKgCO2e, unit: 'kgCO2e', scope: fields.scope }, detail };
@@ -57,7 +64,13 @@ export class CalculationSnapshotsService {
   }
 
   async recalculate(client: Prisma.TransactionClient, row: any, actorUserId?: string) {
-    const fields = await this.fields(client, row, actorUserId, (row.calculationVersion ?? 0) + 1);
+    const previousHotelBasis = row.calculationSnapshot?.input?.activityBasis ?? null;
+    const fields = await this.fields(
+      client,
+      { ...row, hotelActivityBasis: previousHotelBasis },
+      actorUserId,
+      (row.calculationVersion ?? 0) + 1,
+    );
     // Legacy metrics may be the only historical calculation evidence. Archive
     // them before invalidating the current projection, just as we retain snapshots.
     const previousMetrics = row.calculationSnapshot ? [] : await client.metricResult.findMany({

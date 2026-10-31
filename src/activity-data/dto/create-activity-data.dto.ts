@@ -82,6 +82,16 @@ export class CreateActivityDataDto {
   @MaxLength(40)
   unit!: string;
 
+  @IsOptional()
+  @IsNumber()
+  @IsPositive()
+  rooms?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @IsPositive()
+  nights?: number;
+
   @IsEnum(RecordSourceType)
   sourceType!: RecordSourceType;
 

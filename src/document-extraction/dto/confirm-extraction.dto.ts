@@ -1,5 +1,5 @@
 import {
-  ArrayMaxSize, IsArray, IsBoolean, IsInt, IsNumber, IsObject,
+  ArrayMaxSize, IsArray, IsBoolean, IsInt, IsNumber, IsObject, IsPositive,
   IsOptional, IsString, MaxLength, ValidateBy, ValidateNested,
 } from 'class-validator';
 import { Transform, Type } from 'class-transformer';
@@ -41,6 +41,16 @@ export class ParsedActivityDto {
 
   @IsString()
   unit!: string;
+
+  @IsOptional()
+  @IsNumber()
+  @IsPositive()
+  rooms?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @IsPositive()
+  nights?: number;
 
   @IsOptional()
   @IsString()

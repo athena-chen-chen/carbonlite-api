@@ -1,12 +1,15 @@
 import { assertDocumentSize, MAX_SPREADSHEET_CELLS, MAX_SPREADSHEET_COLUMNS, MAX_SPREADSHEET_ROWS, MAX_SPREADSHEET_SHEETS } from '../documents/document-resource-policy';
 import { BadRequestException } from '@nestjs/common';
 import * as XLSX from 'xlsx';
+import { deriveHotelActivityBasis } from './hotel-activity-basis';
 
 const key = (value: unknown) => String(value ?? '').toLowerCase().replace(/[^a-z0-9]/g, '');
 const aliases = {
   activityType: ['activitytype', 'recordcategory', 'type', 'activity', 'category'],
   recordDate: ['recorddate', 'servicedate', 'activitydate', 'reportingdate', 'date'],
   quantity: ['quantity', 'consumption', 'qty', 'amount', 'usage'],
+  rooms: ['rooms', 'roomcount', 'numberofrooms'],
+  nights: ['nights', 'nightcount', 'numberofnights'],
   unit: ['unit', 'units', 'uom', 'measurement'],
   jurisdictionCountry: ['jurisdictioncountry', 'country'],
   jurisdictionRegion: ['jurisdictionregion', 'province', 'jurisdiction', 'region', 'state', 'stateprovince', 'facilityprovince'],
@@ -50,7 +53,8 @@ export function parseSpreadsheetActivityRows(buffer: Buffer) {
   const grid = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1, defval: null, blankrows: true });
   const headerIndex = grid.findIndex(row => {
     const headers = row.map(key);
-    return aliases.activityType.some(a => headers.includes(a)) && aliases.quantity.some(a => headers.includes(a));
+    return aliases.activityType.some(a => headers.includes(a)) &&
+      (aliases.quantity.some(a => headers.includes(a)) || aliases.nights.some(a => headers.includes(a)));
   });
   if (headerIndex < 0) throw new BadRequestException('No activity/quantity table found. Use spreadsheet import to review the column mapping.');
   const headers = grid[headerIndex].map(key);
@@ -81,11 +85,30 @@ export function parseSpreadsheetActivityRows(buffer: Buffer) {
     // Keep unknown activities, missing values and nonnumeric quantities for review.
     if (!activityType && /^(total|subtotal|grand total)$/i.test(String(rawDate ?? '').trim())) return [];
     const rawQuantity = read(row, 'quantity');
-    const quantity = numberOrNull(rawQuantity);
+    const hotelBasis = deriveHotelActivityBasis({
+      activityType: String(activityType ?? '').trim().toUpperCase(),
+      rooms: read(row, 'rooms'),
+      nights: read(row, 'nights'),
+    });
+    const quantity = hotelBasis.status === 'DERIVED'
+      ? hotelBasis.basis.roomNights
+      : hotelBasis.status === 'INCOMPLETE' && hotelBasis.nights
+      ? hotelBasis.nights
+      : hotelBasis.status === 'ABSENT'
+      ? numberOrNull(rawQuantity)
+      : null;
     const costCad = numberOrNull(read(row, 'costCad'));
     return [{
       activityType: String(activityType ?? ''), recordDate: dateOnly(rawDate),
-      quantity, unit: String(read(row, 'unit') ?? ''),
+      quantity,
+      unit: hotelBasis.status === 'DERIVED'
+        ? 'room-night'
+        : hotelBasis.status === 'INCOMPLETE' && hotelBasis.nights
+        ? 'nights'
+        : hotelBasis.status === 'ABSENT'
+        ? String(read(row, 'unit') ?? '')
+        : '',
+      hotelActivityBasis: hotelBasis.status === 'DERIVED' ? hotelBasis.basis : undefined,
       jurisdictionCountry: String(read(row, 'jurisdictionCountry') ?? 'Canada'),
       jurisdictionRegion: read(row, 'jurisdictionRegion'), facilityName: read(row, 'facilityName'),
       sourceReference: read(row, 'sourceReference'), notes: read(row, 'notes'),

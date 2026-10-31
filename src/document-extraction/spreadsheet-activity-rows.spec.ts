@@ -56,6 +56,25 @@ describe('Uploaded tabular workbook extraction', () => {
   it('rejects unrecognized tables instead of silently returning model-selected rows', () => {
     expect(() => parseSpreadsheetActivityRows(workbook([['Unmapped'], ['data']]))).toThrow(/column mapping/);
   });
+
+  it('derives Hotel room-night only when both Rooms and Nights are positive', () => {
+    const rows = parseSpreadsheetActivityRows(workbook([
+      ['Record Category', 'Rooms', 'Nights', 'Date', 'Country'],
+      ['Hotel', 2, 3, '2026-04-01', 'Canada'],
+      ['Hotel', null, 3, '2026-04-02', 'Canada'],
+      ['Hotel', 2, null, '2026-04-03', 'Canada'],
+      ['Hotel', 0, 3, '2026-04-04', 'Canada'],
+    ]));
+    expect(rows[0]).toMatchObject({
+      quantity: 6,
+      unit: 'room-night',
+      hotelActivityBasis: { rooms: 2, nights: 3, roomNights: 6 },
+      rawSourceRow: { Rooms: 2, Nights: 3 },
+    });
+    expect(rows[1]).toMatchObject({ quantity: 3, unit: 'nights' });
+    expect(rows[2]).toMatchObject({ quantity: null, unit: '' });
+    expect(rows[3]).toMatchObject({ quantity: null, unit: '' });
+  });
 });
 
 describe('Workbook re-extraction identity compatibility', () => {

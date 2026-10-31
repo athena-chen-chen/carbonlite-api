@@ -36,6 +36,7 @@ import {
   timeAsync,
   timeSync,
 } from '../common/monitoring/performance-logging';
+import { deriveHotelActivityBasis, readHotelBasisColumns, type HotelActivityBasis } from './hotel-activity-basis';
 
 type ConfidenceLevel = 'high' | 'medium' | 'low';
 
@@ -46,6 +47,9 @@ type ParsedActivityRaw = {
   periodEnd?: string | null;
   quantity: number;
   unit: string;
+  rooms?: number | null;
+  nights?: number | null;
+  hotelActivityBasis?: HotelActivityBasis;
   periodRole?: string | null;
   usageType?: string | null;
   comparisonType?: string | null;
@@ -104,6 +108,9 @@ type ParsedActivityWithConfidence = {
   periodEnd?: string | null;
   quantity: ConfidenceField<number>;
   unit: ConfidenceField<string>;
+  rooms?: ConfidenceField<number>;
+  nights?: ConfidenceField<number>;
+  hotelActivityBasis?: HotelActivityBasis;
   periodRole?: string | null;
   usageType?: string | null;
   comparisonType?: string | null;
@@ -289,7 +296,7 @@ export class DocumentExtractionService {
                   'Preserve optional costCad only when explicitly supplied for that activity; never infer it from invoice totals or charges. Missing cost must be null; explicit zero is valid. ' +
                   'If a value is missing, return null where allowed. ' +
                   'Supported activityType values: ELECTRICITY, NATURAL_GAS, DIESEL, GASOLINE, AIR_TRAVEL, STEAM, WATER, WASTE, HOTEL, SHIPPING, CUSTOM. ' +
-                  'Prefer consumption units such as kWh, MWh, GJ, m3, liters, km, and nights.',
+                  'Prefer consumption units such as kWh, MWh, GJ, m3, liters, and km. For HOTEL, extract rooms and nights separately when both are explicit; never assume a missing room count.',
               },
             ],
           },
@@ -338,6 +345,8 @@ export class DocumentExtractionService {
                       },
                       quantity: { type: 'number' },
                       unit: { type: 'string' },
+                      rooms: { anyOf: [{ type: 'number' }, { type: 'null' }] },
+                      nights: { anyOf: [{ type: 'number' }, { type: 'null' }] },
                       periodRole: {
                         type: 'string',
                         enum: [
@@ -371,6 +380,8 @@ export class DocumentExtractionService {
                       'periodEnd',
                       'quantity',
                       'unit',
+                      'rooms',
+                      'nights',
                       'periodRole',
                       'jurisdictionCountry',
                       'jurisdictionRegion',
@@ -408,7 +419,7 @@ export class DocumentExtractionService {
       const activityRows = this.filterOperationalActivityRows(parsed.activities);
 
       const parsedActivities = activityRows.map((activity) =>
-        this.addConfidence(activity),
+        this.addConfidence(this.canonicalizeHotelActivity(activity)),
       );
       const sourceRowCount = localText
         ? this.estimateSourceRowCount(document, localText)
@@ -767,7 +778,9 @@ If it contains a utility bill, prefer ELECTRICITY or NATURAL_GAS.
   ) {
     assertReviewRowLimit(records.length);
     const parsedActivities = records.map((record) => {
-      const parsed = this.addConfidence(this.normalizeActivityForExtraction(record, input.fileName));
+      const parsed = this.addConfidence(this.canonicalizeHotelActivity(
+        this.normalizeActivityForExtraction(record, input.fileName),
+      ));
       if (sourceFormat === 'JSON') return parsed;
       return {
         ...parsed,
@@ -901,6 +914,8 @@ If it contains a utility bill, prefer ELECTRICITY or NATURAL_GAS.
       ),
       quantity: Number.isFinite(quantity) ? quantity : NaN,
       unit: this.readAliasedField(activity, ['unit', 'Unit', 'units', 'Units']),
+      rooms: this.readOptionalNumber(activity, ['rooms', 'Rooms', 'roomCount', 'Room Count']),
+      nights: this.readOptionalNumber(activity, ['nights', 'Nights', 'nightCount', 'Night Count']),
       periodRole: this.normalizeOptionalText(
         this.readAliasedField(activity, ['periodRole', 'Period Role', 'period role']),
       ),
@@ -1147,6 +1162,7 @@ If it contains a utility bill, prefer ELECTRICITY or NATURAL_GAS.
                 recordYear: normalized.recordYear ?? this.getDateOnlyYear(normalized.recordDate),
                 quantity: normalized.quantity,
                 unit: normalized.unit,
+                hotelActivityBasis: normalized.hotelActivityBasis,
                 sourceType: 'DOCUMENT_AI' as any,
                 sourceReference: normalized.sourceReference ?? null,
                 sourceDocumentId: documentId,
@@ -1385,6 +1401,19 @@ If it contains a utility bill, prefer ELECTRICITY or NATURAL_GAS.
     this.logger.log(message);
   }
 
+  private canonicalizeHotelActivity(activity: ParsedActivityRaw): ParsedActivityRaw {
+    const result = deriveHotelActivityBasis(activity);
+    if (result.status !== 'DERIVED') return activity;
+    return {
+      ...activity,
+      quantity: result.basis.roomNights,
+      unit: 'room-night',
+      rooms: result.basis.rooms,
+      nights: result.basis.nights,
+      hotelActivityBasis: result.basis,
+    };
+  }
+
   private addConfidence(activity: ParsedActivityRaw): ParsedActivityWithConfidence {
     return {
       activityType: {
@@ -1408,6 +1437,15 @@ If it contains a utility bill, prefer ELECTRICITY or NATURAL_GAS.
         value: activity.unit ?? null,
         confidence: this.getUnitConfidence(activity.unit),
       },
+      rooms: activity.rooms == null ? undefined : {
+        value: activity.rooms,
+        confidence: activity.rooms > 0 ? 'high' : 'low',
+      },
+      nights: activity.nights == null ? undefined : {
+        value: activity.nights,
+        confidence: activity.nights > 0 ? 'high' : 'low',
+      },
+      hotelActivityBasis: activity.hotelActivityBasis,
       periodRole: activity.periodRole ?? null,
       usageType: activity.usageType ?? null,
       comparisonType: activity.comparisonType ?? null,
@@ -1542,6 +1580,11 @@ If it contains a utility bill, prefer ELECTRICITY or NATURAL_GAS.
         'Facility Province',
       ]),
     );
+    const hotelBasis = deriveHotelActivityBasis({
+      activityType: normalizedActivityType,
+      rooms: this.readAliasedField(activity, ['rooms', 'Rooms', 'roomCount', 'Room Count']),
+      nights: this.readAliasedField(activity, ['nights', 'Nights', 'nightCount', 'Night Count']),
+    });
     const normalized: ParsedActivityRaw = {
       activityType: normalizedActivityType,
       recordDate: this.readAliasedField(activity, [
@@ -1550,7 +1593,7 @@ If it contains a utility bill, prefer ELECTRICITY or NATURAL_GAS.
         'date',
         'Date',
       ]),
-      quantity: Number(
+      quantity: hotelBasis.status === 'DERIVED' ? hotelBasis.basis.roomNights : Number(
         this.readAliasedField(activity, [
           'quantity',
           'Quantity',
@@ -1560,7 +1603,12 @@ If it contains a utility bill, prefer ELECTRICITY or NATURAL_GAS.
           'Usage',
         ]),
       ),
-      unit: this.readAliasedField(activity, ['unit', 'Unit', 'units', 'Units']),
+      unit: hotelBasis.status === 'DERIVED'
+        ? 'room-night'
+        : this.readAliasedField(activity, ['unit', 'Unit', 'units', 'Units']),
+      rooms: hotelBasis.status === 'DERIVED' ? hotelBasis.basis.rooms : undefined,
+      nights: hotelBasis.status === 'DERIVED' ? hotelBasis.basis.nights : undefined,
+      hotelActivityBasis: hotelBasis.status === 'DERIVED' ? hotelBasis.basis : undefined,
       periodRole: this.normalizeOptionalText(
         this.readAliasedField(activity, ['periodRole', 'Period Role', 'period role']),
       ),
@@ -1696,11 +1744,18 @@ If it contains a utility bill, prefer ELECTRICITY or NATURAL_GAS.
     if (!this.isSpreadsheetReviewRowImportEligible(row)) return null;
     if (!row.activityType || !row.recordDate || !row.quantity || !row.unit) return null;
 
+    const rawSourceRow = row.rawSourceRow && typeof row.rawSourceRow === 'object' && !Array.isArray(row.rawSourceRow)
+      ? row.rawSourceRow as Record<string, unknown>
+      : null;
+    const hotelBasis = deriveHotelActivityBasis({
+      activityType: this.normalizeActivityType(row.activityType),
+      ...(rawSourceRow ? readHotelBasisColumns(rawSourceRow) : {}),
+    });
     return {
       activityType: this.normalizeActivityType(row.activityType),
       recordDate: row.recordDate.toISOString().slice(0, 10),
-      quantity: Number(row.quantity),
-      unit: row.unit,
+      quantity: hotelBasis.status === 'DERIVED' ? hotelBasis.basis.roomNights : Number(row.quantity),
+      unit: hotelBasis.status === 'DERIVED' ? 'room-night' : row.unit,
       jurisdictionCountry: normalizeJurisdictionCountry(row.jurisdictionCountry) ?? row.jurisdictionCountry,
       jurisdictionRegion: normalizeJurisdictionRegion(row.jurisdictionRegion) ?? row.jurisdictionRegion,
       facilityName: row.facilityName,
@@ -1709,6 +1764,10 @@ If it contains a utility bill, prefer ELECTRICITY or NATURAL_GAS.
       sourceRow: row.sourceRow,
       sourceFileName: row.sourceFileName,
       sourceSheetName: row.sourceSheetName,
+      sourceTextSnippet: rawSourceRow ? JSON.stringify(rawSourceRow) : null,
+      rooms: hotelBasis.status === 'DERIVED' ? hotelBasis.basis.rooms : undefined,
+      nights: hotelBasis.status === 'DERIVED' ? hotelBasis.basis.nights : undefined,
+      hotelActivityBasis: hotelBasis.status === 'DERIVED' ? hotelBasis.basis : undefined,
       costCad: row.costCad == null ? null : Number(row.costCad),
       costCurrency: row.costCurrency,
       matchingStatus: row.matchingStatus,

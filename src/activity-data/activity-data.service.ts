@@ -33,6 +33,7 @@ import {
 } from '../common/date-only';
 import { CLEAR_ACTIVITY_RECORDS_CONFIRMATION } from './dto/clear-activity-records.dto';
 import { RESET_DEMO_DATA_CONFIRMATION } from './dto/reset-demo-data.dto';
+import { deriveHotelActivityBasis } from '../document-extraction/hotel-activity-basis';
 
 @Injectable()
 export class ActivityDataService {
@@ -47,6 +48,7 @@ export class ActivityDataService {
 
   async create(organizationId: string, dto: CreateActivityDataDto, userId?: string) {
     await this.validateRelations(organizationId, dto);
+    const hotelActivity = canonicalHotelActivityInput(dto);
 
     const data = {
       organizationId,
@@ -63,8 +65,9 @@ export class ActivityDataService {
       recordYear: dto.recordYear ?? getDateOnlyYear(dto.recordDate),
       periodStart: dto.periodStart ? new Date(dto.periodStart) : null,
       periodEnd: dto.periodEnd ? new Date(dto.periodEnd) : null,
-      quantity: new Prisma.Decimal(dto.quantity),
-      unit: dto.unit,
+      quantity: new Prisma.Decimal(hotelActivity.quantity),
+      unit: hotelActivity.unit,
+      hotelActivityBasis: hotelActivity.basis,
       sourceType: dto.sourceType,
       sourceReference: dto.sourceReference ?? null,
       sourceFileName: dto.sourceFileName ?? null,
@@ -130,7 +133,9 @@ export class ActivityDataService {
     const validationDurationMs = validationTimer.elapsedMs();
 
     const parseTimer = new PerfTimer();
-    const rows = dto.items.map((item) => ({
+    const rows = dto.items.map((item) => {
+      const hotelActivity = canonicalHotelActivityInput(item);
+      return {
       organizationId,
       facilityId: item.facilityId ?? null,
       facilityName: resolveFacilityName(item),
@@ -145,8 +150,9 @@ export class ActivityDataService {
       recordYear: item.recordYear ?? getDateOnlyYear(item.recordDate),
       periodStart: item.periodStart ? new Date(item.periodStart) : null,
       periodEnd: item.periodEnd ? new Date(item.periodEnd) : null,
-      quantity: new Prisma.Decimal(item.quantity),
-      unit: item.unit,
+      quantity: new Prisma.Decimal(hotelActivity.quantity),
+      unit: hotelActivity.unit,
+      hotelActivityBasis: hotelActivity.basis,
       sourceType: item.sourceType as RecordSourceType,
       sourceReference: item.sourceReference ?? null,
       sourceFileName: item.sourceFileName ?? null,
@@ -160,7 +166,8 @@ export class ActivityDataService {
       importBatchId: item.importBatchId ?? null,
       notes: item.notes ?? null,
       ...buildCalculationFieldCreateData(item),
-    }));
+      };
+    });
     const parseDurationMs = parseTimer.elapsedMs();
 
     const { result, durationMs: databaseInsertUpdateDurationMs } =
@@ -1092,6 +1099,20 @@ function buildCalculationFieldUpdateData(dto: UpdateActivityDataDto) {
 
 function resolveFacilityName(dto: Pick<CreateActivityDataDto, 'facility' | 'facilityName'>) {
   return normalizeOptionalText(dto.facilityName ?? dto.facility) ?? null;
+}
+
+function canonicalHotelActivityInput(dto: Pick<CreateActivityDataDto, 'activityType' | 'quantity' | 'unit' | 'rooms' | 'nights'>) {
+  const result = deriveHotelActivityBasis(dto);
+  if (result.status === 'INCOMPLETE' || result.status === 'INVALID') {
+    throw new BadRequestException(
+      result.status === 'INVALID'
+        ? 'Hotel rooms and nights must both be positive numbers.'
+        : 'Hotel room-night requires both rooms and nights; no missing value is assumed.',
+    );
+  }
+  return result.status === 'DERIVED'
+    ? { quantity: result.basis.roomNights, unit: 'room-night', basis: result.basis }
+    : { quantity: dto.quantity, unit: dto.unit, basis: undefined };
 }
 
 function normalizeProvinceInput(value: string) {
