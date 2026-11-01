@@ -76,6 +76,56 @@ describe('explicit health probes', () => {
     expect(prisma.$queryRaw).not.toHaveBeenCalled();
   });
 
+  it('keeps proxy diagnostics off by default', () => {
+    const log = jest.spyOn(Logger.prototype, 'log');
+    const request = {
+      socket: { remoteAddress: '10.0.0.1' },
+      headers: { authorization: 'Bearer private', cookie: 'private=true' },
+      ip: '203.0.113.10',
+      ips: ['203.0.113.10'],
+    };
+
+    expect(controller.getLiveness(request as never)).toEqual({ status: 'ok' });
+    expect(log).not.toHaveBeenCalled();
+  });
+
+  it('logs only the allowlisted proxy diagnostics when explicitly enabled', () => {
+    process.env.PROXY_DIAGNOSTICS_ENABLED = 'true';
+    process.env.TRUST_PROXY_HOPS = '2';
+    const log = jest.spyOn(Logger.prototype, 'log');
+    const request = {
+      socket: { remoteAddress: '10.0.0.1' },
+      headers: {
+        'x-forwarded-for': '203.0.113.10, 10.0.0.2',
+        'cf-connecting-ip': '203.0.113.10',
+        'cf-ray': 'example-YYC',
+        authorization: 'Bearer private',
+        cookie: 'private=true',
+      },
+      ip: '203.0.113.10',
+      ips: ['203.0.113.10', '10.0.0.2'],
+      body: { secret: 'private' },
+      query: { token: 'private' },
+    };
+
+    expect(controller.getLiveness(request as never)).toEqual({ status: 'ok' });
+    expect(log).toHaveBeenCalledTimes(1);
+    const diagnostic = JSON.parse(String(log.mock.calls[0][0]));
+    expect(diagnostic).toEqual({
+      event: 'proxy_diagnostics',
+      socketRemoteAddress: '10.0.0.1',
+      xForwardedFor: '203.0.113.10, 10.0.0.2',
+      cfConnectingIp: '203.0.113.10',
+      cfRay: 'example-YYC',
+      requestIp: '203.0.113.10',
+      requestIps: ['203.0.113.10', '10.0.0.2'],
+      trustProxyHops: '2',
+    });
+    expect(log.mock.calls[0][0]).not.toContain('private');
+    delete process.env.PROXY_DIAGNOSTICS_ENABLED;
+    delete process.env.TRUST_PROXY_HOPS;
+  });
+
   it('uses only SELECT 1 on the injected client for repeated readiness requests', async () => {
     prisma.$queryRaw.mockResolvedValue([{ value: 1 }]);
     for (let i = 0; i < 5; i++) {

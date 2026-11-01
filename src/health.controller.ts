@@ -1,5 +1,5 @@
-import { Controller, Get, Res } from '@nestjs/common';
-import { Response } from 'express';
+import { Controller, Get, Logger, Req, Res } from '@nestjs/common';
+import { Request, Response } from 'express';
 import { PrismaService } from './prisma/prisma.service';
 
 // URL/driver timeouts do not guarantee a short end-to-end probe deadline.
@@ -8,6 +8,7 @@ type DatabaseStatus = 'ok' | 'unavailable';
 
 @Controller('health')
 export class HealthController {
+  private readonly logger = new Logger(HealthController.name);
   private databaseCheck?: Promise<DatabaseStatus>;
 
   constructor(private readonly prisma: PrismaService) {}
@@ -24,7 +25,21 @@ export class HealthController {
   }
 
   @Get('live')
-  getLiveness() {
+  getLiveness(@Req() request?: Request) {
+    if (process.env.PROXY_DIAGNOSTICS_ENABLED === 'true' && request) {
+      this.logger.log(
+        JSON.stringify({
+          event: 'proxy_diagnostics',
+          socketRemoteAddress: request.socket.remoteAddress,
+          xForwardedFor: request.headers['x-forwarded-for'],
+          cfConnectingIp: request.headers['cf-connecting-ip'],
+          cfRay: request.headers['cf-ray'],
+          requestIp: request.ip,
+          requestIps: request.ips,
+          trustProxyHops: process.env.TRUST_PROXY_HOPS,
+        }),
+      );
+    }
     return { status: 'ok' };
   }
 
