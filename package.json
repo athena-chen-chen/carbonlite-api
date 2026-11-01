@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.0.0",
   "scripts": {
-    "build": "nest build",
+    "build": "tsc -p tsconfig.diagnostics.json",
     "lint": "eslint \"{src,test,prisma}/**/*.ts\"",
     "lint:fix": "eslint \"{src,test,prisma}/**/*.ts\" --fix",
     "test:unit": "jest --config ./jest.unit.json --runInBand",
