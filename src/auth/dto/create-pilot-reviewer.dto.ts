@@ -9,9 +9,8 @@ export enum InvitationPurpose {
 }
 
 export class CreatePilotReviewerDto {
-  @IsOptional()
   @IsEnum(InvitationPurpose)
-  invitationPurpose?: InvitationPurpose;
+  invitationPurpose!: InvitationPurpose;
 
   @IsString()
   @MinLength(2)

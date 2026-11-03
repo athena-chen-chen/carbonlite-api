@@ -49,6 +49,7 @@ describe('Admin pilot reviewers (e2e)', () => {
       .post('/api/admin/pilot-reviewers')
       .set(authHeader(adminToken))
       .send({
+        invitationPurpose: 'DEMO',
         name: 'Test Reviewer',
         email: reviewerEmail,
         workspace: `${testRunId} CarbonLite Sample Workspace`,
@@ -198,6 +199,90 @@ describe('Admin pilot reviewers (e2e)', () => {
     );
   });
 
+  it('accepts the minimal explicit CUSTOMER invitation contract without demo data', async () => {
+    const admin = await createTestUser(app, {
+      organizationName: `${testRunId} Customer Contract Admin Org`,
+      email: `customer-contract-admin-${testRunId}@carbonlite-e2e.test`,
+    });
+    await prisma.user.update({
+      where: { id: admin.user.id },
+      data: { role: 'ADMIN' },
+    });
+    const adminToken = await loginAndGetToken(app, admin.user.email, admin.password);
+    const customerEmail = `customer-contract-${testRunId}@carbonlite-e2e.test`;
+
+    const response = await request(app.getHttpServer())
+      .post('/api/admin/pilot-reviewers')
+      .set(authHeader(adminToken))
+      .send({
+        invitationPurpose: 'CUSTOMER',
+        name: 'Customer Contract Admin',
+        email: customerEmail,
+        workspaceName: `${testRunId} Customer Contract Workspace`,
+      })
+      .expect(201);
+
+    expect(response.body).toMatchObject({
+      success: true,
+      invitationPurpose: 'CUSTOMER',
+      pilotReviewer: {
+        email: customerEmail,
+        workspaceName: `${testRunId} Customer Contract Workspace`,
+      },
+    });
+    const customer = await prisma.user.findUniqueOrThrow({
+      where: { email: customerEmail },
+    });
+    await expect(prisma.activityData.count({
+      where: { organizationId: customer.organizationId },
+    })).resolves.toBe(0);
+    await expect(prisma.report.count({
+      where: { organizationId: customer.organizationId },
+    })).resolves.toBe(0);
+  });
+
+  it('keeps the strict whitelist and requires a valid invitation purpose', async () => {
+    const admin = await createTestUser(app, {
+      organizationName: `${testRunId} Validation Admin Org`,
+      email: `validation-admin-${testRunId}@carbonlite-e2e.test`,
+    });
+    await prisma.user.update({
+      where: { id: admin.user.id },
+      data: { role: 'ADMIN' },
+    });
+    const adminToken = await loginAndGetToken(app, admin.user.email, admin.password);
+    const base = {
+      name: 'Validation Reviewer',
+      email: `validation-reviewer-${testRunId}@carbonlite-e2e.test`,
+      workspaceName: `${testRunId} Validation Workspace`,
+    };
+
+    const unknown = await request(app.getHttpServer())
+      .post('/api/admin/pilot-reviewers')
+      .set(authHeader(adminToken))
+      .send({ ...base, invitationPurpose: 'CUSTOMER', role: 'REVIEWER' })
+      .expect(400);
+    expect(unknown.body.message).toContain('property role should not exist');
+
+    const omitted = await request(app.getHttpServer())
+      .post('/api/admin/pilot-reviewers')
+      .set(authHeader(adminToken))
+      .send(base)
+      .expect(400);
+    expect(omitted.body.message).toContain(
+      'invitationPurpose must be one of the following values: DEMO, CUSTOMER',
+    );
+
+    const invalid = await request(app.getHttpServer())
+      .post('/api/admin/pilot-reviewers')
+      .set(authHeader(adminToken))
+      .send({ ...base, invitationPurpose: 'TRIAL' })
+      .expect(400);
+    expect(invalid.body.message).toContain(
+      'invitationPurpose must be one of the following values: DEMO, CUSTOMER',
+    );
+  });
+
   it('does not return 404 for valid admin pilot reviewer POST requests', async () => {
     const admin = await createTestUser(app, {
       organizationName: `${testRunId} Route Admin Org`,
@@ -213,6 +298,7 @@ describe('Admin pilot reviewers (e2e)', () => {
       .post('/api/admin/pilot-reviewers')
       .set(authHeader(adminToken))
       .send({
+        invitationPurpose: 'DEMO',
         name: 'Route Reviewer',
         email: `route-reviewer-${testRunId}@carbonlite-e2e.test`,
         workspace: `${testRunId} Route Sample Workspace`,
@@ -239,6 +325,7 @@ describe('Admin pilot reviewers (e2e)', () => {
       .post('/api/admin/pilot-reviewers')
       .set(authHeader(adminToken))
       .send({
+        invitationPurpose: 'DEMO',
         name: 'Regenerate Reviewer',
         email: reviewerEmail,
         workspace: `${testRunId} Regenerate Sample Workspace`,
@@ -299,6 +386,7 @@ describe('Admin pilot reviewers (e2e)', () => {
       .post('/api/admin/pilot-reviewers')
       .set(authHeader(member.accessToken))
       .send({
+        invitationPurpose: 'DEMO',
         name: 'Blocked Reviewer',
         email: `blocked-${testRunId}@carbonlite-e2e.test`,
         workspace: `${testRunId} Blocked Sample Workspace`,
@@ -322,6 +410,7 @@ describe('Admin pilot reviewers (e2e)', () => {
       .post('/api/admin/pilot-reviewers')
       .set(authHeader(adminToken))
       .send({
+        invitationPurpose: 'DEMO',
         name: 'Deactivate Reviewer',
         email: reviewerEmail,
         workspace: `${testRunId} Deactivate Sample Workspace`,
@@ -379,6 +468,7 @@ describe('Admin pilot reviewers (e2e)', () => {
       .post('/api/admin/pilot-reviewers')
       .set(authHeader(adminToken))
       .send({
+        invitationPurpose: 'DEMO',
         name: 'Malformed Reviewer',
         email: malformedEmail,
         workspace: `${testRunId} Email Sample Workspace`,
@@ -402,6 +492,7 @@ describe('Admin pilot reviewers (e2e)', () => {
         .post('/api/admin/pilot-reviewers')
         .set('Authorization', `Bearer ${process.env.ADMIN_SCRIPT_TOKEN}`)
         .send({
+          invitationPurpose: 'DEMO',
           name: 'Script Reviewer',
           email: `script-reviewer-${testRunId}@carbonlite-e2e.test`,
           workspace: `${testRunId} Script Sample Workspace`,

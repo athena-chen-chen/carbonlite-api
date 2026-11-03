@@ -262,6 +262,7 @@ describe('AuthService login resilience', () => {
         platformRole: UserRole.ADMIN,
       },
       {
+        invitationPurpose: InvitationPurpose.DEMO,
         name: 'Test Reviewer',
         email: '  Reviewer@Example.com  ',
       },
@@ -390,6 +391,7 @@ describe('AuthService login resilience', () => {
         platformRole: UserRole.ADMIN,
       },
       {
+        invitationPurpose: InvitationPurpose.DEMO,
         name: 'Test Reviewer',
         email: 'reviewer@example.com',
       },
@@ -490,6 +492,7 @@ describe('AuthService login resilience', () => {
           platformRole: UserRole.ADMIN,
         },
         {
+          invitationPurpose: InvitationPurpose.DEMO,
           name: 'Test Reviewer',
           email: 'reviewer@example.com',
         },
@@ -516,6 +519,7 @@ describe('AuthService login resilience', () => {
           platformRole: UserRole.ADMIN,
         },
         {
+          invitationPurpose: InvitationPurpose.DEMO,
           name: 'Test Reviewer',
           email: 'reviewer@example.com',
         },
@@ -619,6 +623,7 @@ describe('AuthService login resilience', () => {
           role: UserRole.USER,
         },
         {
+          invitationPurpose: InvitationPurpose.CUSTOMER,
           name: 'Test Reviewer',
           email: 'reviewer@example.com',
         },
@@ -649,6 +654,7 @@ describe('AuthService login resilience', () => {
             platformRole: UserRole.ADMIN,
           },
           {
+            invitationPurpose: InvitationPurpose.CUSTOMER,
             name: 'Test Reviewer',
             email: invalidEmail,
           },

@@ -226,8 +226,7 @@ export class AuthService {
       DEFAULT_PILOT_WORKSPACE_NAME;
     const expiresAt = dto.expiresAt || dto.expires;
     const accountExpiresAt = expiresAt ? new Date(expiresAt) : null;
-    const invitationPurpose =
-      dto.invitationPurpose ?? InvitationPurpose.DEMO;
+    const invitationPurpose = dto.invitationPurpose;
 
     if (!fullName) {
       throw new BadRequestException('Pilot reviewer name is required.');
