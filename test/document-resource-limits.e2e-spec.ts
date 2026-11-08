@@ -9,9 +9,18 @@ import { basename, dirname, join, resolve } from 'node:path';
 import * as XLSX from 'xlsx';
 import request from 'supertest';
 import { AppModule } from '../src/app.module';
+import { DocumentExtractionService } from '../src/document-extraction/document-extraction.service';
 import { PrismaModule } from '../src/prisma/prisma.module';
 import { PrismaService } from '../src/prisma/prisma.service';
 import { openai } from '../src/openai/openai.client';
+import {
+  AI_CONSENT_VERSION_ENV,
+  AI_GLOBAL_ACTIVATION_ENV,
+  AI_PROVIDER_OPENAI,
+  AI_SCOPE_DOCUMENT_EXTRACTION,
+} from '../src/ai-authorization/ai-authorization.constants';
+import { documentStorageKey } from '../src/documents/document-storage';
+import { resolveDocumentStorageConfiguration } from '../src/documents/filesystem-document-storage';
 import * as policy from '../src/documents/document-resource-policy';
 import * as workload from '../src/document-extraction/extraction-workload';
 import { authHeader, cleanupTestData, createTestUser, uniqueTestId } from './helpers/factories';
@@ -30,12 +39,19 @@ function workbook(rows: unknown[][], sheets = 1) {
 describe('F08 direct upload and extraction resource boundaries', () => {
   let app: INestApplication;
   let prisma: PrismaService;
+  let extraction: DocumentExtractionService;
   let auth: ReturnType<typeof authHeader>;
   let organizationId: string;
   let directory: string;
   const run = uniqueTestId('f08-resources');
+  const consentVersion = 'synthetic-resource-limit-consent-v1';
   const uploadRoot = resolve(process.cwd(), 'uploads');
+  const storageRoot = resolveDocumentStorageConfiguration().rootPath;
+  const previousAiActivation = process.env[AI_GLOBAL_ACTIVATION_ENV];
+  const previousConsentVersion = process.env[AI_CONSENT_VERSION_ENV];
   beforeAll(async () => {
+    process.env[AI_GLOBAL_ACTIVATION_ENV] = 'true';
+    process.env[AI_CONSENT_VERSION_ENV] = consentVersion;
     const targetDatabase = assertSafeTestDatabaseTarget();
     await mkdir(uploadRoot, { recursive: true });
     directory = await mkdtemp(join(uploadRoot, 'f08-test-'));
@@ -46,10 +62,25 @@ describe('F08 direct upload and extraction resource boundaries', () => {
     app = compiled.createNestApplication(); app.setGlobalPrefix('api');
     app.useGlobalPipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }));
     await app.init(); prisma = app.select(PrismaModule).get(PrismaService, { strict: true });
+    extraction = app.get(DocumentExtractionService);
     const [target] = await prisma.$queryRaw<Array<{ name: string }>>`SELECT current_database() AS name`;
     expect(target.name).toBe(targetDatabase.database);
     const user = await createTestUser(app, { organizationName: run, email: `${run}@carbonlite-e2e.test` });
     auth = authHeader(user.accessToken); organizationId = user.user.organizationId;
+    await prisma.organizationAiAuthorization.create({
+      data: {
+        organizationId,
+        status: 'ENABLED',
+        consentVersion,
+        provider: AI_PROVIDER_OPENAI,
+        processingScope: AI_SCOPE_DOCUMENT_EXTRACTION,
+        evidenceReference: 'evidence://synthetic/resource-limit-test',
+        authorizedRepresentativeReference: 'synthetic-resource-limit-representative',
+        verifiedById: user.user.id,
+        verifiedAt: new Date('2026-11-01T00:00:00.000Z'),
+        effectiveAt: new Date('2026-11-01T00:00:00.000Z'),
+      },
+    });
   });
   beforeEach(() => { provider.mockReset().mockResolvedValue(emptyResult); });
   afterEach(() => jest.restoreAllMocks());
@@ -57,9 +88,14 @@ describe('F08 direct upload and extraction resource boundaries', () => {
     if (prisma) await cleanupTestData(prisma, run);
     if (app) await app.close();
     if (directory && dirname(directory) === uploadRoot && basename(directory).startsWith('f08-test-')) await rm(directory, { recursive: true, force: true });
+    if (previousAiActivation === undefined) delete process.env[AI_GLOBAL_ACTIVATION_ENV];
+    else process.env[AI_GLOBAL_ACTIVATION_ENV] = previousAiActivation;
+    if (previousConsentVersion === undefined) delete process.env[AI_CONSENT_VERSION_ENV];
+    else process.env[AI_CONSENT_VERSION_ENV] = previousConsentVersion;
   });
   const files = async () => (await readdir(directory)).sort();
   const count = () => prisma.document.count({ where: { organizationId } });
+  const storedSource = (fileUrl: string) => join(storageRoot, documentStorageKey(fileUrl));
   const upload = (buffer: Buffer, name = 'source.pdf', contentType = 'application/pdf') => request(app.getHttpServer()).post('/api/documents/upload').set(auth)
     .field('type', 'OTHER').field('allowDuplicate', 'true').attach('file', buffer, { filename: name, contentType });
   const extract = (documentId: string) => request(app.getHttpServer()).post('/api/document-extraction/extract').set(auth).send({ documentId }).then(response => response);
@@ -128,17 +164,17 @@ describe('F08 direct upload and extraction resource boundaries', () => {
     expect(await prisma.documentExtraction.count({ where: { documentId: saved.body.id } })).toBe(0);
     expect(await prisma.activityData.count({ where: { sourceDocumentId: saved.body.id } })).toBe(0);
     expect(provider).not.toHaveBeenCalled();
-    await access(join(process.cwd(), saved.body.fileUrl));
+    await access(storedSource(saved.body.fileUrl));
   });
   it('keeps failed and timed-out extraction sources retryable', async () => {
     const saved = await upload(pdf).expect(201);
     provider.mockRejectedValueOnce(new Error('Synthetic provider failure'));
     expect((await extract(saved.body.id)).status).toBe(500);
-    await access(join(process.cwd(), saved.body.fileUrl));
+    await access(storedSource(saved.body.fileUrl));
     expect(await prisma.document.findUnique({ where: { id: saved.body.id } })).toMatchObject({ status: 'EXTRACTION_FAILED' });
     jest.spyOn(workload, 'withExtractionDeadline').mockRejectedValueOnce(new GatewayTimeoutException('Extraction timed out. Please retry extraction.'));
     expect((await extract(saved.body.id)).status).toBe(504);
-    await access(join(process.cwd(), saved.body.fileUrl));
+    await access(storedSource(saved.body.fileUrl));
     expect(await prisma.document.findUnique({ where: { id: saved.body.id } })).toMatchObject({ status: 'EXTRACTION_FAILED' });
     expect((await extract(saved.body.id)).status).toBe(201);
     expect(provider).toHaveBeenLastCalledWith(
@@ -153,12 +189,12 @@ describe('F08 direct upload and extraction resource boundaries', () => {
     ]);
     const mime = extension === 'json' ? 'application/json' : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
     const saved = await upload(buffer, `retry.${extension}`, mime).expect(201);
-    jest.spyOn(prisma, '$transaction').mockRejectedValueOnce(new Error('Synthetic structured persistence failure'));
+    jest.spyOn(extraction as any, 'saveExtractionResult').mockRejectedValueOnce(new Error('Synthetic structured persistence failure'));
     expect((await extract(saved.body.id)).status).toBe(500);
     expect(await prisma.document.findUnique({ where: { id: saved.body.id } })).toMatchObject({ status: 'EXTRACTION_FAILED' });
     expect(await prisma.documentExtraction.count({ where: { documentId: saved.body.id } })).toBe(0);
     expect(await prisma.activityData.count({ where: { sourceDocumentId: saved.body.id } })).toBe(0);
-    await access(join(process.cwd(), saved.body.fileUrl));
+    await access(storedSource(saved.body.fileUrl));
     const retried = await extract(saved.body.id);
     expect(retried.status).toBe(201);
     expect(retried.body.parsedActivities).toHaveLength(1);
@@ -178,15 +214,21 @@ describe('F08 direct upload and extraction resource boundaries', () => {
     expect((await extract(saved.body.id)).status).toBe(201);
   });
   it('bounds concurrent documents and allows a capacity-rejected request to retry after release', async () => {
+    const concurrentLimit = 2;
+    await prisma.organizationQuota.upsert({
+      where: { organizationId },
+      create: { organizationId, enabled: true, maxConcurrentExtractions: concurrentLimit },
+      update: { enabled: true, maxConcurrentExtractions: concurrentLimit },
+    });
     const documents = [];
-    for (let i = 0; i < workload.MAX_CONCURRENT_EXTRACTIONS + 1; i++) documents.push((await upload(pdf).expect(201)).body);
+    for (let i = 0; i < concurrentLimit + 1; i++) documents.push((await upload(pdf).expect(201)).body);
     const entered = deferred<void>(); const release = deferred<typeof emptyResult>(); let active = 0;
-    provider.mockImplementation(() => { if (++active === workload.MAX_CONCURRENT_EXTRACTIONS) entered.resolve(undefined); return release.promise; });
+    provider.mockImplementation(() => { if (++active === concurrentLimit) entered.resolve(undefined); return release.promise; });
     const running = documents.slice(0, -1).map(document => extract(document.id));
     try {
       await entered.promise;
       expect((await extract(documents.at(-1).id)).status).toBe(429);
-      expect(provider).toHaveBeenCalledTimes(workload.MAX_CONCURRENT_EXTRACTIONS);
+      expect(provider).toHaveBeenCalledTimes(concurrentLimit);
       expect(await prisma.document.findUnique({ where: { id: documents.at(-1).id } })).toMatchObject({ status: 'UPLOADED' });
     } finally { release.resolve(emptyResult); }
     expect((await Promise.all(running)).every(result => result.status === 201)).toBe(true);
