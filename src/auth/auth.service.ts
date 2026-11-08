@@ -34,7 +34,10 @@ import {
   GOLDEN_SAMPLE_WORKSPACE_NAME,
   GoldenSampleDataService,
 } from '../sample-data/golden-sample-data.service';
-import { assertPublicRegistrationEnabled } from '../common/security/security-policy';
+import {
+  assertPublicRegistrationEnabled,
+  isLocalDemoAuthRuntimeEnabled,
+} from '../common/security/security-policy';
 
 export type AuthenticatedUser = {
   allowDemoFactorsForCalculations?: boolean;
@@ -829,7 +832,7 @@ export class AuthService {
   }
 
   private async tryLocalDemoLogin(email: string, password: string) {
-    if (process.env.LOCAL_DEMO_AUTH_ENABLED !== 'true') return null;
+    if (!isLocalDemoAuthRuntimeEnabled()) return null;
 
     const allowedEmails = (process.env.LOCAL_DEMO_EMAILS || '')
       .split(',')

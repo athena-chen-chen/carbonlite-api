@@ -47,6 +47,8 @@ describe('AuthService login resilience', () => {
     jest.clearAllMocks();
     process.env = {
       ...originalEnv,
+      APP_ENV: 'local',
+      NODE_ENV: 'development',
       LOCAL_DEMO_AUTH_ENABLED: 'true',
       LOCAL_DEMO_EMAILS: 'pilot@carbonliteapp.ca,carbonliteai@gmail.com',
       LOCAL_DEMO_PASSWORD: 'Fictional-Test-Only!2026',
@@ -131,6 +133,19 @@ describe('AuthService login resilience', () => {
     await expect(
       service.login('missing@example.com', 'Fictional-Test-Only!2026'),
     ).rejects.toBeInstanceOf(UnauthorizedException);
+  });
+
+  it('does not allow local demo authentication in production', async () => {
+    process.env.APP_ENV = 'staging';
+    process.env.NODE_ENV = 'production';
+    prisma.user.findUnique.mockRejectedValue(
+      new Error("Can't reach database server at example.neon.tech:5432"),
+    );
+
+    await expect(
+      service.login('pilot@carbonliteapp.ca', 'Fictional-Test-Only!2026'),
+    ).rejects.toThrow("Can't reach database server");
+    expect(jwt.signAsync).not.toHaveBeenCalled();
   });
 
   it('ensures golden sample data when an existing pilot reviewer logs in', async () => {

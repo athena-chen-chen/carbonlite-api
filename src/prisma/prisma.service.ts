@@ -8,6 +8,7 @@ import {
   OnModuleInit,
 } from '@nestjs/common';
 import pkg from '@prisma/client';
+import { isLocalDemoAuthRuntimeEnabled } from '../common/security/security-policy';
 
 // ESM-friendly import for PrismaClient
 const { PrismaClient } = pkg as typeof import('@prisma/client');
@@ -24,7 +25,7 @@ export class PrismaService
       await this.$connect();
     } catch (error) {
       this.logger.error(buildDatabaseConnectionErrorMessage(error));
-      if (process.env.LOCAL_DEMO_AUTH_ENABLED === 'true') {
+      if (isLocalDemoAuthRuntimeEnabled()) {
         this.logger.warn(
           'Continuing API startup with LOCAL_DEMO_AUTH_ENABLED=true. Database-backed routes may fail until DATABASE_URL is reachable.',
         );
