@@ -11,6 +11,7 @@ import {
   Logger,
   NotFoundException,
   Optional,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import type { ResponseInputContent } from 'openai/resources/responses/responses';
 import { PrismaService } from '../prisma/prisma.service';
@@ -43,6 +44,7 @@ import {
   DocumentStorageNotFoundError,
   documentStorageKey,
 } from '../documents/document-storage';
+import { OrganizationQuotasService } from '../organization-quotas/organization-quotas.service';
 
 type ConfidenceLevel = 'high' | 'medium' | 'low';
 
@@ -144,6 +146,8 @@ export class DocumentExtractionService {
     private readonly activityTracking: ActivityTrackingService,
     private readonly snapshots: CalculationSnapshotsService,
     @Optional() @Inject(DOCUMENT_STORAGE) private readonly storage?: DocumentStorage,
+    @Inject(OrganizationQuotasService)
+    private readonly quotas: OrganizationQuotasService | undefined = undefined,
   ) {}
 
   async extract(
@@ -152,8 +156,32 @@ export class DocumentExtractionService {
     userId?: string,
     userEmail?: string,
   ) {
-    return extractionWorkload.run(`${organizationId}:${documentId}`, () =>
-      this.extractWithinLimits(organizationId, documentId, userId, userEmail));
+    const lease = await this.quotaEnforcement.beginExtraction({
+      organizationId,
+      documentId,
+      userId,
+    });
+    try {
+      const result = await extractionWorkload.run(`${organizationId}:${documentId}`, () =>
+        this.extractWithinLimits(organizationId, documentId, userId, userEmail), !lease);
+      await this.quotaEnforcement.finishExtraction(organizationId, lease?.id, 'COMPLETED');
+      return result;
+    } catch (error) {
+      try {
+        await this.quotaEnforcement.finishExtraction(
+          organizationId,
+          lease?.id,
+          'FAILED',
+          'Extraction failed.',
+        );
+      } catch (leaseError) {
+        writeSafeError(this.logger, 'extraction-lease-release', leaseError, {
+          organizationId,
+          documentId,
+        });
+      }
+      throw error;
+    }
   }
 
   private async extractWithinLimits(
@@ -2024,4 +2052,11 @@ If it contains a utility bill, prefer ELECTRICITY or NATURAL_GAS.
 
   return map[value] ?? (Object.values(ActivityType).includes(value as ActivityType) ? value : 'CUSTOM');
 }
+
+  private get quotaEnforcement() {
+    if (!this.quotas) {
+      throw new ServiceUnavailableException('Organization quota enforcement is unavailable.');
+    }
+    return this.quotas;
+  }
 }

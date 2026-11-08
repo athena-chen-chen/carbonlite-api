@@ -40,7 +40,14 @@ describe('Uploaded tabular workbook extraction', () => {
     const audit = { log: jest.fn() };
     const tracking = { track: jest.fn() };
     const storage = { exists: jest.fn().mockResolvedValue(true), read: jest.fn().mockResolvedValue(buffer) };
-    const service = new DocumentExtractionService(prisma as never, audit as never, tracking as never, null as never, storage as never);
+    const service = new DocumentExtractionService(
+      prisma as never,
+      audit as never,
+      tracking as never,
+      null as never,
+      storage as never,
+      { beginExtraction: jest.fn().mockResolvedValue(null), finishExtraction: jest.fn() } as never,
+    );
     const result = await service.extract('org', 'document', 'actor');
     expect(openai.responses.create).not.toHaveBeenCalled();
     expect(result).toMatchObject({ status: 'REVIEW_REQUIRED', sourceRowCount: 4, extractedRowCount: 4, possibleMissingRows: false });

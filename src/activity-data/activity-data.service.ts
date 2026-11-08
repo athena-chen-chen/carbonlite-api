@@ -5,7 +5,9 @@ import {
   NotFoundException,
   BadRequestException,
   ForbiddenException,
+  Inject,
   Logger,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import { Prisma, RecordSourceType, ActivityType, ReportStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
@@ -37,6 +39,7 @@ import { RESET_DEMO_DATA_CONFIRMATION } from './dto/reset-demo-data.dto';
 import { deriveHotelActivityBasis } from '../document-extraction/hotel-activity-basis';
 import { AirTravelActivityError, canonicalizeAirTravelActivity } from '../domain/air-travel/air-travel';
 import { assertDemoResetRuntimeEnabled } from '../common/security/security-policy';
+import { OrganizationQuotasService } from '../organization-quotas/organization-quotas.service';
 
 @Injectable()
 export class ActivityDataService {
@@ -47,6 +50,8 @@ export class ActivityDataService {
     private readonly auditLog: AuditLogService,
     private readonly activityTracking: ActivityTrackingService,
     private readonly snapshots: CalculationSnapshotsService,
+    @Inject(OrganizationQuotasService)
+    private readonly quotas: OrganizationQuotasService | undefined = undefined,
   ) {}
 
   async create(organizationId: string, dto: CreateActivityDataDto, userId?: string) {
@@ -134,6 +139,7 @@ export class ActivityDataService {
     if (!dto.items?.length) {
       throw new BadRequestException('No activity data items provided.');
     }
+    await this.quotaEnforcement.assertImportRows(organizationId, dto.items.length);
 
     const validationTimer = new PerfTimer();
     for (const item of dto.items) {
@@ -956,6 +962,13 @@ export class ActivityDataService {
     }
 
     return existing;
+  }
+
+  private get quotaEnforcement() {
+    if (!this.quotas) {
+      throw new ServiceUnavailableException('Organization quota enforcement is unavailable.');
+    }
+    return this.quotas;
   }
 
   private async validateRelations(
