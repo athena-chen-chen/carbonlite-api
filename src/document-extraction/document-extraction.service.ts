@@ -1,3 +1,4 @@
+import { isPreparedDocumentImportEligible } from '../domain/activity-records/documentImportEligibility';
 import { writeSafeError } from '../common/logging/safe-log';
 import { assertDocumentSize, assertReviewRowLimit, validateDocumentContent, validateDocumentType } from '../documents/document-resource-policy';
 import { extractionWorkload, withExtractionDeadline, EXTRACTION_TIMEOUT_MS, MAX_PROVIDER_OUTPUT_CHARACTERS, MAX_PROVIDER_OUTPUT_TOKENS } from './extraction-workload';
@@ -1905,12 +1906,7 @@ If it contains a utility bill, prefer ELECTRICITY or NATURAL_GAS.
   private isPreparedDocumentImportEligible(
     activity: Pick<NormalizedImportActivity, 'matchingStatus' | 'calculationStatus' | 'reportTreatment'>,
   ) {
-    return (
-      (activity.calculationStatus === 'TRACKED_ONLY' && activity.reportTreatment === 'TRACKED_ONLY') ||
-      (activity.matchingStatus === 'MATCHED' &&
-        activity.calculationStatus === 'CALCULATED' &&
-        activity.reportTreatment === 'INCLUDED')
-    );
+    return isPreparedDocumentImportEligible(activity);
   }
 
   private isSpreadsheetReviewRowImportEligible(row: SpreadsheetImportReviewRow) {
