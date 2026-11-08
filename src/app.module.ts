@@ -21,6 +21,8 @@ import { DocumentStorageModule } from './documents/document-storage.module';
 import { WorkspaceErasureModule } from './workspace-erasure/workspace-erasure.module';
 import { CustomerProvisioningModule } from './customer-provisioning/customer-provisioning.module';
 import { OrganizationQuotasModule } from './organization-quotas/organization-quotas.module';
+import { LegalHoldsModule } from './legal-holds/legal-holds.module';
+import { DeletionRecoveryModule } from './deletion-recovery/deletion-recovery.module';
 
 @Module({
   imports: [
@@ -31,6 +33,8 @@ import { OrganizationQuotasModule } from './organization-quotas/organization-quo
     WorkspaceErasureModule,
     CustomerProvisioningModule,
     OrganizationQuotasModule,
+    LegalHoldsModule,
+    DeletionRecoveryModule,
     AuthModule,
     ActivityDataModule,
     MetricsModule,

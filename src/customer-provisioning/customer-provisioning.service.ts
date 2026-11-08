@@ -4,6 +4,8 @@ import {
   ForbiddenException,
   Injectable,
   NotFoundException,
+  Optional,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import {
   MembershipRole,
@@ -20,12 +22,16 @@ import {
 } from '../sample-data/golden-sample-data.service';
 import { CleanupGoldenSampleDto } from './dto/cleanup-golden-sample.dto';
 import { ProvisionPaidPilotDto } from './dto/provision-paid-pilot.dto';
+import { LegalHoldsService } from '../legal-holds/legal-holds.service';
 
 const CUSTOMER_ACCOUNT_TYPE = 'CUSTOMER';
 
 @Injectable()
 export class CustomerProvisioningService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    @Optional() private readonly legalHolds?: LegalHoldsService,
+  ) {}
 
   async provisionPaidPilotOrganization(
     actor: AuthenticatedUser,
@@ -50,7 +56,7 @@ export class CustomerProvisioningService {
         tx,
         organization.id,
       );
-      if (goldenSample.activityIds.length > 0 || goldenSample.reportCount > 0) {
+      if (goldenSample.activityIds.length > 0 || goldenSample.reportIds.length > 0) {
         throw new ConflictException({
           code: 'DEMO_DATA_PRESENT',
           message:
@@ -185,7 +191,17 @@ export class CustomerProvisioningService {
       throw new BadRequestException('Exact organization confirmation is required.');
     }
 
-    return this.prisma.$transaction(async (tx) => {
+    const candidateArtifacts = await this.findGoldenSampleArtifacts(
+      this.prisma,
+      command.organizationId,
+    );
+    return this.holdGuard.withDeletionGuard({
+      organizationId: command.organizationId,
+      operation: 'PROVISIONING_GOLDEN_SAMPLE_CLEANUP',
+      actorUserId: actor.id,
+      activityIds: candidateArtifacts.activityIds,
+      reportIds: candidateArtifacts.reportIds,
+    }, async (tx) => {
       const organization = await tx.organization.findUnique({
         where: { id: command.organizationId },
       });
@@ -208,12 +224,15 @@ export class CustomerProvisioningService {
           })
         : { count: 0 };
       const activities = await tx.activityData.deleteMany({
-        where: getGoldenSampleActivityWhere(organization.id),
+        where: {
+          organizationId: organization.id,
+          id: { in: candidateArtifacts.activityIds },
+        },
       });
       const reports = await tx.report.deleteMany({
         where: {
           organizationId: organization.id,
-          title: GOLDEN_SAMPLE_REPORT_TITLE,
+          id: { in: candidateArtifacts.reportIds },
         },
       });
 
@@ -246,22 +265,30 @@ export class CustomerProvisioningService {
   }
 
   private async findGoldenSampleArtifacts(
-    tx: Prisma.TransactionClient,
+    tx: Prisma.TransactionClient | PrismaService,
     organizationId: string,
   ) {
-    const [activities, reportCount] = await Promise.all([
+    const [activities, reports] = await Promise.all([
       tx.activityData.findMany({
         where: getGoldenSampleActivityWhere(organizationId),
         select: { id: true },
       }),
-      tx.report.count({
+      tx.report.findMany({
         where: { organizationId, title: GOLDEN_SAMPLE_REPORT_TITLE },
+        select: { id: true },
       }),
     ]);
     return {
       activityIds: activities.map(activity => activity.id),
-      reportCount,
+      reportIds: reports.map(report => report.id),
     };
+  }
+
+  private get holdGuard() {
+    if (!this.legalHolds) {
+      throw new ServiceUnavailableException('Legal hold enforcement is unavailable.');
+    }
+    return this.legalHolds;
   }
 
   private assertAuthorized(actor: AuthenticatedUser, organizationId: string) {

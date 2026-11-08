@@ -7,6 +7,7 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  Optional,
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { unlink } from 'fs/promises';
@@ -23,6 +24,7 @@ import {
   persistedDocumentStorageUrl,
 } from './document-storage';
 import { OrganizationQuotasService } from '../organization-quotas/organization-quotas.service';
+import { DeletionRecoveryService } from '../deletion-recovery/deletion-recovery.service';
 
 @Injectable()
 export class DocumentsService {
@@ -35,6 +37,7 @@ export class DocumentsService {
     @Inject(DOCUMENT_STORAGE) private readonly storage: DocumentStorage,
     @Inject(OrganizationQuotasService)
     private readonly quotas: OrganizationQuotasService | undefined = undefined,
+    @Optional() private readonly deletionRecovery?: DeletionRecoveryService,
   ) {}
 
   async upload(
@@ -248,98 +251,26 @@ export class DocumentsService {
   }
 
   async remove(organizationId: string, id: string, userId?: string) {
-    const ownedDocument = await this.prisma.document.findUnique({ where: { id } });
-    if (!ownedDocument) throw new NotFoundException(`Document ${id} not found.`);
-    if (ownedDocument.organizationId !== organizationId) {
-      throw new ForbiddenException('You cannot delete this document.');
+    const intent = await this.recovery.prepareDocument(organizationId, id, userId);
+    if (!intent) throw new NotFoundException(`Document ${id} not found.`);
+    const outcome = await this.recovery.completeDocument(organizationId, id, userId);
+    if (!outcome) throw new NotFoundException(`Document ${id} not found.`);
+    return {
+      deletedDocument: true,
+      deletedActivityRecords: 0,
+      preservedActivityRecords: outcome.preservedActivityRecords,
+      sourceEvidence: 'QUARANTINED' as const,
+      deletionIntentId: outcome.intent.id,
+      storageLifecycle: outcome.intent.status,
+      idempotent: outcome.idempotent,
+    };
+  }
+
+  private get recovery() {
+    if (!this.deletionRecovery) {
+      throw new ServiceUnavailableException('Recoverable deletion enforcement is unavailable.');
     }
-
-    let sourceEvidence: 'DELETED' | 'ALREADY_MISSING';
-    try {
-      sourceEvidence = await this.storage.delete(documentStorageKey(ownedDocument.fileUrl)) === 'DELETED'
-        ? 'DELETED'
-        : 'ALREADY_MISSING';
-    } catch (error) {
-      this.logger.error(
-        `Source evidence deletion failed organizationId=${organizationId} documentId=${id}`,
-        error instanceof Error ? error.stack : undefined,
-      );
-      throw new ServiceUnavailableException(
-        'Source evidence could not be deleted. The document was retained for a safe retry.',
-      );
-    }
-
-    return this.prisma.$transaction(async (tx) => {
-      const document = await tx.document.findUnique({
-        where: { id },
-      });
-
-      if (!document) {
-        return {
-          deletedDocument: false,
-          deletedActivityRecords: 0,
-          sourceEvidence,
-        };
-      }
-
-      if (document.organizationId !== organizationId) {
-        throw new ForbiddenException('You cannot delete this document.');
-      }
-
-      // Imported accounting records and their metrics outlive the source.
-      // The nullable document relation is detached by ON DELETE SET NULL;
-      // sourceDocumentId and copied provenance remain historical evidence.
-      const preservedActivityRecords = await tx.activityData.count({
-        where: {
-          organizationId,
-          OR: [{ documentId: id }, { sourceDocumentId: id }],
-        },
-      });
-
-      await tx.document.delete({
-        where: { id },
-      });
-
-      await tx.auditLog.create({
-        data: {
-          organizationId,
-          userId: userId ?? null,
-          action: 'DELETE_DOCUMENT',
-          entityType: 'Document',
-          entityId: id,
-          description: `Deleted source document ${document.fileName}; preserved ${preservedActivityRecords} imported activity records.`,
-          oldValue: JSON.parse(
-            JSON.stringify({
-              document,
-              sourceEvidence,
-              deletedActivityRecords: 0,
-              preservedActivityRecords,
-            }),
-          ),
-        },
-      });
-
-      await tx.userActivityEvent.create({
-        data: {
-          organizationId,
-          userId: userId ?? null,
-          eventName: 'DOCUMENT_DELETED',
-          entityType: 'Document',
-          entityId: id,
-          metadata: {
-            deletedActivityRecords: 0,
-            preservedActivityRecords,
-            sourceEvidence,
-          },
-        },
-      });
-
-      return {
-        deletedDocument: true,
-        deletedActivityRecords: 0,
-        sourceEvidence,
-      };
-    });
+    return this.deletionRecovery;
   }
 
   private get quotaEnforcement() {
@@ -348,4 +279,5 @@ export class DocumentsService {
     }
     return this.quotas;
   }
+
 }

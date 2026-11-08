@@ -141,6 +141,17 @@ export async function cleanupTestData(
   prisma: PrismaService,
   testRunId: string,
 ) {
+  const organizations = await prisma.organization.findMany({
+    where: { name: { contains: testRunId } },
+    select: { id: true },
+  });
+  const organizationIds = organizations.map(({ id }) => id);
+  await prisma.legalHold.deleteMany({
+    where: { organizationId: { in: organizationIds } },
+  });
+  await prisma.documentDeletionIntent.deleteMany({
+    where: { organizationId: { in: organizationIds } },
+  });
   // Deleting organizations cascades to users and tenant-owned records.
   await prisma.organization.deleteMany({
     where: {

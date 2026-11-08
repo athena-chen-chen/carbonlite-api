@@ -9,6 +9,11 @@ function storageMock(): jest.Mocked<DocumentStorage> {
     save: jest.fn().mockResolvedValue(undefined),
     read: jest.fn().mockResolvedValue(Buffer.from('stored')),
     exists: jest.fn().mockResolvedValue(true),
+    quarantine: jest.fn().mockResolvedValue({ result: 'MOVED', quarantineKey: '.quarantine/intent/key.json' }),
+    quarantineExists: jest.fn().mockResolvedValue(true),
+    purgeQuarantine: jest.fn().mockResolvedValue('DELETED'),
+    listActive: jest.fn().mockResolvedValue([]),
+    listQuarantine: jest.fn().mockResolvedValue([]),
     delete: jest.fn().mockResolvedValue('DELETED'),
     verifyHealth: jest.fn().mockResolvedValue(undefined),
   };
@@ -21,6 +26,7 @@ describe('DocumentsService storage lifecycle', () => {
   let tx: any;
   let prisma: any;
   let service: DocumentsService;
+  let recovery: any;
   let quotas: any;
 
   beforeEach(async () => {
@@ -47,12 +53,21 @@ describe('DocumentsService storage lifecycle', () => {
         (await prisma.$transaction(accept)).value),
       getStatus: jest.fn().mockResolvedValue({ enabled: false }),
     };
+    recovery = {
+      prepareDocument: jest.fn().mockResolvedValue({ id: 'intent-a' }),
+      completeDocument: jest.fn().mockResolvedValue({
+        intent: { id: 'intent-a', status: 'PENDING_PURGE' },
+        idempotent: false,
+        preservedActivityRecords: 0,
+      }),
+    };
     service = new DocumentsService(
       prisma,
       { log: jest.fn().mockResolvedValue(undefined) } as never,
       { track: jest.fn().mockResolvedValue(undefined) } as never,
       storage,
       quotas,
+      recovery,
     );
   });
 
@@ -93,6 +108,7 @@ describe('DocumentsService storage lifecycle', () => {
           throw new Error('quota reached');
         }),
       } as never,
+      recovery,
     );
 
     await expect(service.upload('org-a', 'user-a', uploadFile())).rejects.toThrow('quota reached');
@@ -107,57 +123,36 @@ describe('DocumentsService storage lifecycle', () => {
     expect(tx.document.create).not.toHaveBeenCalled();
   });
 
-  it('authorizes before deleting source evidence and removes both evidence and metadata', async () => {
-    const document = { id: 'doc-a', organizationId: 'org-a', fileName: 'source.json', fileUrl: '/uploads/org-a/key.json' };
-    prisma.document.findUnique.mockResolvedValue(document);
-    tx.document.findUnique.mockResolvedValue(document);
+  it('delegates deletion to the durable recovery protocol', async () => {
     await expect(service.remove('org-a', 'doc-a', 'user-a')).resolves.toMatchObject({
-      deletedDocument: true, sourceEvidence: 'DELETED',
+      deletedDocument: true, sourceEvidence: 'QUARANTINED', deletionIntentId: 'intent-a',
     });
-    expect(storage.delete).toHaveBeenCalledWith('org-a/key.json');
-    expect(tx.document.delete).toHaveBeenCalledWith({ where: { id: 'doc-a' } });
+    expect(recovery.prepareDocument).toHaveBeenCalledWith('org-a', 'doc-a', 'user-a');
+    expect(recovery.completeDocument).toHaveBeenCalledWith('org-a', 'doc-a', 'user-a');
+    expect(storage.delete).not.toHaveBeenCalled();
   });
 
-  it('handles already-missing evidence and safely completes a retry', async () => {
-    const document = { id: 'doc-a', organizationId: 'org-a', fileName: 'source.json', fileUrl: '/uploads/org-a/key.json' };
-    prisma.document.findUnique.mockResolvedValue(document);
-    tx.document.findUnique.mockResolvedValue(document);
-    storage.delete.mockResolvedValueOnce('NOT_FOUND');
+  it('returns an idempotent success for a completed intent', async () => {
+    recovery.completeDocument.mockResolvedValueOnce({
+      intent: { id: 'intent-a', status: 'PENDING_PURGE' },
+      idempotent: true,
+      preservedActivityRecords: 0,
+    });
     await expect(service.remove('org-a', 'doc-a')).resolves.toMatchObject({
-      deletedDocument: true, sourceEvidence: 'ALREADY_MISSING',
+      deletedDocument: true, sourceEvidence: 'QUARANTINED', idempotent: true,
     });
   });
 
-  it('safely retries when physical deletion succeeds before a database failure', async () => {
-    const document = { id: 'doc-a', organizationId: 'org-a', fileName: 'source.json', fileUrl: '/uploads/org-a/key.json' };
-    prisma.document.findUnique.mockResolvedValue(document);
-    tx.document.findUnique.mockResolvedValue(document);
-    prisma.$transaction
-      .mockRejectedValueOnce(new Error('database commit failed'))
-      .mockImplementationOnce((work: (client: typeof tx) => unknown) => work(tx));
-    storage.delete.mockResolvedValueOnce('DELETED').mockResolvedValueOnce('NOT_FOUND');
-
-    await expect(service.remove('org-a', 'doc-a')).rejects.toThrow('database commit failed');
-    await expect(service.remove('org-a', 'doc-a')).resolves.toMatchObject({
-      deletedDocument: true, sourceEvidence: 'ALREADY_MISSING',
-    });
-    expect(storage.delete).toHaveBeenCalledTimes(2);
-  });
-
-  it('retains metadata and reports failure when physical deletion fails', async () => {
-    prisma.document.findUnique.mockResolvedValue({
-      id: 'doc-a', organizationId: 'org-a', fileName: 'source.json', fileUrl: '/uploads/org-a/key.json',
-    });
-    storage.delete.mockRejectedValueOnce(new Error('mount read-only'));
-    await expect(service.remove('org-a', 'doc-a')).rejects.toThrow('retained for a safe retry');
-    expect(prisma.$transaction).not.toHaveBeenCalled();
-    expect(tx.document.delete).not.toHaveBeenCalled();
+  it('fails closed when recoverable deletion enforcement is unavailable', async () => {
+    service = new DocumentsService(prisma, {} as never, {} as never, storage, quotas);
+    await expect(service.remove('org-a', 'doc-a')).rejects.toThrow('Recoverable deletion enforcement is unavailable');
   });
 
   it('never accesses another tenant storage key for download or deletion', async () => {
     prisma.document.findUnique.mockResolvedValue({
       id: 'doc-b', organizationId: 'org-b', fileName: 'secret.json', fileUrl: '/uploads/org-b/secret.json', mimeType: 'application/json',
     });
+    recovery.prepareDocument.mockRejectedValueOnce(new Error('You cannot delete this document.'));
     await expect(service.getDownloadFile('org-a', 'doc-b')).rejects.toThrow('cannot view');
     await expect(service.remove('org-a', 'doc-b')).rejects.toThrow('cannot delete');
     expect(storage.read).not.toHaveBeenCalled();

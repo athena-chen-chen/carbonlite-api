@@ -5,6 +5,8 @@ import {
   ForbiddenException,
   Injectable,
   Logger,
+  Optional,
+  ServiceUnavailableException,
   UnauthorizedException,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
@@ -30,7 +32,7 @@ import { RegeneratePilotReviewerInviteDto } from './dto/regenerate-pilot-reviewe
 import { SetPasswordDto } from './dto/set-password.dto';
 import {
   GOLDEN_SAMPLE_WORKSPACE_NAME,
-  ensureGoldenSampleDataForWorkspace,
+  GoldenSampleDataService,
 } from '../sample-data/golden-sample-data.service';
 import { assertPublicRegistrationEnabled } from '../common/security/security-policy';
 
@@ -80,6 +82,7 @@ export class AuthService {
     private readonly jwt: JwtService,
     private readonly auditLog: AuditLogService,
     private readonly activityTracking: ActivityTrackingService,
+    @Optional() private readonly goldenSampleData?: GoldenSampleDataService,
   ) {}
 
   async register(dto: RegisterDto) {
@@ -310,7 +313,7 @@ export class AuthService {
       });
 
       if (invitationPurpose === InvitationPurpose.DEMO) {
-        await ensureGoldenSampleDataForWorkspace(tx, workspace.id, {
+        await this.sampleData.ensureGoldenSampleDataInTransaction(tx, workspace.id, {
           createdById: user.id,
         });
       }
@@ -591,9 +594,16 @@ export class AuthService {
       return;
     }
 
-    await ensureGoldenSampleDataForWorkspace(this.prisma, user.organizationId, {
+    await this.sampleData.ensureGoldenSampleDataForWorkspace(user.organizationId, {
       createdById: user.id,
     });
+  }
+
+  private get sampleData() {
+    if (!this.goldenSampleData) {
+      throw new ServiceUnavailableException('Legal hold enforcement is unavailable.');
+    }
+    return this.goldenSampleData;
   }
 
   private toSafeUser(user: SafeUserSource): AuthenticatedUser {

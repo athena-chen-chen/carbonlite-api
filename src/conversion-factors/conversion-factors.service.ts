@@ -6,6 +6,8 @@ import {
   ForbiddenException,
   Injectable,
   NotFoundException,
+  Optional,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import { ActivityType, FactorStatus, FactorType, Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
@@ -16,6 +18,7 @@ import { CreateFactorVersionDto } from './dto/create-factor-version.dto';
 import { UpdateFactorVersionDraftDto } from './dto/update-factor-version-draft.dto';
 import { AuditLogService } from '../audit-log/audit-log.service';
 import { ActivityTrackingService, trackOptionalActivity } from '../activity-tracking/activity-tracking.service';
+import { LegalHoldsService } from '../legal-holds/legal-holds.service';
 import {
   normalizeJurisdictionCountry,
   normalizeJurisdictionRegion,
@@ -103,6 +106,7 @@ export class ConversionFactorsService {
     private readonly prisma: PrismaService,
     private readonly auditLog: AuditLogService,
     private readonly activityTracking: ActivityTrackingService,
+    @Optional() private readonly legalHolds?: LegalHoldsService,
   ) {}
 
   async verifyFactor(id: string, input: FactorReviewInput) {
@@ -1101,9 +1105,22 @@ export class ConversionFactorsService {
   }
 
   async remove(organizationId: string, id: string, userId?: string) {
-    const existing = await this.ensureEditable(organizationId, id);
-
-    await this.prisma.$transaction(async tx => {
+    const existing = await this.holdGuard.withDeletionGuard({
+      organizationId,
+      operation: 'DELETE_CUSTOM_FACTOR',
+      actorUserId: userId,
+      factorIds: [id],
+    }, async tx => {
+      const existing = await tx.conversionFactor.findFirst({
+        where: { id, OR: [{ isSystemDefault: true }, { organizationId }] },
+      });
+      if (!existing) throw new NotFoundException(`ConversionFactor ${id} not found.`);
+      if (existing.isSystemDefault) {
+        throw new ForbiddenException('System default factors cannot be modified.');
+      }
+      if (existing.organizationId !== organizationId) {
+        throw new NotFoundException(`ConversionFactor ${id} not found.`);
+      }
       await tx.conversionFactor.delete({
         where: { id },
       });
@@ -1117,6 +1134,7 @@ export class ConversionFactorsService {
         description: `Deleted conversion factor ${existing.name}`,
         oldValue: existing,
       }, tx);
+      return existing;
     });
 
     await trackOptionalActivity(this.activityTracking, {
@@ -1159,6 +1177,13 @@ export class ConversionFactorsService {
     }
 
     return existing;
+  }
+
+  private get holdGuard() {
+    if (!this.legalHolds) {
+      throw new ServiceUnavailableException('Legal hold enforcement is unavailable.');
+    }
+    return this.legalHolds;
   }
 
   async findGovernedFactorVersion(id: string) {

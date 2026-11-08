@@ -7,6 +7,7 @@ import {
   ForbiddenException,
   Inject,
   Logger,
+  Optional,
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { Prisma, RecordSourceType, ActivityType, ReportStatus } from '@prisma/client';
@@ -40,6 +41,7 @@ import { deriveHotelActivityBasis } from '../document-extraction/hotel-activity-
 import { AirTravelActivityError, canonicalizeAirTravelActivity } from '../domain/air-travel/air-travel';
 import { assertDemoResetRuntimeEnabled } from '../common/security/security-policy';
 import { OrganizationQuotasService } from '../organization-quotas/organization-quotas.service';
+import { LegalHoldsService } from '../legal-holds/legal-holds.service';
 
 @Injectable()
 export class ActivityDataService {
@@ -52,6 +54,7 @@ export class ActivityDataService {
     private readonly snapshots: CalculationSnapshotsService,
     @Inject(OrganizationQuotasService)
     private readonly quotas: OrganizationQuotasService | undefined = undefined,
+    @Optional() private readonly legalHolds?: LegalHoldsService,
   ) {}
 
   async create(organizationId: string, dto: CreateActivityDataDto, userId?: string) {
@@ -489,8 +492,14 @@ export class ActivityDataService {
   }
 
   async remove(organizationId: string, id: string, userId?: string) {
-    const existing = await this.ensureExists(organizationId, id);
-    const result = await this.prisma.$transaction(async tx => {
+    const { existing, result } = await this.holdGuard.withDeletionGuard({
+      organizationId,
+      operation: 'DELETE_ACTIVITY',
+      actorUserId: userId,
+      activityIds: [id],
+    }, async tx => {
+      const existing = await tx.activityData.findFirst({ where: { id, organizationId } });
+      if (!existing) throw new NotFoundException(`ActivityData ${id} not found.`);
       const result = await tx.activityData.deleteMany({
         where: {
           id,
@@ -511,7 +520,7 @@ export class ActivityDataService {
         description: 'Deleted activity record',
         oldValue: existing,
       }, tx);
-      return result;
+      return { existing, result };
     });
 
     await trackOptionalActivity(this.activityTracking, {
@@ -535,14 +544,15 @@ export class ActivityDataService {
 
   async bulkDelete(organizationId: string, ids: string[], userId?: string) {
     const uniqueIds = Array.from(new Set(ids));
-    const existing = await this.prisma.activityData.findMany({
-      where: {
-        id: { in: uniqueIds },
-        organizationId,
-      },
-    });
-
-    const result = await this.prisma.$transaction(async tx => {
+    const { result } = await this.holdGuard.withDeletionGuard({
+      organizationId,
+      operation: 'BULK_DELETE_ACTIVITY',
+      actorUserId: userId,
+      activityIds: uniqueIds,
+    }, async tx => {
+      const existing = await tx.activityData.findMany({
+        where: { id: { in: uniqueIds }, organizationId },
+      });
       const result = await tx.activityData.deleteMany({
         where: {
           id: { in: uniqueIds },
@@ -563,7 +573,7 @@ export class ActivityDataService {
         oldValue: existing,
         newValue: { ids: uniqueIds, deletedCount: result.count },
       }, tx);
-      return result;
+      return { existing, result };
     });
 
     await trackOptionalActivity(this.activityTracking, {
@@ -781,7 +791,12 @@ export class ActivityDataService {
       throw new BadRequestException('Confirmation text is invalid.');
     }
 
-    const result = await this.prisma.$transaction(async tx => {
+    const result = await this.holdGuard.withDeletionGuard({
+      organizationId,
+      operation: 'CLEAR_ACTIVITY_RECORDS',
+      actorUserId: userId,
+      allActivities: true,
+    }, async tx => {
       const activityRecords = await tx.activityData.findMany({
         where: { organizationId },
         select: { id: true },
@@ -853,7 +868,14 @@ export class ActivityDataService {
       );
     }
 
-    const result = await this.prisma.$transaction(async tx => {
+    const result = await this.holdGuard.withDeletionGuard({
+      organizationId,
+      operation: 'RESET_DEMO_DATA',
+      actorUserId: userId,
+      allActivities: true,
+      allDocuments: true,
+      allReports: true,
+    }, async tx => {
       const [activityRecords, documents, extractions] = await Promise.all([
         tx.activityData.findMany({
           where: { organizationId },
@@ -962,6 +984,13 @@ export class ActivityDataService {
     }
 
     return existing;
+  }
+
+  private get holdGuard() {
+    if (!this.legalHolds) {
+      throw new ServiceUnavailableException('Legal hold enforcement is unavailable.');
+    }
+    return this.legalHolds;
   }
 
   private get quotaEnforcement() {

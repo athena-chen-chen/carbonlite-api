@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, symlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
@@ -33,9 +33,33 @@ describe('FilesystemDocumentStorage', () => {
     await expect(storage.read('org-a/source.pdf')).rejects.toBeInstanceOf(DocumentStorageNotFoundError);
   });
 
+  it('moves evidence to private same-root quarantine idempotently', async () => {
+    const storage = new FilesystemDocumentStorage({ NODE_ENV: 'test', DOCUMENT_STORAGE_PATH: root });
+    await storage.verifyHealth();
+    await storage.save('org-a/source.pdf', Buffer.from('evidence'));
+    const first = await storage.quarantine('org-a/source.pdf', 'intent_1');
+    expect(first).toEqual({ result: 'MOVED', quarantineKey: '.quarantine/intent_1/source.pdf' });
+    expect(await storage.exists('org-a/source.pdf')).toBe(false);
+    expect(await storage.quarantineExists(first.quarantineKey)).toBe(true);
+    await expect(storage.read(first.quarantineKey)).rejects.toThrow('Quarantine storage is not available');
+    await expect(storage.quarantine('org-a/source.pdf', 'intent_1')).resolves.toMatchObject({
+      result: 'ALREADY_QUARANTINED',
+    });
+    expect(await storage.purgeQuarantine(first.quarantineKey)).toBe('DELETED');
+  });
+
   it('rejects path traversal', async () => {
     const storage = new FilesystemDocumentStorage({ NODE_ENV: 'test', DOCUMENT_STORAGE_PATH: root });
     await expect(storage.save('../other/evidence', Buffer.from('no'))).rejects.toThrow('Invalid document storage key');
+  });
+
+  it('rejects symlink escapes for active and quarantine operations', async () => {
+    const outside = await mkdtemp(join(tmpdir(), 'carbonlite-outside-'));
+    const storage = new FilesystemDocumentStorage({ NODE_ENV: 'test', DOCUMENT_STORAGE_PATH: root });
+    await storage.verifyHealth();
+    await symlink(outside, join(root, 'escape'));
+    await expect(storage.save('escape/evidence.pdf', Buffer.from('no'))).rejects.toThrow('Symbolic links');
+    await rm(outside, { recursive: true, force: true });
   });
 
   it('fails closed in production without explicit durable configuration', () => {
