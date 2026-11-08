@@ -19,8 +19,13 @@ describe('canonical document confirmation eligibility (e2e)', () => {
   beforeAll(async () => { const setup = await createE2eApp(); app = setup.app; prisma = setup.prisma; });
   afterAll(async () => { await cleanupTestData(prisma, testRunId); await app.close(); });
 
-  async function source(staged: boolean, inputs: Row[], options: { reviewedFactors?: boolean; allowDemoFactorsForCalculations?: boolean } = {}) {
-    const user = await createTestUser(app, { organizationName: `${testRunId} ${uniqueTestId()}`, email: `${uniqueTestId(testRunId)}@carbonlite-e2e.test`, factorProfile: options.reviewedFactors === false ? undefined : 'reviewed' });
+  async function source(staged: boolean, inputs: Row[], options: { reviewedFactors?: boolean; reviewedFactorTypes?: Array<'DIESEL' | 'HOTEL'>; allowDemoFactorsForCalculations?: boolean } = {}) {
+    const user = await createTestUser(app, { organizationName: `${testRunId} ${uniqueTestId()}`, email: `${uniqueTestId(testRunId)}@carbonlite-e2e.test`, factorProfile: options.reviewedFactors === false && !options.reviewedFactorTypes ? undefined : 'reviewed' });
+    if (options.reviewedFactorTypes) {
+      await prisma.conversionFactor.deleteMany({
+        where: { organizationId: user.user.organizationId, activityType: { notIn: options.reviewedFactorTypes } },
+      });
+    }
     await prisma.organization.update({ where: { id: user.user.organizationId }, data: {
       provinceState: null,
       allowDemoFactorsForCalculations: options.allowDemoFactorsForCalculations ?? false,
@@ -104,7 +109,7 @@ describe('canonical document confirmation eligibility (e2e)', () => {
         { ...base, unit: 'kg' }, { ...base, activityType: 'ELECTRICITY', unit: 'kWh' },
         { ...base, activityType: 'Office Supplies', unit: 'kg' }, { ...base, activityType: 'GASOLINE', unit: 'kg' },
         { ...base, unit: 'widgets' }, { ...base, activityType: 'WATER', unit: 'widgets' },
-      ].map(row => ({ ...row, ...spoof })), { reviewedFactors: false, allowDemoFactorsForCalculations: true });
+      ].map(row => ({ ...row, ...spoof })), { reviewedFactors: false, reviewedFactorTypes: ['DIESEL', 'HOTEL'] });
       const first = await ctx.confirm();
       expect(first.body.count).toBe(2);
       const before = await prisma.activityData.findMany({ where: { sourceDocumentId: ctx.documentId }, orderBy: { id: 'asc' } });

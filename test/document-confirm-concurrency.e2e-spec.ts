@@ -3,6 +3,7 @@ import { INestApplication } from '@nestjs/common';
 import request from 'supertest';
 import { PrismaService } from '../src/prisma/prisma.service';
 import { PrismaModule } from '../src/prisma/prisma.module';
+import { DOCUMENT_STORAGE, DocumentStorage, documentStorageKey } from '../src/documents/document-storage';
 import { createE2eApp } from './helpers/e2e-app';
 import { authHeader, cleanupTestData, createTestUser, TestUser, uniqueTestId } from './helpers/factories';
 
@@ -247,13 +248,29 @@ describe('database-serialized document confirmation (e2e)', () => {
     const ctx = await source(false, eligible);
     expect(totalCreated((await overlap(ctx, ctx.rows)).results)).toBe(3);
     const before = await ctx.records();
-    await request(app.getHttpServer()).delete(`/api/documents/${ctx.documentId}`).set(ctx.auth).expect(200)
-      .expect({ deletedDocument: true, deletedActivityRecords: 0 });
+    const document = await prisma.document.findUniqueOrThrow({ where: { id: ctx.documentId } });
+    const storage = app.get<DocumentStorage>(DOCUMENT_STORAGE);
+    const storageKey = documentStorageKey(document.fileUrl);
+    await storage.save(storageKey, Buffer.from('Synthetic concurrent confirmation source evidence.'));
+    const deleted = await request(app.getHttpServer()).delete(`/api/documents/${ctx.documentId}`).set(ctx.auth).expect(200);
+    expect(deleted.body).toMatchObject({
+      deletedDocument: true,
+      deletedActivityRecords: 0,
+      preservedActivityRecords: 3,
+      sourceEvidence: 'QUARANTINED',
+      storageLifecycle: 'PENDING_PURGE',
+      idempotent: false,
+    });
+    expect(deleted.body.deletionIntentId).toEqual(expect.any(String));
+    const intent = await prisma.documentDeletionIntent.findUniqueOrThrow({ where: { id: deleted.body.deletionIntentId } });
+    expect(await storage.exists(storageKey)).toBe(false);
+    expect(await storage.quarantineExists(intent.quarantineKey)).toBe(true);
     expect(await prisma.document.findUnique({ where: { id: ctx.documentId } })).toBeNull();
     expect(await ctx.records()).toEqual(before.map(row => ({ ...row, documentId: null })));
     const summary = await request(app.getHttpServer()).get('/api/metrics/calculation-summary').set(ctx.auth)
       .query({ selectedActivityRecordIds: before.map(row => row.id).join(',') }).expect(200);
     expect(summary.body.totalEstimatedEmissionsKgCO2e).toBe(579.4);
+    expect(await storage.purgeQuarantine(intent.quarantineKey)).toBe('DELETED');
   });
 
   it('deduplicates legacy PDF/image rowless content on concurrent confirmation and retry', async () => {

@@ -64,7 +64,7 @@ describe('platform, workspace and tenant authorization boundaries', () => {
     });
   });
   describe('checkpoint B factor usage privacy', () => {
-    it('scopes shared-version counts, calculations and history to each customer; platform sees global usage', async () => {
+    it('blocks customer access to internal factor usage and history; platform sees global usage', async () => {
       const a = await actor(MembershipRole.OWNER);
       const b = await actor(MembershipRole.ADMIN);
       const platform = await actor(undefined, true);
@@ -84,13 +84,10 @@ describe('platform, workspace and tenant authorization boundaries', () => {
         for (const [index, own] of fixtures.entries()) {
           const other = fixtures[1 - index];
           const usage = await request(app.getHttpServer()).get(`/api/factor-versions/${version.id}/usage`).set(own.user.auth)
-            .query({ organizationId: other.user.user.organizationId, platform: 'true' }).expect(200);
-          expect(usage.body).toMatchObject({ activityRecordsUsingThisFactor: 1, calculations: index + 1, organizations: 1 });
-          expect(usage.body.recentCalculations.map((item: any) => item.id).sort()).toEqual(own.metrics.map(row => row.id).sort());
+            .query({ organizationId: other.user.user.organizationId, platform: 'true' }).expect(403);
           const serialized = JSON.stringify(usage.body);
           for (const secret of [other.user.user.organizationId, other.activity.id, ...other.metrics.map(row => row.id)]) expect(serialized).not.toContain(secret);
-          const history = await request(app.getHttpServer()).get(`/api/factors/${factor.id}/history`).set(own.user.auth).expect(200);
-          expect(history.body).toMatchObject({ total: 1, items: [expect.objectContaining({ id: own.history.id, changedBy: own.user.user.id })] });
+          const history = await request(app.getHttpServer()).get(`/api/factors/${factor.id}/history`).set(own.user.auth).expect(403);
           expect(JSON.stringify(history.body)).not.toContain(other.user.user.id);
           expect(JSON.stringify(history.body)).not.toContain(other.user.user.email);
         }
@@ -203,7 +200,10 @@ describe('platform, workspace and tenant authorization boundaries', () => {
       await request(app.getHttpServer()).delete(`/api/reports/${f.report.id}`).set(user.auth).expect(200);
       const extracted = await request(app.getHttpServer()).post('/api/document-extraction/extract').set(user.auth).send({ documentId: f.document.id }).expect(201);
       const unwrap = (value: any) => value && typeof value === 'object' && 'value' in value ? value.value : value;
-      const activities = extracted.body.parsedActivities.map((row: any) => Object.fromEntries(Object.entries(row).map(([key, value]) => [key, unwrap(value)])));
+      const extractionOnlyFields = new Set(['periodStart', 'periodEnd', 'rawQuantity', 'rawRecordDate', 'rawActivityType', 'rawSourceRow']);
+      const activities = extracted.body.parsedActivities.map((row: any) => Object.fromEntries(
+        Object.entries(row).filter(([key]) => !extractionOnlyFields.has(key)).map(([key, value]) => [key, unwrap(value)]),
+      ));
       const confirmed = await request(app.getHttpServer()).post('/api/document-extraction/confirm').set(user.auth).send({ documentId: f.document.id, activities }).expect(201);
       expect(confirmed.body.count).toBe(1);
       const staged = await request(app.getHttpServer()).post('/api/spreadsheet-import/review-rows').set(user.auth)

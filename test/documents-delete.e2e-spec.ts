@@ -1,5 +1,10 @@
 import { INestApplication } from '@nestjs/common';
 import request from 'supertest';
+import {
+  DOCUMENT_STORAGE,
+  DocumentStorage,
+  documentStorageKey,
+} from '../src/documents/document-storage';
 import { PrismaService } from '../src/prisma/prisma.service';
 import { createE2eApp } from './helpers/e2e-app';
 import {
@@ -12,12 +17,14 @@ import {
 describe('Document delete (e2e)', () => {
   let app: INestApplication;
   let prisma: PrismaService;
+  let storage: DocumentStorage;
   const testRunId = uniqueTestId('document-delete');
 
   beforeAll(async () => {
     const e2e = await createE2eApp();
     app = e2e.app;
     prisma = e2e.prisma;
+    storage = app.get(DOCUMENT_STORAGE);
   });
 
   afterAll(async () => {
@@ -139,7 +146,7 @@ describe('Document delete (e2e)', () => {
     expect(summaryBefore.body.totalEstimatedEmissionsKgCO2e).toBeCloseTo(579.4, 2);
     expect(scopedBefore.body.totalEstimatedEmissionsKgCO2e).toBeCloseTo(579.4, 2);
 
-    await request(app.getHttpServer()).delete(`/api/documents/${document.id}`).set(auth)
+    const deletion = await request(app.getHttpServer()).delete(`/api/documents/${document.id}`).set(auth)
       .expect(200).expect(({ body }) => expect(body).toMatchObject({
         deletedDocument: true, deletedActivityRecords: 0, sourceEvidence: 'QUARANTINED',
       }));
@@ -161,11 +168,26 @@ describe('Document delete (e2e)', () => {
     const detailsById = (rows: Array<{ activityDataId: string }>) =>
       rows.slice().sort((a, b) => a.activityDataId.localeCompare(b.activityDataId));
     expect(detailsById(scopedAfter.body.calculationDetails)).toEqual(detailsById(scopedBefore.body.calculationDetails));
-    expect(await prisma.userActivityEvent.findFirst({ where: { entityId: document.id, eventName: 'DOCUMENT_DELETED' } }))
-      .toMatchObject({ metadata: { deletedActivityRecords: 0, preservedActivityRecords: 3 } });
+    const deletionEvent = await prisma.userActivityEvent.findFirstOrThrow({
+      where: { entityId: document.id, eventName: 'DOCUMENT_DELETED' },
+    });
+    expect(deletionEvent).toMatchObject({
+      organizationId: user.user.organizationId,
+      userId: user.user.id,
+      entityType: 'Document',
+      metadata: {
+        deletionIntentId: deletion.body.deletionIntentId,
+        preservedActivityRecords: 3,
+        sourceEvidence: 'QUARANTINED',
+      },
+    });
     expect(await prisma.auditLog.findFirst({
       where: { action: 'DELETE_DOCUMENT', newValue: { path: ['documentId'], equals: document.id } },
-    })).toMatchObject({ newValue: { documentId: document.id, preservedActivityRecords: 3 } });
+    })).toMatchObject({ newValue: {
+      documentId: document.id,
+      deletionIntentId: deletion.body.deletionIntentId,
+      preservedActivityRecords: 3,
+    } });
   });
 
   it('stores source document metadata during document import', async () => {
@@ -394,6 +416,10 @@ describe('Document delete (e2e)', () => {
           issues: [], sourceSheetName: 'March', sourceReference: `partial-${index}`, jurisdictionCountry: 'Canada', recordDate: '2026-03-07' })) })
       .expect(201);
     const documentId: string = staged.body.sourceDocument.id;
+    const sourceDocument = await prisma.document.findUniqueOrThrow({ where: { id: documentId } });
+    const storageKey = documentStorageKey(sourceDocument.fileUrl);
+    await storage.save(storageKey, Buffer.from('Synthetic staged spreadsheet source evidence.'));
+    expect(await storage.exists(storageKey)).toBe(true);
     const confirmed = await request(app.getHttpServer()).post('/api/document-extraction/confirm').set(auth)
       .send({ documentId, activities: [] }).expect(201);
     expect(confirmed.body.count).toBe(3);
@@ -403,7 +429,20 @@ describe('Document delete (e2e)', () => {
     const before = await prisma.activityData.findMany({ where: { id: { in: ids } }, orderBy: { id: 'asc' } });
     const summaryBefore = await request(app.getHttpServer()).get('/api/metrics/summary').set(auth).expect(200);
     expect(summaryBefore.body.totalEstimatedEmissionsKgCO2e).toBeCloseTo(579.4, 2);
-    await request(app.getHttpServer()).delete(`/api/documents/${documentId}`).set(auth).expect(200);
+    const deletion = await request(app.getHttpServer()).delete(`/api/documents/${documentId}`).set(auth).expect(200);
+    expect(deletion.body).toMatchObject({
+      deletedDocument: true,
+      deletedActivityRecords: 0,
+      preservedActivityRecords: 3,
+      sourceEvidence: 'QUARANTINED',
+      storageLifecycle: 'PENDING_PURGE',
+      idempotent: false,
+    });
+    const intent = await prisma.documentDeletionIntent.findUniqueOrThrow({
+      where: { id: deletion.body.deletionIntentId },
+    });
+    expect(await storage.exists(storageKey)).toBe(false);
+    expect(await storage.quarantineExists(intent.quarantineKey)).toBe(true);
     expect(await prisma.document.findUnique({ where: { id: documentId } })).toBeNull();
     expect(await prisma.activityData.findMany({ where: { id: { in: ids } }, orderBy: { id: 'asc' } }))
       .toEqual(before.map(row => ({ ...row, documentId: null })));
@@ -411,6 +450,15 @@ describe('Document delete (e2e)', () => {
     expect(await prisma.documentExtraction.count({ where: { documentId } })).toBe(0);
     const summaryAfter = await request(app.getHttpServer()).get('/api/metrics/summary').set(auth).expect(200);
     expect(summaryAfter.body.totalsByMetric).toEqual(summaryBefore.body.totalsByMetric);
+    await request(app.getHttpServer()).delete(`/api/documents/${documentId}`).set(auth).expect(200)
+      .expect(({ body }) => expect(body).toMatchObject({
+        deletionIntentId: intent.id,
+        idempotent: true,
+        preservedActivityRecords: 0,
+        storageLifecycle: 'PENDING_PURGE',
+      }));
+    expect(await storage.purgeQuarantine(intent.quarantineKey)).toBe('DELETED');
+    expect(await storage.quarantineExists(intent.quarantineKey)).toBe(false);
   });
 
   it('preserves another source, both sources accounting records and the workspace total', async () => {
