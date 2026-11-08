@@ -1,8 +1,10 @@
 import { INestApplication } from '@nestjs/common';
+import { createHash } from 'node:crypto';
 import request from 'supertest';
 import { PrismaService } from '../src/prisma/prisma.service';
 import { createE2eApp } from './helpers/e2e-app';
 import {
+  authHeader,
   cleanupTestData,
   createTestUser,
   loginAndGetToken,
@@ -113,6 +115,85 @@ describe('Auth MVP (e2e)', () => {
     await request(app.getHttpServer())
       .post('/api/auth/login')
       .send({ email, password: 'wrong-password' })
+      .expect(401);
+  });
+
+  it('rejects login and existing JWTs after the organization is suspended', async () => {
+    const email = `suspended-${testRunId}@carbonlite-e2e.test`;
+    const password = 'Fictional-Test-Only!2026';
+    const account = await createTestUser(app, {
+      organizationName: `${testRunId} Suspended Org`,
+      email,
+      password,
+    });
+
+    await prisma.organization.update({
+      where: { id: account.user.organizationId },
+      data: { customerStatus: 'SUSPENDED' },
+    });
+
+    await request(app.getHttpServer())
+      .post('/api/auth/login')
+      .send({ email, password })
+      .expect(401);
+    await request(app.getHttpServer())
+      .get('/api/auth/me')
+      .set(authHeader(account.accessToken))
+      .expect(401);
+  });
+
+  it('permits exactly one concurrent invitation-token consumption', async () => {
+    const email = `concurrent-invite-${testRunId}@carbonlite-e2e.test`;
+    const account = await createTestUser(app, {
+      organizationName: `${testRunId} Concurrent Invite Org`,
+      email,
+    });
+    const inviteToken = `${testRunId}-concurrent-invite-token`;
+    const tokenHash = createHash('sha256').update(inviteToken).digest('hex');
+
+    await prisma.user.update({
+      where: { id: account.user.id },
+      data: {
+        passwordSetupRequired: true,
+        passwordSetupTokenHash: tokenHash,
+        passwordSetupTokenExpiresAt: new Date(Date.now() + 60_000),
+        passwordSetupTokenUsedAt: null,
+      },
+    });
+    const membershipCountBefore = await prisma.membership.count({
+      where: { userId: account.user.id },
+    });
+
+    const responses = await Promise.all([
+      request(app.getHttpServer())
+        .post('/api/auth/set-password')
+        .send({ token: inviteToken, password: 'Concurrent-Test-Only!2026-A' }),
+      request(app.getHttpServer())
+        .post('/api/auth/set-password')
+        .send({ token: inviteToken, password: 'Concurrent-Test-Only!2026-B' }),
+    ]);
+
+    expect(responses.map(response => response.status).sort()).toEqual([
+      201,
+      401,
+    ]);
+    await expect(
+      prisma.user.count({ where: { email } }),
+    ).resolves.toBe(1);
+    await expect(
+      prisma.membership.count({ where: { userId: account.user.id } }),
+    ).resolves.toBe(membershipCountBefore);
+    await expect(
+      prisma.user.findUniqueOrThrow({ where: { id: account.user.id } }),
+    ).resolves.toMatchObject({
+      passwordSetupRequired: false,
+      passwordSetupTokenHash: tokenHash,
+      passwordSetupTokenUsedAt: expect.any(Date),
+    });
+
+    await request(app.getHttpServer())
+      .post('/api/auth/set-password')
+      .send({ token: inviteToken, password: 'Concurrent-Test-Only!2026-C' })
       .expect(401);
   });
 

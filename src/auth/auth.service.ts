@@ -175,6 +175,7 @@ export class AuthService {
         'Account setup is incomplete. Please contact an administrator.',
       );
     }
+    this.assertOrganizationAccessible(user);
 
     const passwordMatches = await bcrypt.compare(password, user.passwordHash);
     if (!passwordMatches) {
@@ -270,6 +271,14 @@ export class AuthService {
       if (existingUser?.role === UserRole.ADMIN) {
         throw new ConflictException(
           'Admin accounts cannot be converted into pilot reviewers.',
+        );
+      }
+      if (
+        existingUser &&
+        existingUser.organizationId !== workspace.id
+      ) {
+        throw new ConflictException(
+          'An account with this email already belongs to another organization.',
         );
       }
 
@@ -507,40 +516,52 @@ export class AuthService {
     const tokenHash = this.hashInviteToken(token);
     const now = new Date();
 
-    const user = await this.prisma.user.findFirst({
-      where: {
-        passwordSetupTokenHash: tokenHash,
-      },
-      include: { organization: true },
-    });
-
-    if (!user) {
-      throw new UnauthorizedException(EXPIRED_INVITE_MESSAGE);
-    }
-
-    if (user.passwordSetupTokenUsedAt) {
-      throw new UnauthorizedException(USED_INVITE_MESSAGE);
-    }
-
-    if (
-      !user.isActive ||
-      !user.passwordSetupTokenExpiresAt ||
-      user.passwordSetupTokenExpiresAt <= now
-    ) {
-      throw new UnauthorizedException(EXPIRED_INVITE_MESSAGE);
-    }
-
-    this.assertAccountNotExpired(user);
-
     const passwordHash = await bcrypt.hash(dto.password, 10);
-    const updatedUser = await this.prisma.user.update({
-      where: { id: user.id },
-      data: {
-        passwordHash,
-        passwordSetupRequired: false,
-        passwordSetupTokenUsedAt: now,
-      },
-      include: { organization: true },
+    const updatedUser = await this.prisma.$transaction(async (tx) => {
+      const user = await tx.user.findFirst({
+        where: { passwordSetupTokenHash: tokenHash },
+        include: { organization: true },
+      });
+
+      if (!user) {
+        throw new UnauthorizedException(EXPIRED_INVITE_MESSAGE);
+      }
+      if (user.passwordSetupTokenUsedAt) {
+        throw new UnauthorizedException(USED_INVITE_MESSAGE);
+      }
+      if (
+        !user.isActive ||
+        !user.passwordSetupTokenExpiresAt ||
+        user.passwordSetupTokenExpiresAt <= now
+      ) {
+        throw new UnauthorizedException(EXPIRED_INVITE_MESSAGE);
+      }
+
+      this.assertAccountNotExpired(user);
+      this.assertOrganizationAccessible(user);
+
+      const consumed = await tx.user.updateMany({
+        where: {
+          id: user.id,
+          passwordSetupTokenHash: tokenHash,
+          passwordSetupTokenUsedAt: null,
+          passwordSetupTokenExpiresAt: { gt: now },
+          isActive: true,
+        },
+        data: {
+          passwordHash,
+          passwordSetupRequired: false,
+          passwordSetupTokenUsedAt: now,
+        },
+      });
+      if (consumed.count !== 1) {
+        throw new UnauthorizedException(USED_INVITE_MESSAGE);
+      }
+
+      return tx.user.findUniqueOrThrow({
+        where: { id: user.id },
+        include: { organization: true },
+      });
     });
 
     return this.buildAuthResponse(updatedUser);
@@ -567,6 +588,7 @@ export class AuthService {
     }
 
     this.assertAccountNotExpired(user);
+    this.assertOrganizationAccessible(user);
 
     return this.toSafeUser(user);
   }
@@ -853,6 +875,23 @@ export class AuthService {
   private assertAccountNotExpired(user: { accountExpiresAt?: Date | null }) {
     if (user.accountExpiresAt && user.accountExpiresAt <= new Date()) {
       throw new UnauthorizedException('Account access has expired.');
+    }
+  }
+
+  private assertOrganizationAccessible(user: {
+    organization?: {
+      isActive?: boolean;
+      customerStatus?: OrganizationCustomerStatus;
+    } | null;
+  }) {
+    if (
+      user.organization?.isActive === false ||
+      user.organization?.customerStatus ===
+        OrganizationCustomerStatus.SUSPENDED
+    ) {
+      throw new UnauthorizedException(
+        'Organization access is unavailable. Please contact an administrator.',
+      );
     }
   }
 

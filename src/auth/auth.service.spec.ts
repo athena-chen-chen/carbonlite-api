@@ -15,8 +15,10 @@ describe('AuthService login resilience', () => {
   const prisma = {
     user: {
       findUnique: jest.fn(),
+      findUniqueOrThrow: jest.fn(),
       findFirst: jest.fn(),
       update: jest.fn(),
+      updateMany: jest.fn(),
       create: jest.fn(),
     },
     activityData: {
@@ -59,6 +61,8 @@ describe('AuthService login resilience', () => {
     };
     jwt.signAsync.mockResolvedValue('local-demo-token');
     jwt.verifyAsync.mockReset();
+    prisma.$transaction.mockImplementation((callback) => callback(prisma));
+    prisma.user.updateMany.mockResolvedValue({ count: 1 });
     prisma.activityData.count.mockResolvedValue(10);
     prisma.activityData.deleteMany.mockResolvedValue({ count: 0 });
     prisma.activityData.createMany.mockResolvedValue({ count: 10 });
@@ -146,6 +150,29 @@ describe('AuthService login resilience', () => {
       service.login('pilot@carbonliteapp.ca', 'Fictional-Test-Only!2026'),
     ).rejects.toThrow("Can't reach database server");
     expect(jwt.signAsync).not.toHaveBeenCalled();
+  });
+
+  it('rejects login when the organization is suspended', async () => {
+    prisma.user.findUnique.mockResolvedValue({
+      id: 'user-1',
+      email: 'user@example.com',
+      organizationId: 'org-1',
+      passwordHash: bcrypt.hashSync('Fictional-Test-Only!2026', 10),
+      isActive: true,
+      role: UserRole.USER,
+      accountExpiresAt: null,
+      organization: {
+        id: 'org-1',
+        name: 'Suspended Org',
+        isActive: true,
+        customerStatus: 'SUSPENDED',
+      },
+    });
+
+    await expect(
+      service.login('user@example.com', 'Fictional-Test-Only!2026'),
+    ).rejects.toThrow('Organization access is unavailable');
+    expect(prisma.user.update).not.toHaveBeenCalled();
   });
 
   it('ensures golden sample data when an existing pilot reviewer logs in', async () => {
@@ -712,6 +739,53 @@ describe('AuthService login resilience', () => {
     ).rejects.toBeInstanceOf(ForbiddenException);
   });
 
+  it('does not move an existing account into another organization', async () => {
+    const workspace = {
+      id: 'target-org',
+      name: 'Target Org',
+      customerStatus: 'PENDING',
+      allowDemoFactorsForCalculations: false,
+    };
+    const tx = {
+      organization: {
+        findUnique: jest.fn().mockResolvedValue(workspace),
+        update: jest.fn().mockResolvedValue(workspace),
+      },
+      user: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'existing-user',
+          email: 'existing@example.com',
+          organizationId: 'other-org',
+          role: UserRole.USER,
+        }),
+        update: jest.fn(),
+      },
+      membership: { deleteMany: jest.fn(), create: jest.fn() },
+    };
+    prisma.$transaction.mockImplementation((callback) => callback(tx));
+
+    await expect(
+      service.createPilotReviewer(
+        {
+          id: 'admin-1',
+          email: 'admin@example.com',
+          organizationId: 'admin-org',
+          organizationName: 'Admin Org',
+          role: UserRole.ADMIN,
+          platformRole: UserRole.ADMIN,
+        },
+        {
+          name: 'Existing User',
+          email: 'existing@example.com',
+          workspaceId: 'target-org',
+          invitationPurpose: InvitationPurpose.CUSTOMER,
+        },
+      ),
+    ).rejects.toThrow('already belongs to another organization');
+    expect(tx.user.update).not.toHaveBeenCalled();
+    expect(tx.membership.deleteMany).not.toHaveBeenCalled();
+  });
+
   it('rejects markdown mailto pilot reviewer emails before persistence', async () => {
     const invalidEmails = [
       '[mint_pp@hotmail.com](mailto:mint_pp@hotmail.com)',
@@ -1027,7 +1101,7 @@ describe('AuthService login resilience', () => {
         name: 'CarbonLite Sample Workspace',
       },
     });
-    prisma.user.update.mockResolvedValue({
+    prisma.user.findUniqueOrThrow.mockResolvedValue({
       id: 'reviewer-1',
       email: 'reviewer@example.com',
       organizationId: 'sample-workspace',
@@ -1059,15 +1133,46 @@ describe('AuthService login resilience', () => {
       }),
       include: { organization: true },
     });
-    expect(prisma.user.update).toHaveBeenCalledWith({
-      where: { id: 'reviewer-1' },
+    expect(prisma.user.updateMany).toHaveBeenCalledWith({
+      where: expect.objectContaining({
+        id: 'reviewer-1',
+        passwordSetupTokenUsedAt: null,
+        isActive: true,
+      }),
       data: expect.objectContaining({
         passwordHash: expect.any(String),
         passwordSetupRequired: false,
         passwordSetupTokenUsedAt: expect.any(Date),
       }),
-      include: { organization: true },
     });
+  });
+
+  it('rejects a concurrent second invite-token consumption', async () => {
+    prisma.user.findFirst.mockResolvedValue({
+      id: 'reviewer-1',
+      email: 'reviewer@example.com',
+      organizationId: 'sample-workspace',
+      role: UserRole.USER,
+      isActive: true,
+      passwordSetupTokenUsedAt: null,
+      passwordSetupTokenExpiresAt: new Date('2099-01-01T00:00:00.000Z'),
+      accountExpiresAt: null,
+      organization: {
+        id: 'sample-workspace',
+        name: 'CarbonLite Sample Workspace',
+        isActive: true,
+        customerStatus: 'PILOT',
+      },
+    });
+    prisma.user.updateMany.mockResolvedValue({ count: 0 });
+
+    await expect(
+      service.setPasswordFromInvite({
+        token: 'invite-token',
+        password: 'Fictional-Test-Only!2026',
+      }),
+    ).rejects.toThrow('This invite link has already been used');
+    expect(prisma.user.findUniqueOrThrow).not.toHaveBeenCalled();
   });
 
   it('shows a friendly invalid or expired invite message without exposing token details', async () => {
@@ -1082,7 +1187,7 @@ describe('AuthService login resilience', () => {
       'This invite link has expired. Please contact hello@carbonliteapp.ca for a new link.',
     );
 
-    expect(prisma.user.update).not.toHaveBeenCalled();
+    expect(prisma.user.updateMany).not.toHaveBeenCalled();
   });
 
   it('shows a friendly already-used invite message without exposing token details', async () => {
@@ -1109,6 +1214,32 @@ describe('AuthService login resilience', () => {
       'This invite link has already been used. Please log in or contact hello@carbonliteapp.ca.',
     );
 
-    expect(prisma.user.update).not.toHaveBeenCalled();
+    expect(prisma.user.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('rejects existing JWTs when the organization is suspended', async () => {
+    prisma.user.findFirst.mockResolvedValue({
+      id: 'user-1',
+      email: 'user@example.com',
+      organizationId: 'org-1',
+      role: UserRole.USER,
+      isActive: true,
+      accountExpiresAt: null,
+      organization: {
+        id: 'org-1',
+        name: 'Suspended Org',
+        isActive: true,
+        customerStatus: 'SUSPENDED',
+      },
+      memberships: [],
+    });
+
+    await expect(
+      service.validateJwtPayload({
+        sub: 'user-1',
+        email: 'user@example.com',
+        organizationId: 'org-1',
+      } as never),
+    ).rejects.toThrow('Organization access is unavailable');
   });
 });
