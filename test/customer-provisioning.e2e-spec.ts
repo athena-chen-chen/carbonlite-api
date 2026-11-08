@@ -291,6 +291,33 @@ describe('Transactional customer provisioning (e2e)', () => {
         );
       });
 
+    const erasureTarget = await createTestUser(app, {
+      organizationName: `${testRunId} Erasure Target`,
+      email: `erasure-target-${testRunId}@carbonlite-e2e.test`,
+      password,
+    });
+    const erasureOrganization = await prisma.organization.findUniqueOrThrow({
+      where: { id: erasureTarget.user.organizationId },
+    });
+    const erased = await request(app.getHttpServer())
+      .post('/api/admin/workspace-erasure/erase')
+      .set(authHeader(operatorToken))
+      .send({
+        organizationId: erasureOrganization.id,
+        confirmationOrganizationId: erasureOrganization.id,
+        confirmationOrganizationSlug: erasureOrganization.slug,
+        confirmErase: true,
+      })
+      .expect(201);
+    expect(erased.body).toEqual(
+      expect.objectContaining({ status: 'ERASED', quarantinedPhysicalFiles: 0 }),
+    );
+    expect(
+      await prisma.organization.findUnique({
+        where: { id: erasureOrganization.id },
+      }),
+    ).toBeNull();
+
     expect(
       await prisma.organization.findUniqueOrThrow({
         where: { id: userB.user.organizationId },
