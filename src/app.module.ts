@@ -22,6 +22,8 @@ import { WorkspaceErasureModule } from './workspace-erasure/workspace-erasure.mo
 import { CustomerProvisioningModule } from './customer-provisioning/customer-provisioning.module';
 import { OrganizationQuotasModule } from './organization-quotas/organization-quotas.module';
 import { AiAuthorizationModule } from './ai-authorization/ai-authorization.module';
+import { LegalHoldsModule } from './legal-holds/legal-holds.module';
+import { DeletionRecoveryModule } from './deletion-recovery/deletion-recovery.module';
 
 @Module({
   imports: [
@@ -33,6 +35,8 @@ import { AiAuthorizationModule } from './ai-authorization/ai-authorization.modul
     CustomerProvisioningModule,
     OrganizationQuotasModule,
     AiAuthorizationModule,
+    LegalHoldsModule,
+    DeletionRecoveryModule,
     AuthModule,
     ActivityDataModule,
     MetricsModule,

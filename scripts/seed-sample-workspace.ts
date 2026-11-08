@@ -3,8 +3,9 @@ import { PrismaClient } from '@prisma/client';
 import {
   GOLDEN_SAMPLE_DATASET_KEY,
   GOLDEN_SAMPLE_WORKSPACE_NAME,
-  ensureGoldenSampleDataForWorkspace,
+  GoldenSampleDataService,
 } from '../src/sample-data/golden-sample-data.service';
+import { LegalHoldsService } from '../src/legal-holds/legal-holds.service';
 
 const prisma = new PrismaClient();
 
@@ -13,11 +14,11 @@ async function main() {
   const workspaceName = args.workspace || GOLDEN_SAMPLE_WORKSPACE_NAME;
 
   const workspace = await findOrCreateWorkspace(workspaceName);
-  const result = await ensureGoldenSampleDataForWorkspace(
-    prisma,
-    workspace.id,
-    { force: args.force },
-  );
+  const legalHolds = new LegalHoldsService(prisma as never);
+  const sampleData = new GoldenSampleDataService(prisma as never, legalHolds);
+  const result = await sampleData.ensureGoldenSampleDataForWorkspace(workspace.id, {
+    force: args.force,
+  });
 
   if (result.alreadySeeded) {
     console.log(

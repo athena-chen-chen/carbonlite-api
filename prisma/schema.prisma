@@ -187,6 +187,38 @@ enum QuotaUsageType {
   DOCUMENT_UPLOAD
 }
 
+enum LegalHoldScopeType {
+  ORGANIZATION
+  DOCUMENT
+}
+
+enum LegalHoldStatus {
+  PROVISIONAL
+  ACTIVE
+  RELEASE_PENDING
+  RELEASED
+}
+
+enum LegalHoldEventAction {
+  ACTIVATED
+  RELEASE_REQUESTED
+  RELEASE_APPROVED
+  RELEASED
+  BLOCKED_DELETION
+}
+
+enum DocumentDeletionIntentStatus {
+  PREPARED
+  PENDING_PURGE
+  PURGED
+  RECONCILIATION_REQUIRED
+}
+
+enum DocumentDeletionTargetType {
+  DOCUMENT
+  REPORT_ARTIFACT
+}
+
 enum FeedbackType {
   BUG
   SUGGESTION
@@ -975,6 +1007,107 @@ model OrganizationQuotaUsage {
   @@unique([documentId, usageType])
   @@index([organizationId, usageType, occurredAt])
   @@index([periodId, usageType])
+}
+
+model LegalHold {
+  id                        String             @id @default(cuid())
+  organizationId            String
+  caseReference             String             @unique
+  scopeType                 LegalHoldScopeType
+  status                    LegalHoldStatus    @default(ACTIVE)
+  authorityReference        String
+  evidenceReference         String?
+  requestedById             String
+  approvedById              String
+  effectiveAt               DateTime
+  nextReviewAt              DateTime?
+  releaseRequestedById      String?
+  releaseRequestedAt        DateTime?
+  releaseApprovedById       String?
+  releaseApprovedAt         DateTime?
+  releaseAuthorityReference String?
+  releasedById              String?
+  releasedAt                DateTime?
+  createdAt                 DateTime           @default(now())
+  updatedAt                 DateTime           @updatedAt
+
+  documents    LegalHoldDocument[]
+
+  @@index([organizationId, status, effectiveAt])
+}
+
+model LegalHoldDocument {
+  id             String   @id @default(cuid())
+  legalHoldId    String
+  organizationId String
+  documentId     String
+  createdAt      DateTime @default(now())
+
+  legalHold LegalHold @relation(fields: [legalHoldId], references: [id], onDelete: Cascade)
+
+  @@unique([legalHoldId, documentId])
+  @@index([organizationId, documentId])
+}
+
+/// Deliberately has no Organization, Document, or User foreign keys. Recovery
+/// evidence must survive customer-row and workspace cascades.
+model DocumentDeletionIntent {
+  id                 String                       @id @default(cuid())
+  organizationId     String
+  organizationIdHash String
+  documentId         String?
+  targetReferenceId  String
+  targetType         DocumentDeletionTargetType
+  storageKey         String
+  quarantineKey      String
+  status             DocumentDeletionIntentStatus @default(PREPARED)
+  operation          String
+  requestedById      String?
+  preparedAt         DateTime                     @default(now())
+  databaseDeletedAt  DateTime?
+  purgedAt           DateTime?
+  reconciliationCode String?
+  createdAt          DateTime                     @default(now())
+  updatedAt          DateTime                     @updatedAt
+
+  @@unique([organizationId, storageKey])
+  @@index([organizationId, documentId])
+  @@index([organizationId, targetReferenceId])
+  @@index([status, preparedAt])
+}
+
+/// One-time evidence that an operator reviewed the exact manual-purge set.
+/// It is not an automatic retention schedule or cleanup job.
+model DocumentDeletionPurgeReview {
+  id                 String   @id @default(cuid())
+  organizationIdHash String
+  candidateIds       Json
+  candidateDigest    String
+  tokenHash          String   @unique
+  reviewedById       String
+  reviewedAt         DateTime @default(now())
+  expiresAt          DateTime
+  consumedById       String?
+  consumedAt         DateTime?
+
+  @@index([organizationIdHash, reviewedAt])
+}
+
+model LegalHoldEvent {
+  id                String               @id @default(cuid())
+  legalHoldId       String
+  organizationIdHash String
+  caseReference     String
+  action            LegalHoldEventAction
+  actorUserId       String
+  authorityReference String
+  evidenceReference String?
+  operation         String?
+  targetCount       Int?
+  occurredAt        DateTime             @default(now())
+
+  @@index([legalHoldId, occurredAt])
+  @@index([organizationIdHash, occurredAt])
 }
 
 model Feedback {

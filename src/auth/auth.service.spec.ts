@@ -9,6 +9,7 @@ import bcrypt from 'bcryptjs';
 import { AuthService } from './auth.service';
 import { InvitationPurpose } from './dto/create-pilot-reviewer.dto';
 import { SYNTHETIC_ONLY_PILOT_NOTICE } from '../common/policies/synthetic-only-pilot';
+import { ensureGoldenSampleDataForWorkspace } from '../sample-data/golden-sample-data.service';
 
 describe('AuthService login resilience', () => {
   const originalEnv = process.env;
@@ -70,6 +71,12 @@ describe('AuthService login resilience', () => {
       jwt as never,
       auditLog as never,
       activityTracking as never,
+      {
+        ensureGoldenSampleDataForWorkspace: (organizationId: string, options?: { force?: boolean; createdById?: string | null }) =>
+          ensureGoldenSampleDataForWorkspace(prisma as never, organizationId, options),
+        ensureGoldenSampleDataInTransaction: (tx: never, organizationId: string, options?: { force?: boolean; createdById?: string | null }) =>
+          ensureGoldenSampleDataForWorkspace(tx, organizationId, options),
+      } as never,
     );
   });
 

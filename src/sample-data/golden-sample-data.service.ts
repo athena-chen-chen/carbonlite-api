@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Optional, ServiceUnavailableException } from '@nestjs/common';
 import {
   ActivityType,
   Prisma,
@@ -7,6 +7,7 @@ import {
   ReportStatus,
 } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { LegalHoldsService } from '../legal-holds/legal-holds.service';
 
 export const GOLDEN_SAMPLE_DATASET_KEY = 'golden-sample-v0.1';
 export const GOLDEN_SAMPLE_WORKSPACE_NAME = 'CarbonLite Sample Workspace';
@@ -164,13 +165,43 @@ export const GOLDEN_SAMPLE_RECORDS: GoldenSampleActivityRecord[] = [
 
 @Injectable()
 export class GoldenSampleDataService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    @Optional() private readonly legalHolds?: LegalHoldsService,
+  ) {}
 
   ensureGoldenSampleDataForWorkspace(
     workspaceId: string,
     options?: { force?: boolean; createdById?: string | null },
   ) {
-    return ensureGoldenSampleDataForWorkspace(this.prisma, workspaceId, options);
+    return this.holdGuard.withDeletionGuard({
+      organizationId: workspaceId,
+      operation: 'REPLACE_GOLDEN_SAMPLE_DATA',
+      actorUserId: options?.createdById ?? undefined,
+      allActivities: true,
+      allReports: true,
+    }, (tx) => ensureGoldenSampleDataForWorkspace(tx, workspaceId, options));
+  }
+
+  ensureGoldenSampleDataInTransaction(
+    tx: Prisma.TransactionClient,
+    workspaceId: string,
+    options?: { force?: boolean; createdById?: string | null },
+  ) {
+    return this.holdGuard.guardExistingTransaction(tx, {
+      organizationId: workspaceId,
+      operation: 'REPLACE_GOLDEN_SAMPLE_DATA',
+      actorUserId: options?.createdById ?? undefined,
+      allActivities: true,
+      allReports: true,
+    }, () => ensureGoldenSampleDataForWorkspace(tx, workspaceId, options));
+  }
+
+  private get holdGuard() {
+    if (!this.legalHolds) {
+      throw new ServiceUnavailableException('Legal hold enforcement is unavailable.');
+    }
+    return this.legalHolds;
   }
 }
 

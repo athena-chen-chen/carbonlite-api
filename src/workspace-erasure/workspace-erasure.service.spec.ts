@@ -16,6 +16,8 @@ const platformAdmin: AuthenticatedUser = {
 function storageMock(): jest.Mocked<DocumentStorage> {
   return {
     save: jest.fn(), read: jest.fn(), exists: jest.fn(),
+    quarantine: jest.fn(), quarantineExists: jest.fn(), purgeQuarantine: jest.fn(),
+    listActive: jest.fn().mockResolvedValue([]), listQuarantine: jest.fn().mockResolvedValue([]),
     delete: jest.fn().mockResolvedValue('DELETED'), verifyHealth: jest.fn(),
   } as jest.Mocked<DocumentStorage>;
 }
@@ -24,10 +26,11 @@ function setup() {
   const organization = { id: 'org-a', slug: 'workspace-a' };
   const tx = {
     organization: {
-      findUnique: jest.fn().mockResolvedValue({ id: 'org-a' }),
+      findUnique: jest.fn().mockResolvedValue(organization),
       delete: jest.fn().mockResolvedValue({ id: 'org-a' }),
     },
     auditLog: { create: jest.fn().mockResolvedValue({ id: 'completed-audit' }) },
+    documentDeletionIntent: { updateMany: jest.fn().mockResolvedValue({ count: 2 }) },
   };
   const count = (value = 1) => ({ count: jest.fn().mockResolvedValue(value) });
   const prisma: any = {
@@ -64,8 +67,39 @@ function setup() {
     factorSource: { deleteMany: jest.fn() },
     $transaction: jest.fn((work) => work(tx)),
   };
+  Object.assign(tx, {
+    user: prisma.user,
+    membership: prisma.membership,
+    facility: prisma.facility,
+    asset: prisma.asset,
+    document: prisma.document,
+    documentExtraction: prisma.documentExtraction,
+    spreadsheetImportReviewRow: prisma.spreadsheetImportReviewRow,
+    activityData: prisma.activityData,
+    metricResult: prisma.metricResult,
+    report: prisma.report,
+    aIJob: prisma.aIJob,
+    conversionFactor: prisma.conversionFactor,
+    feedback: prisma.feedback,
+    userActivityEvent: prisma.userActivityEvent,
+    auditLog: { ...prisma.auditLog, create: tx.auditLog.create },
+  });
   const storage = storageMock();
-  return { prisma, storage, tx, service: new WorkspaceErasureService(prisma, storage) };
+  const legalHolds = {
+    withDeletionGuard: jest.fn((_input, work) => prisma.$transaction(work)),
+  };
+  const recovery = {
+    prepareWorkspaceInTransaction: jest.fn().mockImplementation((_tx, _organizationId, items: { storageKey: string }[]) =>
+      Promise.resolve(items.map((item: { storageKey: string }, index: number) => ({
+        id: `intent-${index}`, storageKey: item.storageKey,
+        quarantineKey: `.quarantine/intent-${index}/file`, status: 'PREPARED',
+      })))),
+    quarantinePreparedIntent: jest.fn().mockResolvedValue(true),
+  };
+  return {
+    prisma, storage, tx, recovery,
+    service: new WorkspaceErasureService(prisma, storage, legalHolds as never, recovery as never),
+  };
 }
 
 const command = {
@@ -116,12 +150,13 @@ describe('WorkspaceErasureService', () => {
     expect(storage.delete).not.toHaveBeenCalled();
   });
 
-  it('deletes only target storage keys and the target organization, preserving global factors', async () => {
-    const { service, prisma, storage, tx } = setup();
+  it('quarantines only target storage keys and deletes the target organization, preserving global factors', async () => {
+    const { service, prisma, storage, tx, recovery } = setup();
     await expect(service.erase(platformAdmin, command)).resolves.toMatchObject({
-      status: 'ERASED', deletedPhysicalFiles: 2, alreadyMissingPhysicalFiles: 0,
+      status: 'ERASED', quarantinedPhysicalFiles: 2,
     });
-    expect(storage.delete.mock.calls.map(([key]) => key)).toEqual(['org-a/a.pdf', 'org-a/b.csv']);
+    expect(recovery.quarantinePreparedIntent).toHaveBeenCalledTimes(2);
+    expect(storage.delete).not.toHaveBeenCalled();
     expect(tx.organization.delete).toHaveBeenCalledWith({ where: { id: 'org-a' } });
     expect(prisma.factor.deleteMany).not.toHaveBeenCalled();
     expect(prisma.factorVersion.deleteMany).not.toHaveBeenCalled();
@@ -132,64 +167,62 @@ describe('WorkspaceErasureService', () => {
   });
 
   it('leaves tenant B physical evidence and database boundary untouched', async () => {
-    const { service, storage, tx } = setup();
-    const physicalObjects = new Set(['org-a/a.pdf', 'org-a/b.csv', 'org-b/private.pdf']);
-    storage.delete.mockImplementation(async (key) => physicalObjects.delete(key) ? 'DELETED' : 'NOT_FOUND');
+    const { service, storage, tx, recovery } = setup();
 
     await service.erase(platformAdmin, command);
 
-    expect(physicalObjects).toEqual(new Set(['org-b/private.pdf']));
+    expect(recovery.prepareWorkspaceInTransaction).toHaveBeenCalledWith(
+      expect.anything(), 'org-a', expect.not.arrayContaining([expect.objectContaining({ storageKey: 'org-b/private.pdf' })]), 'platform-admin',
+    );
+    expect(storage.delete).not.toHaveBeenCalled();
     expect(tx.organization.delete).toHaveBeenCalledTimes(1);
     expect(tx.organization.delete).not.toHaveBeenCalledWith({ where: { id: 'org-b' } });
   });
 
-  it('keeps database data when physical deletion fails and records incomplete status', async () => {
-    const { service, prisma, storage, tx } = setup();
-    storage.delete.mockRejectedValueOnce(new Error('object store unavailable'));
+  it('keeps database data when quarantine rename fails from storage exhaustion', async () => {
+    const { service, prisma, tx, recovery } = setup();
+    const storageFull = Object.assign(new Error('no space left on device'), { code: 'ENOSPC' });
+    recovery.quarantinePreparedIntent.mockRejectedValueOnce(storageFull);
     await expect(service.erase(platformAdmin, command)).rejects.toThrow('Database data was retained');
-    expect(prisma.$transaction).not.toHaveBeenCalled();
+    expect(prisma.$transaction).toHaveBeenCalledTimes(2);
     expect(tx.organization.delete).not.toHaveBeenCalled();
     expect(prisma.auditLog.create).toHaveBeenCalledWith(expect.objectContaining({
       data: expect.objectContaining({ action: 'WORKSPACE_ERASURE_STORAGE_FAILED' }),
     }));
   });
 
-  it('continues safely when physical files are already missing', async () => {
-    const { service, storage } = setup();
-    storage.delete.mockResolvedValue('NOT_FOUND');
-    await expect(service.erase(platformAdmin, command)).resolves.toMatchObject({
-      status: 'ERASED', deletedPhysicalFiles: 0, alreadyMissingPhysicalFiles: 2,
-    });
+  it('fails closed when active and quarantine copies are both missing', async () => {
+    const { service, recovery } = setup();
+    recovery.quarantinePreparedIntent.mockResolvedValueOnce(false);
+    await expect(service.erase(platformAdmin, command)).rejects.toThrow('Database data was retained');
   });
 
-  it('surfaces DB failure after storage cleanup and supports a safe retry', async () => {
-    const { service, prisma, storage, tx } = setup();
-    prisma.$transaction
+  it('surfaces a DB failure after recoverable movement and supports idempotent retry', async () => {
+    const { service, recovery, tx } = setup();
+    tx.organization.delete
       .mockRejectedValueOnce(new Error('database unavailable'))
-      .mockImplementationOnce((work: (client: typeof tx) => unknown) => work(tx));
-    storage.delete
-      .mockResolvedValueOnce('DELETED').mockResolvedValueOnce('DELETED')
-      .mockResolvedValue('NOT_FOUND');
+      .mockResolvedValueOnce({ id: 'org-a' });
 
-    await expect(service.erase(platformAdmin, command)).rejects.toThrow('Retry is safe');
+    await expect(service.erase(platformAdmin, command)).rejects.toThrow('recoverable quarantine movement');
     await expect(service.erase(platformAdmin, command)).resolves.toMatchObject({
-      status: 'ERASED', alreadyMissingPhysicalFiles: 2,
+      status: 'ERASED', quarantinedPhysicalFiles: 2,
     });
+    expect(recovery.quarantinePreparedIntent).toHaveBeenCalledTimes(4);
     expect(tx.organization.delete).toHaveBeenCalledWith({ where: { id: 'org-a' } });
   });
 
   it('returns explicit already-erased status without touching another tenant', async () => {
-    const { service, prisma, storage } = setup();
-    prisma.organization.findUnique.mockResolvedValue(null);
+    const { service, prisma, storage, tx } = setup();
+    tx.organization.findUnique.mockResolvedValue(null);
     prisma.auditLog.findFirst.mockResolvedValue({ id: 'completed' });
     await expect(service.erase(platformAdmin, command)).resolves.toMatchObject({ status: 'ALREADY_ERASED' });
     expect(storage.delete).not.toHaveBeenCalled();
-    expect(prisma.$transaction).not.toHaveBeenCalled();
+    expect(prisma.$transaction).toHaveBeenCalledTimes(1);
   });
 
   it('fails closed for unknown workspace ids', async () => {
-    const { service, prisma } = setup();
-    prisma.organization.findUnique.mockResolvedValue(null);
+    const { service, tx } = setup();
+    tx.organization.findUnique.mockResolvedValue(null);
     await expect(service.erase(platformAdmin, command)).rejects.toThrow('Organization not found');
   });
 });

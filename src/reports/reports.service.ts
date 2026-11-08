@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException, Optional, ServiceUnavailableException } from '@nestjs/common';
 import { Prisma, ReportStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateReportDto } from './dto/create-report.dto';
@@ -6,6 +6,8 @@ import { ReportQueryDto } from './dto/report-query.dto';
 import { UpdateReportDto } from './dto/update-report.dto';
 import { AuditLogService } from '../audit-log/audit-log.service';
 import { ActivityTrackingService, trackOptionalActivity } from '../activity-tracking/activity-tracking.service';
+import { LegalHoldsService } from '../legal-holds/legal-holds.service';
+import { DeletionRecoveryService } from '../deletion-recovery/deletion-recovery.service';
 
 @Injectable()
 export class ReportsService {
@@ -13,6 +15,8 @@ export class ReportsService {
     private readonly prisma: PrismaService,
     private readonly auditLog: AuditLogService,
     private readonly activityTracking: ActivityTrackingService,
+    @Optional() private readonly legalHolds?: LegalHoldsService,
+    @Optional() private readonly deletionRecovery?: DeletionRecoveryService,
   ) {}
 
   async create(organizationId: string, userId: string, dto: CreateReportDto) {
@@ -130,10 +134,17 @@ export class ReportsService {
   }
 
   async remove(organizationId: string, id: string) {
-    await this.ensureExists(organizationId, id);
-    await this.prisma.report.delete({ where: { id } });
-
-    return { id, deleted: true };
+    const prepared = await this.recovery.prepareReport(organizationId, id);
+    if (!prepared.found) throw new NotFoundException(`Report ${id} not found.`);
+    const outcome = await this.recovery.completeReport(organizationId, id);
+    if (!outcome) throw new NotFoundException(`Report ${id} not found.`);
+    return {
+      id,
+      deleted: true,
+      deletionIntentId: outcome.intent?.id ?? null,
+      sourceEvidence: outcome.intent ? 'QUARANTINED' : 'NONE',
+      idempotent: outcome.idempotent,
+    };
   }
 
   private async ensureExists(organizationId: string, id: string) {
@@ -163,5 +174,19 @@ export class ReportsService {
     if (!facility) {
       throw new BadRequestException(`Facility ${facilityId} not found.`);
     }
+  }
+
+  private get holdGuard() {
+    if (!this.legalHolds) {
+      throw new ServiceUnavailableException('Legal hold enforcement is unavailable.');
+    }
+    return this.legalHolds;
+  }
+
+  private get recovery() {
+    if (!this.deletionRecovery) {
+      throw new ServiceUnavailableException('Recoverable deletion enforcement is unavailable.');
+    }
+    return this.deletionRecovery;
   }
 }

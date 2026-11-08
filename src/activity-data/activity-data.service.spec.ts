@@ -95,6 +95,7 @@ describe('ActivityDataService canonical calculation persistence', () => {
       activityTracking as never,
       { prepareCreate: jest.fn(async (_client, data) => data), recalculate: jest.fn(async (_client, row) => row) } as never,
       { assertImportRows: jest.fn().mockResolvedValue(undefined) } as never,
+      { withDeletionGuard: jest.fn((_input, work) => prisma.$transaction(work)) } as never,
     );
   });
 

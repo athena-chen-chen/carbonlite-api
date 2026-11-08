@@ -54,10 +54,13 @@ describe('Document delete (e2e)', () => {
       .set(authHeader(user.accessToken))
       .expect(200)
       .expect(({ body }) => {
-        expect(body).toEqual({
+        expect(body).toMatchObject({
           deletedDocument: true,
           deletedActivityRecords: 0,
+          sourceEvidence: 'QUARANTINED',
+          storageLifecycle: 'PENDING_PURGE',
         });
+        expect(body.deletionIntentId).toEqual(expect.any(String));
       });
 
     const deleted = await prisma.document.findUnique({
@@ -137,7 +140,9 @@ describe('Document delete (e2e)', () => {
     expect(scopedBefore.body.totalEstimatedEmissionsKgCO2e).toBeCloseTo(579.4, 2);
 
     await request(app.getHttpServer()).delete(`/api/documents/${document.id}`).set(auth)
-      .expect(200, { deletedDocument: true, deletedActivityRecords: 0 });
+      .expect(200).expect(({ body }) => expect(body).toMatchObject({
+        deletedDocument: true, deletedActivityRecords: 0, sourceEvidence: 'QUARANTINED',
+      }));
     expect(await prisma.document.findUnique({ where: { id: document.id } })).toBeNull();
     const documents = await request(app.getHttpServer()).get('/api/documents').set(auth).expect(200);
     expect(documents.body.items.some((row: { id: string }) => row.id === document.id)).toBe(false);
@@ -158,8 +163,9 @@ describe('Document delete (e2e)', () => {
     expect(detailsById(scopedAfter.body.calculationDetails)).toEqual(detailsById(scopedBefore.body.calculationDetails));
     expect(await prisma.userActivityEvent.findFirst({ where: { entityId: document.id, eventName: 'DOCUMENT_DELETED' } }))
       .toMatchObject({ metadata: { deletedActivityRecords: 0, preservedActivityRecords: 3 } });
-    expect(await prisma.auditLog.findFirst({ where: { entityId: document.id, action: 'DELETE_DOCUMENT' } }))
-      .toMatchObject({ oldValue: { deletedActivityRecords: 0, preservedActivityRecords: 3 } });
+    expect(await prisma.auditLog.findFirst({
+      where: { action: 'DELETE_DOCUMENT', newValue: { path: ['documentId'], equals: document.id } },
+    })).toMatchObject({ newValue: { documentId: document.id, preservedActivityRecords: 3 } });
   });
 
   it('stores source document metadata during document import', async () => {
