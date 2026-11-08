@@ -168,3 +168,44 @@ describe('DocumentsService storage lifecycle', () => {
       .toThrow('Uploaded file is no longer available');
   });
 });
+
+describe('DocumentsService quota response contract', () => {
+  const subject = (quotaStatus: { enabled: boolean }) => {
+    const prisma = {
+      document: {
+        findMany: jest.fn().mockResolvedValue([]),
+        count: jest.fn().mockResolvedValue(0),
+      },
+      $transaction: jest.fn(async (operations) => Promise.all(operations)),
+    };
+    const quotas = { getStatus: jest.fn().mockResolvedValue(quotaStatus) };
+    return {
+      service: new DocumentsService(
+        prisma as never,
+        {} as never,
+        {} as never,
+        storageMock(),
+        quotas as never,
+      ),
+      quotas,
+    };
+  };
+
+  it('returns quota status when the organization policy is enabled', async () => {
+    const quotaStatus = { enabled: true };
+    const { service, quotas } = subject(quotaStatus);
+
+    await expect(service.findAll('org-a', {})).resolves.toMatchObject({
+      quotaStatus,
+    });
+    expect(quotas.getStatus).toHaveBeenCalledWith('org-a');
+  });
+
+  it('omits quota status when the organization policy is disabled', async () => {
+    const { service } = subject({ enabled: false });
+
+    await expect(service.findAll('org-a', {})).resolves.not.toHaveProperty(
+      'quotaStatus',
+    );
+  });
+});

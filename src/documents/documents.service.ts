@@ -190,6 +190,7 @@ export class DocumentsService {
       pageSize,
       total,
       totalPages: Math.ceil(total / pageSize),
+      ...(quotaStatus?.enabled ? { quotaStatus } : {}),
     };
   }
 
