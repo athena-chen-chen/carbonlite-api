@@ -9,12 +9,26 @@ import { GlobalExceptionFilter } from './common/filters/global-exception.filter'
 import { PerfTimer, SLOW_REQUEST_THRESHOLD_MS } from './common/monitoring/performance-logging';
 import { initSentry } from './sentry';
 import { configureHttpSecurity } from './common/security/http-security';
+import { RecoveryAccessPolicy, restoreAccessGate } from './common/security/restore-access-gate';
 
 async function bootstrap() {
   initSentry();
 
+  // Validate the external recovery trust boundary before Nest initializes any
+  // application module. A locked/invalid recovery still starts health and the
+  // explicitly allowlisted, authenticated read-only reconciliation route.
+  const recoveryAccessPolicy = new RecoveryAccessPolicy(process.env);
+  const recoveryStartup = await recoveryAccessPolicy.evaluate();
+  if (recoveryStartup.blocked) {
+    new Logger('RecoveryAccess').warn(
+      `Recovery access locked reason=${recoveryStartup.reason}`,
+    );
+  }
+
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
   const requestLogger = new Logger('RequestPerformance');
+
+  app.use(restoreAccessGate(recoveryAccessPolicy));
 
   app.use((req: Request, res: Response, next: NextFunction) => {
     const timer = new PerfTimer();

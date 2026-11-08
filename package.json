@@ -24,7 +24,9 @@
     "factors:load:production": "node --import tsx scripts/load-production-factors.mjs",
     "factors:verify:production": "node --import tsx scripts/verify-production-factors.mjs",
     "seed:sample-workspace": "tsx scripts/seed-sample-workspace.ts",
-    "reset:user-password": "node scripts/reset-user-password.mjs"
+    "reset:user-password": "node scripts/reset-user-password.mjs",
+    "recovery:rehearsal": "tsx scripts/recovery-rehearsal/run-rehearsal.ts",
+    "recovery:control:init-local": "tsx scripts/recovery-control/init-local-recovery-session.ts"
   },
   "dependencies": {
     "@nestjs/common": "^11.1.6",
