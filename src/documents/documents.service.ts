@@ -22,6 +22,7 @@ import {
   documentStorageKey,
   persistedDocumentStorageUrl,
 } from './document-storage';
+import { OrganizationQuotasService } from '../organization-quotas/organization-quotas.service';
 
 @Injectable()
 export class DocumentsService {
@@ -32,6 +33,8 @@ export class DocumentsService {
     private readonly auditLog: AuditLogService,
     private readonly activityTracking: ActivityTrackingService,
     @Inject(DOCUMENT_STORAGE) private readonly storage: DocumentStorage,
+    @Inject(OrganizationQuotasService)
+    private readonly quotas: OrganizationQuotasService | undefined = undefined,
   ) {}
 
   async upload(
@@ -337,5 +340,12 @@ export class DocumentsService {
         sourceEvidence,
       };
     });
+  }
+
+  private get quotaEnforcement() {
+    if (!this.quotas) {
+      throw new ServiceUnavailableException('Organization quota enforcement is unavailable.');
+    }
+    return this.quotas;
   }
 }

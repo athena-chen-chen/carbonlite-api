@@ -21,6 +21,7 @@ describe('DocumentsService storage lifecycle', () => {
   let tx: any;
   let prisma: any;
   let service: DocumentsService;
+  let quotas: any;
 
   beforeEach(async () => {
     directory = await mkdtemp(join(tmpdir(), 'carbonlite-upload-'));
@@ -41,11 +42,17 @@ describe('DocumentsService storage lifecycle', () => {
       document: { findFirst: jest.fn().mockResolvedValue(null), findUnique: jest.fn() },
       $transaction: jest.fn((work) => work(tx)),
     };
+    quotas = {
+      withUploadTransaction: jest.fn(async (_input, accept) =>
+        (await prisma.$transaction(accept)).value),
+      getStatus: jest.fn().mockResolvedValue({ enabled: false }),
+    };
     service = new DocumentsService(
       prisma,
       { log: jest.fn().mockResolvedValue(undefined) } as never,
       { track: jest.fn().mockResolvedValue(undefined) } as never,
       storage,
+      quotas,
     );
   });
 
@@ -70,6 +77,25 @@ describe('DocumentsService storage lifecycle', () => {
   it('compensates stored bytes when the database transaction fails', async () => {
     prisma.$transaction.mockRejectedValueOnce(new Error('db unavailable'));
     await expect(service.upload('org-a', 'user-a', uploadFile())).rejects.toThrow('db unavailable');
+    expect(storage.save).toHaveBeenCalledTimes(1);
+    expect(storage.delete).toHaveBeenCalledWith(expect.stringMatching(/^org-a\//));
+  });
+
+  it('removes stored bytes when atomic quota admission rejects the document', async () => {
+    service = new DocumentsService(
+      prisma,
+      { log: jest.fn().mockResolvedValue(undefined) } as never,
+      { track: jest.fn().mockResolvedValue(undefined) } as never,
+      storage,
+      {
+        withUploadTransaction: jest.fn(async (_input, accept) => {
+          await prisma.$transaction(accept);
+          throw new Error('quota reached');
+        }),
+      } as never,
+    );
+
+    await expect(service.upload('org-a', 'user-a', uploadFile())).rejects.toThrow('quota reached');
     expect(storage.save).toHaveBeenCalledTimes(1);
     expect(storage.delete).toHaveBeenCalledWith(expect.stringMatching(/^org-a\//));
   });
