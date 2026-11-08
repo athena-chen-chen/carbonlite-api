@@ -177,6 +177,12 @@ enum AIJobStatus {
   FAILED
 }
 
+enum AiAuthorizationStatus {
+  DISABLED
+  ENABLED
+  WITHDRAWN
+}
+
 enum QuotaUsageType {
   DOCUMENT_UPLOAD
 }
@@ -321,6 +327,7 @@ model Organization {
   quotaPolicy         OrganizationQuota?
   quotaPeriods        OrganizationQuotaPeriod[]
   quotaUsages         OrganizationQuotaUsage[]
+  aiAuthorization     OrganizationAiAuthorization?
 
   // 缺的就是这两个
   activityData  ActivityData[]
@@ -926,6 +933,29 @@ model AuditLog {
   @@index([entityType])
   @@index([entityType, entityId])
   @@index([createdAt])
+}
+
+model OrganizationAiAuthorization {
+  organizationId                   String                @id
+  status                           AiAuthorizationStatus @default(DISABLED)
+  consentVersion                   String
+  provider                         String
+  processingScope                  String
+  evidenceReference                String
+  authorizedRepresentativeReference String
+  verifiedById                     String
+  verifiedAt                       DateTime
+  effectiveAt                      DateTime
+  expiresAt                        DateTime?
+  withdrawnAt                      DateTime?
+  withdrawalReference              String?
+  createdAt                        DateTime              @default(now())
+  updatedAt                        DateTime              @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([status, provider, processingScope])
+  @@index([consentVersion])
 }
 
 model OrganizationQuota {

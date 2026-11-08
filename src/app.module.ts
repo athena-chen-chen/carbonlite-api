@@ -23,6 +23,7 @@ import { CustomerProvisioningModule } from './customer-provisioning/customer-pro
 import { OrganizationQuotasModule } from './organization-quotas/organization-quotas.module';
 import { LegalHoldsModule } from './legal-holds/legal-holds.module';
 import { DeletionRecoveryModule } from './deletion-recovery/deletion-recovery.module';
+import { AiAuthorizationModule } from './ai-authorization/ai-authorization.module';
 
 @Module({
   imports: [
@@ -35,6 +36,7 @@ import { DeletionRecoveryModule } from './deletion-recovery/deletion-recovery.mo
     OrganizationQuotasModule,
     LegalHoldsModule,
     DeletionRecoveryModule,
+    AiAuthorizationModule,
     AuthModule,
     ActivityDataModule,
     MetricsModule,

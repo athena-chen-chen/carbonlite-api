@@ -45,6 +45,11 @@ import {
   documentStorageKey,
 } from '../documents/document-storage';
 import { OrganizationQuotasService } from '../organization-quotas/organization-quotas.service';
+import { AiAuthorizationService } from '../ai-authorization/ai-authorization.service';
+import {
+  AI_PROVIDER_OPENAI,
+  AI_SCOPE_DOCUMENT_EXTRACTION,
+} from '../ai-authorization/ai-authorization.constants';
 
 type ConfidenceLevel = 'high' | 'medium' | 'low';
 
@@ -148,6 +153,7 @@ export class DocumentExtractionService {
     @Optional() @Inject(DOCUMENT_STORAGE) private readonly storage?: DocumentStorage,
     @Inject(OrganizationQuotasService)
     private readonly quotas: OrganizationQuotasService | undefined = undefined,
+    @Optional() private readonly aiAuthorization?: AiAuthorizationService,
   ) {}
 
   async extract(
@@ -316,8 +322,20 @@ export class DocumentExtractionService {
         `[DocumentExtraction] OpenAI request prepared documentId=${documentId} model=${this.extractionModel} mimeType=${mimeType} inputModality=${inputModality} fileSize=${fileBuffer.length}`,
       );
 
+      if (!this.aiAuthorization) {
+        throw new InternalServerErrorException(
+          'AI authorization control is unavailable.',
+        );
+      }
+      await this.aiAuthorization.assertProviderRequestAllowed(
+        organizationId,
+        AI_PROVIDER_OPENAI,
+        AI_SCOPE_DOCUMENT_EXTRACTION,
+      );
+
       const response = await withExtractionDeadline(signal => openai.responses.create({
         model: this.extractionModel,
+        store: false,
         max_output_tokens: MAX_PROVIDER_OUTPUT_TOKENS,
         input: [
           {
