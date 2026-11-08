@@ -11,7 +11,7 @@ describe('HTTP security configuration', () => {
   it('requires an explicit production CORS allowlist', () => {
     expect(() =>
       resolveCorsAllowedOrigins({ APP_ENV: 'production' }),
-    ).toThrow('CORS_ALLOWED_ORIGINS is required in production');
+    ).toThrow('CORS_ALLOWED_ORIGINS is required outside explicit');
 
     expect(
       resolveCorsAllowedOrigins({
@@ -37,9 +37,30 @@ describe('HTTP security configuration', () => {
     ]);
   });
 
+  it.each([
+    [{ APP_ENV: 'staging', NODE_ENV: 'production' }],
+    [{ APP_ENV: 'production', NODE_ENV: 'development' }],
+    [{}],
+    [{ APP_ENV: 'prodution' }],
+    [{ APP_ENV: 'staging' }],
+  ])('requires explicit CORS for non-local runtime %p', environment => {
+    expect(() => resolveCorsAllowedOrigins(environment)).toThrow(
+      'CORS_ALLOWED_ORIGINS is required outside explicit',
+    );
+  });
+
+  it('accepts an explicit staging CORS allowlist', () => {
+    expect(
+      resolveCorsAllowedOrigins({
+        APP_ENV: 'staging',
+        CORS_ALLOWED_ORIGINS: 'https://staging.carbonlite.example',
+      }),
+    ).toEqual(['https://staging.carbonlite.example']);
+  });
+
   it('requires an explicit production reverse-proxy hop count', () => {
     expect(() => resolveTrustProxyHops({ APP_ENV: 'production' })).toThrow(
-      'TRUST_PROXY_HOPS is required in production',
+      'TRUST_PROXY_HOPS is required outside explicit',
     );
     expect(
       resolveTrustProxyHops({
@@ -50,6 +71,24 @@ describe('HTTP security configuration', () => {
     expect(() =>
       resolveTrustProxyHops({ TRUST_PROXY_HOPS: '-1' }),
     ).toThrow('TRUST_PROXY_HOPS must be a non-negative integer');
+  });
+
+  it.each([
+    [{ APP_ENV: 'staging', NODE_ENV: 'production' }],
+    [{ APP_ENV: 'production', NODE_ENV: 'development' }],
+    [{}],
+    [{ NODE_ENV: 'developmnt' }],
+    [{ APP_ENV: 'staging' }],
+  ])('requires explicit proxy configuration for runtime %p', environment => {
+    expect(() => resolveTrustProxyHops(environment)).toThrow(
+      'TRUST_PROXY_HOPS is required outside explicit',
+    );
+  });
+
+  it('accepts explicit staging proxy configuration', () => {
+    expect(
+      resolveTrustProxyHops({ APP_ENV: 'staging', TRUST_PROXY_HOPS: '2' }),
+    ).toBe(2);
   });
 
   it('rate limits every required sensitive endpoint conservatively', () => {

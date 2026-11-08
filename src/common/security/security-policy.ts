@@ -44,7 +44,7 @@ function isProductionRuntime(environment: NodeJS.ProcessEnv) {
   return runtimeValues(environment).includes('production');
 }
 
-function isApprovedNonProductionRuntime(environment: NodeJS.ProcessEnv) {
+export function isApprovedNonProductionRuntime(environment: NodeJS.ProcessEnv) {
   const values = runtimeValues(environment);
   return (
     values.length > 0 &&

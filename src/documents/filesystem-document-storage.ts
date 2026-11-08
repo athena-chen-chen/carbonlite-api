@@ -11,6 +11,7 @@ import {
   documentQuarantineKey,
   documentStorageKey,
 } from './document-storage';
+import { isApprovedNonProductionRuntime } from '../common/security/security-policy';
 
 export type DocumentStorageEnvironment = Record<string, string | undefined>;
 export const DOCUMENT_STORAGE_ENVIRONMENT = Symbol('DOCUMENT_STORAGE_ENVIRONMENT');
@@ -18,13 +19,15 @@ export const DOCUMENT_STORAGE_ENVIRONMENT = Symbol('DOCUMENT_STORAGE_ENVIRONMENT
 export function resolveDocumentStorageConfiguration(
   environment: DocumentStorageEnvironment = process.env,
 ) {
-  const runtime = String(environment.APP_ENV || environment.NODE_ENV || 'development')
-    .trim().toLowerCase();
-  const deployed = runtime === 'production' || runtime === 'paid-pilot' || runtime === 'pilot';
+  const runtime = [environment.APP_ENV, environment.NODE_ENV]
+    .map(value => String(value ?? '').trim().toLowerCase())
+    .filter(Boolean)
+    .join('/') || 'unspecified';
+  const requiresDurableStorage = !isApprovedNonProductionRuntime(environment);
   const configuredPath = String(environment.DOCUMENT_STORAGE_PATH || '').trim();
   const durable = String(environment.DOCUMENT_STORAGE_DURABLE || '').trim().toLowerCase() === 'true';
 
-  if (deployed && (!configuredPath || !durable)) {
+  if (requiresDurableStorage && (!configuredPath || !durable)) {
     throw new Error(
       'Durable document storage is required in deployed environments. Set DOCUMENT_STORAGE_PATH and DOCUMENT_STORAGE_DURABLE=true.',
     );
@@ -32,7 +35,7 @@ export function resolveDocumentStorageConfiguration(
 
   return {
     rootPath: resolve(configuredPath || './uploads'),
-    durable: deployed ? durable : durable || Boolean(configuredPath),
+    durable: requiresDurableStorage ? durable : durable || Boolean(configuredPath),
     runtime,
   };
 }

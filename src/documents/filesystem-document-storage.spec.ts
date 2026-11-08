@@ -72,4 +72,32 @@ describe('FilesystemDocumentStorage', () => {
       NODE_ENV: 'production', DOCUMENT_STORAGE_PATH: root, DOCUMENT_STORAGE_DURABLE: 'true',
     }).rootPath).toBe(root);
   });
+
+  it.each([
+    [{ APP_ENV: 'staging', NODE_ENV: 'production' }],
+    [{ APP_ENV: 'production', NODE_ENV: 'development' }],
+    [{}],
+    [{ APP_ENV: 'prodution' }],
+    [{ APP_ENV: 'staging' }],
+  ])('requires durable storage for non-local runtime %p', environment => {
+    expect(() => resolveDocumentStorageConfiguration(environment)).toThrow(
+      'Durable document storage is required',
+    );
+  });
+
+  it('accepts explicit durable storage in staging', () => {
+    expect(
+      resolveDocumentStorageConfiguration({
+        APP_ENV: 'staging',
+        DOCUMENT_STORAGE_PATH: root,
+        DOCUMENT_STORAGE_DURABLE: 'true',
+      }),
+    ).toMatchObject({ rootPath: root, durable: true, runtime: 'staging' });
+  });
+
+  it('preserves the explicit local development storage default', () => {
+    expect(
+      resolveDocumentStorageConfiguration({ APP_ENV: 'local' }),
+    ).toMatchObject({ durable: false, runtime: 'local' });
+  });
 });

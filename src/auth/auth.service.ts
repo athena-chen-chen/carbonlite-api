@@ -36,6 +36,7 @@ import {
 } from '../sample-data/golden-sample-data.service';
 import {
   assertPublicRegistrationEnabled,
+  isApprovedNonProductionRuntime,
   isLocalDemoAuthRuntimeEnabled,
 } from '../common/security/security-policy';
 
@@ -728,15 +729,15 @@ export class AuthService {
     const configuredUrl = String(
       process.env.FRONTEND_URL || process.env.APP_URL || '',
     ).trim();
-    const appEnv = String(process.env.APP_ENV || process.env.NODE_ENV || '')
-      .trim()
-      .toLowerCase();
-    const isProduction = appEnv === 'production';
     const appUrl = (configuredUrl || 'http://localhost:5173').replace(/\/+$/, '');
 
-    if (isProduction && (!configuredUrl || this.isLocalhostUrl(appUrl))) {
+    if (
+      (configuredUrl && !this.isExplicitHttpOrigin(appUrl)) ||
+      (!isApprovedNonProductionRuntime(process.env) &&
+        (!configuredUrl || !this.isSecureExternalOrigin(appUrl)))
+    ) {
       throw new BadRequestException(
-        'Production frontend URL is not configured correctly. Please set FRONTEND_URL to https://www.carbonliteapp.ca.',
+        'Invitation frontend URL is not configured securely. Set FRONTEND_URL to an explicit HTTPS origin.',
       );
     }
 
@@ -753,6 +754,30 @@ export class AuthService {
       return ['localhost', '127.0.0.1', '::1'].includes(url.hostname);
     } catch {
       return /\blocalhost\b|127\.0\.0\.1|\[::1\]/i.test(value);
+    }
+  }
+
+  private isSecureExternalOrigin(value: string) {
+    if (!this.isExplicitHttpOrigin(value)) return false;
+    try {
+      const url = new URL(value);
+      return url.protocol === 'https:' && !this.isLocalhostUrl(value);
+    } catch {
+      return false;
+    }
+  }
+
+  private isExplicitHttpOrigin(value: string) {
+    try {
+      const url = new URL(value);
+      return (
+        ['http:', 'https:'].includes(url.protocol) &&
+        url.origin === value &&
+        !url.username &&
+        !url.password
+      );
+    } catch {
+      return false;
     }
   }
 

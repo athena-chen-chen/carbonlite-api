@@ -517,7 +517,7 @@ describe('AuthService login resilience', () => {
         },
       ),
     ).rejects.toThrow(
-      'Production frontend URL is not configured correctly. Please set FRONTEND_URL to https://www.carbonliteapp.ca.',
+      'Invitation frontend URL is not configured securely. Set FRONTEND_URL to an explicit HTTPS origin.',
     );
 
     expect(prisma.$transaction).not.toHaveBeenCalled();
@@ -543,10 +543,74 @@ describe('AuthService login resilience', () => {
         },
       ),
     ).rejects.toThrow(
-      'Production frontend URL is not configured correctly. Please set FRONTEND_URL to https://www.carbonliteapp.ca.',
+      'Invitation frontend URL is not configured securely. Set FRONTEND_URL to an explicit HTTPS origin.',
     );
 
     expect(prisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['conflicting production environment', 'staging', 'production'],
+    ['reverse conflicting production environment', 'production', 'development'],
+    ['missing environment', undefined, undefined],
+    ['unknown environment', 'prodution', undefined],
+    ['staging environment', 'staging', undefined],
+  ])('rejects a missing invite URL in %s', (_name, appEnv, nodeEnv) => {
+    if (appEnv) process.env.APP_ENV = appEnv;
+    else delete process.env.APP_ENV;
+    if (nodeEnv) process.env.NODE_ENV = nodeEnv;
+    else delete process.env.NODE_ENV;
+    delete process.env.FRONTEND_URL;
+    delete process.env.APP_URL;
+
+    expect(() =>
+      (service as unknown as { resolveInviteFrontendUrl(): string })
+        .resolveInviteFrontendUrl(),
+    ).toThrow('Invitation frontend URL is not configured securely');
+  });
+
+  it('accepts explicit secure staging and local development invite URLs', () => {
+    process.env.APP_ENV = 'staging';
+    delete process.env.NODE_ENV;
+    process.env.FRONTEND_URL = 'https://staging.carbonlite.example';
+    expect(
+      (service as unknown as { resolveInviteFrontendUrl(): string })
+        .resolveInviteFrontendUrl(),
+    ).toBe('https://staging.carbonlite.example');
+
+    process.env.APP_ENV = 'local';
+    process.env.NODE_ENV = 'development';
+    process.env.FRONTEND_URL = 'http://localhost:5173';
+    expect(
+      (service as unknown as { resolveInviteFrontendUrl(): string })
+        .resolveInviteFrontendUrl(),
+    ).toBe('http://localhost:5173');
+  });
+
+  it.each([
+    'not-a-url',
+    'http://app.carbonlite.example',
+    'https://app.carbonlite.example/path',
+  ])('rejects invalid deployed invite frontend URL %s', configuredUrl => {
+    process.env.APP_ENV = 'staging';
+    delete process.env.NODE_ENV;
+    process.env.FRONTEND_URL = configuredUrl;
+
+    expect(() =>
+      (service as unknown as { resolveInviteFrontendUrl(): string })
+        .resolveInviteFrontendUrl(),
+    ).toThrow('Invitation frontend URL is not configured securely');
+  });
+
+  it('rejects a malformed configured invite URL in local development', () => {
+    process.env.APP_ENV = 'local';
+    process.env.NODE_ENV = 'development';
+    process.env.FRONTEND_URL = 'not-a-url';
+
+    expect(() =>
+      (service as unknown as { resolveInviteFrontendUrl(): string })
+        .resolveInviteFrontendUrl(),
+    ).toThrow('Invitation frontend URL is not configured securely');
   });
 
   it('authenticates pilot reviewer creation with ADMIN_SCRIPT_TOKEN', async () => {

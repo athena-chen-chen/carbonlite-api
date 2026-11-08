@@ -1,6 +1,7 @@
 import { NestExpressApplication } from '@nestjs/platform-express';
 import helmet from 'helmet';
 import { rateLimit } from 'express-rate-limit';
+import { isApprovedNonProductionRuntime } from './security-policy';
 
 type RateLimitPolicy = {
   path: string;
@@ -47,17 +48,12 @@ export function configureHttpSecurity(
 export function resolveTrustProxyHops(
   environment: NodeJS.ProcessEnv = process.env,
 ) {
-  const runtimeEnvironment = String(
-    environment.APP_ENV || environment.NODE_ENV || '',
-  )
-    .trim()
-    .toLowerCase();
   const configured = String(environment.TRUST_PROXY_HOPS || '').trim();
 
   if (!configured) {
-    if (runtimeEnvironment === 'production') {
+    if (!isApprovedNonProductionRuntime(environment)) {
       throw new Error(
-        'TRUST_PROXY_HOPS is required in production and must match the deployment proxy chain.',
+        'TRUST_PROXY_HOPS is required outside explicit local/development/test runtimes and must match the deployment proxy chain.',
       );
     }
     return 0;
@@ -78,15 +74,12 @@ export function resolveCorsAllowedOrigins(
     .map(origin => origin.trim())
     .filter(Boolean);
 
-  const runtimeEnvironment = String(
-    environment.APP_ENV || environment.NODE_ENV || '',
-  )
-    .trim()
-    .toLowerCase();
-
-  if (configured.length === 0 && runtimeEnvironment === 'production') {
+  if (
+    configured.length === 0 &&
+    !isApprovedNonProductionRuntime(environment)
+  ) {
     throw new Error(
-      'CORS_ALLOWED_ORIGINS is required in production and must contain explicit origins.',
+      'CORS_ALLOWED_ORIGINS is required outside explicit local/development/test runtimes and must contain explicit origins.',
     );
   }
 
