@@ -157,6 +157,13 @@ describe('Spreadsheet import review rows (e2e)', () => {
     });
 
     const sourceDocumentId = reviewResponse.body.sourceDocument.id;
+    await expect(prisma.spreadsheetImportReviewRow.findFirst({
+      where: { sourceDocumentId, sourceReference: 'MARCH-HOTEL-010' },
+    })).resolves.toMatchObject({
+      jurisdictionCountry: 'Canada',
+      jurisdictionRegion: 'Ontario',
+      facilityName: 'Toronto Client Visit',
+    });
     const extractionBeforeConfirm = await prisma.documentExtraction.findUniqueOrThrow({
       where: { documentId: sourceDocumentId },
     });
@@ -220,6 +227,9 @@ describe('Spreadsheet import review rows (e2e)', () => {
             recordDate: '2026-03-10',
             quantity: 4,
             unit: 'nights',
+            jurisdictionCountry: 'Canada',
+            jurisdictionRegion: 'Ontario',
+            facilityName: 'Toronto Client Visit',
             sourceReference: 'MARCH-HOTEL-010',
             sourceDocumentId,
             sourceFileName,

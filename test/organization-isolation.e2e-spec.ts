@@ -121,6 +121,17 @@ describe('Organization data isolation (e2e)', () => {
       })
       .expect(201);
 
+    await prisma.conversionFactor.updateMany({
+      where: { id: { in: [factorA.body.id, factorB.body.id] } },
+      data: {
+        verified: true,
+        verificationStatus: 'VERIFIED',
+        applicability: 'CORPORATE_INVENTORY',
+        emissionBasis: 'DIRECT_CO2E',
+        methodologyProvenance: { sourceVersion: 'E2E_TENANT_ISOLATION' },
+      },
+    });
+
     await request(app.getHttpServer())
       .post('/api/metrics/calculate')
       .set(authA)
