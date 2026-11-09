@@ -89,6 +89,10 @@ describe('Metrics unit normalization (e2e)', () => {
         unit: 'litres',
         factorValue: 7, verified: true, country: 'Canada', region: 'Alberta',
         resultUnit: 'kgCO2e',
+        verificationStatus: 'VERIFIED',
+        applicability: 'CORPORATE_INVENTORY',
+        emissionBasis: 'DIRECT_CO2E',
+        methodologyProvenance: { sourceVersion: 'SYNTHETIC_UNIT_NORMALIZATION_E2E_V1' },
       })
       .expect(201);
 
@@ -133,20 +137,20 @@ describe('Metrics unit normalization (e2e)', () => {
       .get('/api/conversion-factors')
       .set(auth)
       .expect(200);
-    const airTravelFactor = factorResponse.body.items.find(
+    const groundTravelFactor = factorResponse.body.items.find(
       (factor: { activityType: string; isSystemDefault: boolean }) =>
-        factor.isSystemDefault && factor.activityType === 'AIR_TRAVEL',
+        factor.isSystemDefault && factor.activityType === 'GROUND_TRANSPORT',
     );
     const electricityFactor = factorResponse.body.items.find(
       (factor: { activityType: string; isSystemDefault: boolean }) =>
         factor.isSystemDefault && factor.activityType === 'ELECTRICITY',
     );
 
-    const airTravel = await request(app.getHttpServer())
+    const groundTravel = await request(app.getHttpServer())
       .post('/api/activity-data')
       .set(auth)
       .send({
-        activityType: 'AIR_TRAVEL',
+        activityType: 'GROUND_TRANSPORT',
         recordDate: '2026-01-01',
         quantity: 10,
         unit: 'kilometers',
@@ -171,7 +175,7 @@ describe('Metrics unit normalization (e2e)', () => {
       .post('/api/metrics/calculate')
       .set(auth)
       .send({
-        activityDataIds: [airTravel.body.id, electricity.body.id],
+        activityDataIds: [groundTravel.body.id, electricity.body.id],
         metricTypes: ['CARBON_EMISSION'],
       })
       .expect(201);
@@ -179,9 +183,9 @@ describe('Metrics unit normalization (e2e)', () => {
     expect(metrics.body.items).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          activityDataId: airTravel.body.id,
-          factorId: airTravelFactor.id,
-          value: '1.15',
+          activityDataId: groundTravel.body.id,
+          factorId: groundTravelFactor.id,
+          value: '2',
         }),
         expect.objectContaining({
           activityDataId: electricity.body.id,

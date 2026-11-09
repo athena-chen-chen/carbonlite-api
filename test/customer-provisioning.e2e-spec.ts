@@ -15,6 +15,8 @@ describe('Transactional customer provisioning (e2e)', () => {
   let prisma: PrismaService;
   const testRunId = uniqueTestId('customer-provisioning');
   const password = 'Fictional-Test-Only!2026';
+  const previousPublicRegistration = process.env.PUBLIC_REGISTRATION_ENABLED;
+  const previousDemoReset = process.env.DEMO_RESET_ENABLED;
 
   beforeAll(async () => {
     process.env.PUBLIC_REGISTRATION_ENABLED = 'true';
@@ -25,14 +27,24 @@ describe('Transactional customer provisioning (e2e)', () => {
   });
 
   afterAll(async () => {
-    await prisma.$executeRawUnsafe(
-      'DROP TRIGGER IF EXISTS customer_provisioning_test_fail ON "Organization"',
-    );
-    await prisma.$executeRawUnsafe(
-      'DROP FUNCTION IF EXISTS customer_provisioning_test_fail_update()',
-    );
-    await cleanupTestData(prisma, testRunId);
-    await app.close();
+    let teardownError: unknown;
+    try {
+      if (prisma) {
+        await prisma.$executeRawUnsafe(
+          'DROP TRIGGER IF EXISTS customer_provisioning_test_fail ON "Organization"',
+        );
+        await prisma.$executeRawUnsafe(
+          'DROP FUNCTION IF EXISTS customer_provisioning_test_fail_update()',
+        );
+        await cleanupTestData(prisma, testRunId);
+      }
+    } catch (error) { teardownError = error; }
+    try { if (app) await app.close(); } catch (error) { teardownError ??= error; }
+    if (previousPublicRegistration === undefined) delete process.env.PUBLIC_REGISTRATION_ENABLED;
+    else process.env.PUBLIC_REGISTRATION_ENABLED = previousPublicRegistration;
+    if (previousDemoReset === undefined) delete process.env.DEMO_RESET_ENABLED;
+    else process.env.DEMO_RESET_ENABLED = previousDemoReset;
+    if (teardownError) throw teardownError;
   });
 
   it('authorizes, rolls back, retries, and idempotently provisions only A', async () => {

@@ -5,7 +5,8 @@ import { MULTER_MODULE_OPTIONS } from '@nestjs/platform-express/multer/files.con
 import { documentDiskStorage } from '../src/documents/document-upload-storage';
 import { randomUUID } from 'node:crypto';
 import { mkdir, mkdtemp, readdir, rm, access } from 'node:fs/promises';
-import { basename, dirname, join, resolve } from 'node:path';
+import { tmpdir } from 'node:os';
+import { basename, dirname, join } from 'node:path';
 import * as XLSX from 'xlsx';
 import request from 'supertest';
 import { AppModule } from '../src/app.module';
@@ -20,7 +21,6 @@ import {
   AI_SCOPE_DOCUMENT_EXTRACTION,
 } from '../src/ai-authorization/ai-authorization.constants';
 import { documentStorageKey } from '../src/documents/document-storage';
-import { resolveDocumentStorageConfiguration } from '../src/documents/filesystem-document-storage';
 import * as policy from '../src/documents/document-resource-policy';
 import * as workload from '../src/document-extraction/extraction-workload';
 import { authHeader, cleanupTestData, createTestUser, uniqueTestId } from './helpers/factories';
@@ -43,13 +43,17 @@ describe('F08 direct upload and extraction resource boundaries', () => {
   let auth: ReturnType<typeof authHeader>;
   let organizationId: string;
   let directory: string;
+  let uploadRoot: string;
+  let storageRoot: string;
   const run = uniqueTestId('f08-resources');
   const consentVersion = 'synthetic-resource-limit-consent-v1';
-  const uploadRoot = resolve(process.cwd(), 'uploads');
-  const storageRoot = resolveDocumentStorageConfiguration().rootPath;
   const previousAiActivation = process.env[AI_GLOBAL_ACTIVATION_ENV];
   const previousConsentVersion = process.env[AI_CONSENT_VERSION_ENV];
+  const previousStoragePath = process.env.DOCUMENT_STORAGE_PATH;
   beforeAll(async () => {
+    uploadRoot = await mkdtemp(join(tmpdir(), 'carbonlite-f08-upload-'));
+    storageRoot = await mkdtemp(join(tmpdir(), 'carbonlite-f08-storage-'));
+    process.env.DOCUMENT_STORAGE_PATH = storageRoot;
     process.env[AI_GLOBAL_ACTIVATION_ENV] = 'true';
     process.env[AI_CONSENT_VERSION_ENV] = consentVersion;
     const targetDatabase = assertSafeTestDatabaseTarget();
@@ -85,13 +89,23 @@ describe('F08 direct upload and extraction resource boundaries', () => {
   beforeEach(() => { provider.mockReset().mockResolvedValue(emptyResult); });
   afterEach(() => jest.restoreAllMocks());
   afterAll(async () => {
-    if (prisma) await cleanupTestData(prisma, run);
-    if (app) await app.close();
-    if (directory && dirname(directory) === uploadRoot && basename(directory).startsWith('f08-test-')) await rm(directory, { recursive: true, force: true });
+    let teardownError: unknown;
+    try { if (prisma) await cleanupTestData(prisma, run); } catch (error) { teardownError = error; }
+    try { if (app) await app.close(); } catch (error) { teardownError ??= error; }
+    try {
+      if (directory && dirname(directory) === uploadRoot && basename(directory).startsWith('f08-test-')) {
+        await rm(directory, { recursive: true, force: true });
+      }
+      if (uploadRoot) await rm(uploadRoot, { recursive: true, force: true });
+      if (storageRoot) await rm(storageRoot, { recursive: true, force: true });
+    } catch (error) { teardownError ??= error; }
     if (previousAiActivation === undefined) delete process.env[AI_GLOBAL_ACTIVATION_ENV];
     else process.env[AI_GLOBAL_ACTIVATION_ENV] = previousAiActivation;
     if (previousConsentVersion === undefined) delete process.env[AI_CONSENT_VERSION_ENV];
     else process.env[AI_CONSENT_VERSION_ENV] = previousConsentVersion;
+    if (previousStoragePath === undefined) delete process.env.DOCUMENT_STORAGE_PATH;
+    else process.env.DOCUMENT_STORAGE_PATH = previousStoragePath;
+    if (teardownError) throw teardownError;
   });
   const files = async () => (await readdir(directory)).sort();
   const count = () => prisma.document.count({ where: { organizationId } });

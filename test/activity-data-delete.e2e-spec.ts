@@ -101,6 +101,13 @@ describe('ActivityData delete persistence (e2e)', () => {
     const user = await createTestUser(app, {
       organizationName: `${testRunId} Reporting Delete Org`,
       email: `reporting-delete-${testRunId}@carbonlite-e2e.test`,
+      factorProfile: 'reviewed',
+    });
+    await prisma.conversionFactor.deleteMany({
+      where: {
+        organizationId: user.user.organizationId,
+        activityType: 'ELECTRICITY',
+      },
     });
     const includedA = await createActivity(user.accessToken, `${testRunId}-reporting-a`);
     const includedB = await createActivity(user.accessToken, `${testRunId}-reporting-b`);

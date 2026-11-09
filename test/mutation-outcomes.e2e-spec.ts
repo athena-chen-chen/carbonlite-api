@@ -3,7 +3,7 @@ import { INestApplication, Logger, ValidationPipe } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { MULTER_MODULE_OPTIONS } from '@nestjs/platform-express/multer/files.constants';
 import { randomUUID } from 'node:crypto';
-import { access, mkdir, mkdtemp, readdir, rm } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
 import request from 'supertest';
 import { AppModule } from '../src/app.module';
@@ -12,18 +12,25 @@ import { PrismaModule } from '../src/prisma/prisma.module';
 import { ActivityTrackingService } from '../src/activity-tracking/activity-tracking.service';
 import { documentUploadOptions } from '../src/documents/document-resource-policy';
 import { documentDiskStorage } from '../src/documents/document-upload-storage';
+import {
+  DOCUMENT_STORAGE,
+  DocumentStorage,
+  documentStorageKey,
+} from '../src/documents/document-storage';
 import { authHeader, cleanupTestData, createTestUser, uniqueTestId } from './helpers/factories';
 
 describe('F09 truthful mutation outcomes (real PostgreSQL rollback)', () => {
   let app: INestApplication;
   let prisma: PrismaService;
   let tracker: ActivityTrackingService;
+  let storage: DocumentStorage;
   let organizationId: string;
   let userId: string;
   let auth: ReturnType<typeof authHeader>;
   let directory: string;
   const run = uniqueTestId('f09-outcomes');
   const uploadRoot = resolve(process.cwd(), 'uploads');
+  const previousStoragePath = process.env.DOCUMENT_STORAGE_PATH;
   const fixture = { activityType: 'DIESEL', quantity: 10, unit: 'L', recordDate: '2026-03-07', jurisdictionCountry: 'Canada', sourceType: 'MANUAL' };
   const sourceIds: string[] = [];
   const factorIds: string[] = [];
@@ -32,6 +39,7 @@ describe('F09 truthful mutation outcomes (real PostgreSQL rollback)', () => {
     const targetDatabase = assertSafeTestDatabaseTarget();
     await mkdir(uploadRoot, { recursive: true });
     directory = await mkdtemp(join(uploadRoot, 'f09-test-'));
+    process.env.DOCUMENT_STORAGE_PATH = directory;
     const compiled = await Test.createTestingModule({ imports: [AppModule] })
       .overrideProvider(MULTER_MODULE_OPTIONS).useValue({ ...documentUploadOptions,
         storage: documentDiskStorage(uploadRoot, () => `${basename(directory)}/${randomUUID()}`),
@@ -41,6 +49,7 @@ describe('F09 truthful mutation outcomes (real PostgreSQL rollback)', () => {
     app.useGlobalPipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }));
     await app.init();
     prisma = app.select(PrismaModule).get(PrismaService, { strict: true }); tracker = app.get(ActivityTrackingService);
+    storage = app.get<DocumentStorage>(DOCUMENT_STORAGE);
     const [target] = await prisma.$queryRaw<Array<{ name: string }>>`SELECT current_database() AS name`;
     expect(target.name).toBe(targetDatabase.database);
     const user = await createTestUser(app, { organizationName: run, email: `${run}@carbonlite-e2e.test` });
@@ -50,18 +59,25 @@ describe('F09 truthful mutation outcomes (real PostgreSQL rollback)', () => {
   });
   afterEach(() => jest.restoreAllMocks());
   afterAll(async () => {
+    let teardownError: unknown;
     try {
-    if (prisma) {
-      await prisma.factorVersion.updateMany({ where: { factorId: { in: factorIds } }, data: { status: 'ARCHIVED' } });
-      await prisma.factor.deleteMany({ where: { id: { in: factorIds } } });
-      await prisma.factorSource.deleteMany({ where: { id: { in: sourceIds } } });
-      await prisma.factorSource.deleteMany({ where: { sourceAuthority: { startsWith: run } } });
-      await cleanupTestData(prisma, run);
-    }
-    } finally {
-    if (app) await app.close();
-    if (directory && dirname(directory) === uploadRoot && basename(directory).startsWith('f09-test-')) await rm(directory, { recursive: true, force: true });
-    }
+      if (prisma) {
+        await prisma.factorVersion.updateMany({ where: { factorId: { in: factorIds } }, data: { status: 'ARCHIVED' } });
+        await prisma.factor.deleteMany({ where: { id: { in: factorIds } } });
+        await prisma.factorSource.deleteMany({ where: { id: { in: sourceIds } } });
+        await prisma.factorSource.deleteMany({ where: { sourceAuthority: { startsWith: run } } });
+        await cleanupTestData(prisma, run);
+      }
+    } catch (error) { teardownError = error; }
+    try { if (app) await app.close(); } catch (error) { teardownError ??= error; }
+    try {
+      if (directory && dirname(directory) === uploadRoot && basename(directory).startsWith('f09-test-')) {
+        await rm(directory, { recursive: true, force: true });
+      }
+    } catch (error) { teardownError ??= error; }
+    if (previousStoragePath === undefined) delete process.env.DOCUMENT_STORAGE_PATH;
+    else process.env.DOCUMENT_STORAGE_PATH = previousStoragePath;
+    if (teardownError) throw teardownError;
   });
   const api = () => request(app.getHttpServer());
   const createActivity = async (payload = fixture) => (await api().post('/api/activity-data').set(auth).send(payload).expect(201)).body;
@@ -100,11 +116,11 @@ describe('F09 truthful mutation outcomes (real PostgreSQL rollback)', () => {
 
   it('rolls back Document creation and removes its stored bytes when required upload audit fails', async () => {
     const before = await prisma.document.count({ where: { organizationId } });
-    const files = await readdir(directory);
+    const files = await storage.listActive();
     const reached = rejectRequiredInsert('auditLog', 'userId', 'UPLOAD_DOCUMENT');
     await upload().expect(500); reached();
     expect(await prisma.document.count({ where: { organizationId } })).toBe(before);
-    expect(await readdir(directory)).toEqual(files);
+    expect(await storage.listActive()).toEqual(files);
     expect(await prisma.auditLog.count({ where: { organizationId, action: 'UPLOAD_DOCUMENT' } })).toBe(0);
   });
   it('rolls back ActivityData create after the real required audit insert fails', async () => {
@@ -163,7 +179,7 @@ describe('F09 truthful mutation outcomes (real PostgreSQL rollback)', () => {
     await extract(saved.id).expect(500); reached();
     expect(await prisma.documentExtraction.count({ where: { documentId: saved.id } })).toBe(0);
     expect(await prisma.document.findUnique({ where: { id: saved.id } })).toMatchObject({ status: 'EXTRACTION_FAILED' });
-    await access(join(process.cwd(), saved.fileUrl));
+    await access(join(directory, documentStorageKey(saved.fileUrl)));
   });
   it('rolls back calculation results and recalculated snapshots on required summary audit failure', async () => {
     const row = await createActivity();
@@ -188,14 +204,20 @@ describe('F09 truthful mutation outcomes (real PostgreSQL rollback)', () => {
     reached();
     expect(await prisma.activityData.findUnique({ where: { id: row.id } })).toEqual(before);
   });
-  it('rolls back source deletion and retains imported records when its required audit fails', async () => {
+  it('rolls back source deletion and retains recoverable evidence and imported records when its required audit fails', async () => {
     const saved = (await upload('delete-rollback.json').expect(201)).body;
     const row = await prisma.activityData.create({ data: { organizationId, activityType: 'DIESEL', recordDate: new Date('2026-03-07'), quantity: 10, unit: 'L', sourceType: 'DOCUMENT_AI', documentId: saved.id, sourceDocumentId: saved.id } });
     const reached = rejectRequiredInsert('auditLog', 'userId', 'DELETE_DOCUMENT');
     await api().delete(`/api/documents/${saved.id}`).set(auth).expect(500); reached();
     expect(await prisma.document.findUnique({ where: { id: saved.id } })).not.toBeNull();
     expect(await prisma.activityData.findUnique({ where: { id: row.id } })).toMatchObject({ documentId: saved.id, sourceDocumentId: saved.id });
-    await access(join(process.cwd(), saved.fileUrl));
+    const intent = await prisma.documentDeletionIntent.findFirstOrThrow({
+      where: { organizationId, documentId: saved.id },
+      orderBy: { createdAt: 'desc' },
+    });
+    expect(intent.status).toBe('PREPARED');
+    await expect(access(join(directory, documentStorageKey(saved.fileUrl)))).rejects.toMatchObject({ code: 'ENOENT' });
+    await access(join(directory, intent.quarantineKey));
   });
   it('rolls back a workspace boundary update if its required evidence cannot be persisted', async () => {
     const before = await prisma.organization.findUniqueOrThrow({ where: { id: organizationId } });
@@ -211,7 +233,7 @@ describe('F09 truthful mutation outcomes (real PostgreSQL rollback)', () => {
     jest.spyOn(tracker, 'track').mockRejectedValue(new Error('Synthetic optional event failure'));
     const saved = (await upload('optional-upload.json').expect(201)).body;
     expect(await prisma.document.findUnique({ where: { id: saved.id } })).not.toBeNull();
-    await access(join(process.cwd(), saved.fileUrl));
+    await access(join(directory, documentStorageKey(saved.fileUrl)));
     expect(await prisma.auditLog.count({ where: { entityId: saved.id, action: 'UPLOAD_DOCUMENT' } })).toBe(1);
     expect(await prisma.userActivityEvent.count({ where: { entityId: saved.id, eventName: 'DOCUMENT_UPLOADED' } })).toBe(0);
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('DOCUMENT_UPLOADED'));

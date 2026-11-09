@@ -1,15 +1,23 @@
 import { INestApplication } from '@nestjs/common';
 import * as Sentry from '@sentry/nestjs';
 import request from 'supertest';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { openai } from '../src/openai/openai.client';
 import { PrismaService } from '../src/prisma/prisma.service';
 import { createE2eApp } from './helpers/e2e-app';
 import {
   authHeader,
+  authorizeDocumentExtraction,
   cleanupTestData,
   createTestUser,
   uniqueTestId,
 } from './helpers/factories';
+import {
+  AI_CONSENT_VERSION_ENV,
+  AI_GLOBAL_ACTIVATION_ENV,
+} from '../src/ai-authorization/ai-authorization.constants';
 
 jest.mock('@sentry/nestjs', () => {
   const actual = jest.requireActual('@sentry/nestjs');
@@ -32,13 +40,22 @@ jest.mock('@sentry/nestjs', () => {
 describe('Document extraction retry (e2e)', () => {
   let app: INestApplication;
   let prisma: PrismaService;
+  let storageRoot: string;
   const testRunId = uniqueTestId('extraction-retry');
+  const consentVersion = 'synthetic-extraction-retry-consent-v1';
   const originalSentryDsn = process.env.SENTRY_DSN;
+  const originalAiActivation = process.env[AI_GLOBAL_ACTIVATION_ENV];
+  const originalConsentVersion = process.env[AI_CONSENT_VERSION_ENV];
+  const originalStoragePath = process.env.DOCUMENT_STORAGE_PATH;
   const mockCaptureException = (
     Sentry as typeof Sentry & { __mockCaptureException: jest.Mock }
   ).__mockCaptureException;
 
   beforeAll(async () => {
+    storageRoot = await mkdtemp(join(tmpdir(), 'carbonlite-extraction-retry-'));
+    process.env.DOCUMENT_STORAGE_PATH = storageRoot;
+    process.env[AI_GLOBAL_ACTIVATION_ENV] = 'true';
+    process.env[AI_CONSENT_VERSION_ENV] = consentVersion;
     const e2e = await createE2eApp();
     app = e2e.app;
     prisma = e2e.prisma;
@@ -55,8 +72,17 @@ describe('Document extraction retry (e2e)', () => {
   });
 
   afterAll(async () => {
-    await cleanupTestData(prisma, testRunId);
-    await app.close();
+    let teardownError: unknown;
+    try { if (prisma) await cleanupTestData(prisma, testRunId); } catch (error) { teardownError = error; }
+    try { if (app) await app.close(); } catch (error) { teardownError ??= error; }
+    try { if (storageRoot) await rm(storageRoot, { recursive: true, force: true }); } catch (error) { teardownError ??= error; }
+    if (originalAiActivation === undefined) delete process.env[AI_GLOBAL_ACTIVATION_ENV];
+    else process.env[AI_GLOBAL_ACTIVATION_ENV] = originalAiActivation;
+    if (originalConsentVersion === undefined) delete process.env[AI_CONSENT_VERSION_ENV];
+    else process.env[AI_CONSENT_VERSION_ENV] = originalConsentVersion;
+    if (originalStoragePath === undefined) delete process.env.DOCUMENT_STORAGE_PATH;
+    else process.env.DOCUMENT_STORAGE_PATH = originalStoragePath;
+    if (teardownError) throw teardownError;
   });
 
   async function uploadTestDocument(
@@ -89,6 +115,7 @@ describe('Document extraction retry (e2e)', () => {
       organizationName: `${testRunId} Success Org`,
       email: `success-${testRunId}@carbonlite-e2e.test`,
     });
+    await authorizeDocumentExtraction(prisma, user, consentVersion);
     const document = await uploadTestDocument(
       user.accessToken,
       `${testRunId}-success.csv`,
@@ -119,6 +146,7 @@ describe('Document extraction retry (e2e)', () => {
       organizationName: `${testRunId} Missing Org`,
       email: `missing-${testRunId}@carbonlite-e2e.test`,
     });
+    await authorizeDocumentExtraction(prisma, user, consentVersion);
     const document = await uploadTestDocument(
       user.accessToken,
       `${testRunId}-missing.csv`,
@@ -149,6 +177,7 @@ describe('Document extraction retry (e2e)', () => {
       organizationName: `${testRunId} No Data Org`,
       email: `no-data-${testRunId}@carbonlite-e2e.test`,
     });
+    await authorizeDocumentExtraction(prisma, user, consentVersion);
     const document = await uploadTestDocument(
       user.accessToken,
       `${testRunId}-no-data.csv`,
@@ -197,6 +226,7 @@ describe('Document extraction retry (e2e)', () => {
       organizationName: `${testRunId} Failure Org`,
       email: `failure-${testRunId}@carbonlite-e2e.test`,
     });
+    await authorizeDocumentExtraction(prisma, user, consentVersion);
     const document = await uploadTestDocument(
       user.accessToken,
       `${testRunId}-failure.csv`,

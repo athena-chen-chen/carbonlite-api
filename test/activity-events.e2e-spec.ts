@@ -1,21 +1,38 @@
 import { INestApplication } from '@nestjs/common';
 import request from 'supertest';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { openai } from '../src/openai/openai.client';
 import { PrismaService } from '../src/prisma/prisma.service';
 import { createE2eApp } from './helpers/e2e-app';
 import {
   authHeader,
+  authorizeDocumentExtraction,
   cleanupTestData,
   createTestUser,
   uniqueTestId,
 } from './helpers/factories';
+import {
+  AI_CONSENT_VERSION_ENV,
+  AI_GLOBAL_ACTIVATION_ENV,
+} from '../src/ai-authorization/ai-authorization.constants';
 
 describe('User activity events (e2e)', () => {
   let app: INestApplication;
   let prisma: PrismaService;
+  let storageRoot: string;
   const testRunId = uniqueTestId('activity-events');
+  const consentVersion = 'synthetic-activity-events-consent-v1';
+  const originalAiActivation = process.env[AI_GLOBAL_ACTIVATION_ENV];
+  const originalConsentVersion = process.env[AI_CONSENT_VERSION_ENV];
+  const originalStoragePath = process.env.DOCUMENT_STORAGE_PATH;
 
   beforeAll(async () => {
+    storageRoot = await mkdtemp(join(tmpdir(), 'carbonlite-activity-events-'));
+    process.env.DOCUMENT_STORAGE_PATH = storageRoot;
+    process.env[AI_GLOBAL_ACTIVATION_ENV] = 'true';
+    process.env[AI_CONSENT_VERSION_ENV] = consentVersion;
     const e2e = await createE2eApp();
     app = e2e.app;
     prisma = e2e.prisma;
@@ -26,8 +43,17 @@ describe('User activity events (e2e)', () => {
   });
 
   afterAll(async () => {
-    await cleanupTestData(prisma, testRunId);
-    await app.close();
+    let teardownError: unknown;
+    try { if (prisma) await cleanupTestData(prisma, testRunId); } catch (error) { teardownError = error; }
+    try { if (app) await app.close(); } catch (error) { teardownError ??= error; }
+    try { if (storageRoot) await rm(storageRoot, { recursive: true, force: true }); } catch (error) { teardownError ??= error; }
+    if (originalAiActivation === undefined) delete process.env[AI_GLOBAL_ACTIVATION_ENV];
+    else process.env[AI_GLOBAL_ACTIVATION_ENV] = originalAiActivation;
+    if (originalConsentVersion === undefined) delete process.env[AI_CONSENT_VERSION_ENV];
+    else process.env[AI_CONSENT_VERSION_ENV] = originalConsentVersion;
+    if (originalStoragePath === undefined) delete process.env.DOCUMENT_STORAGE_PATH;
+    else process.env.DOCUMENT_STORAGE_PATH = originalStoragePath;
+    if (teardownError) throw teardownError;
   });
 
   async function uploadTestDocument(token: string, name: string) {
@@ -85,6 +111,7 @@ describe('User activity events (e2e)', () => {
       organizationName: `${testRunId} Extraction Org`,
       email: `extraction-${testRunId}@carbonlite-e2e.test`,
     });
+    await authorizeDocumentExtraction(prisma, user, consentVersion);
     const successDocument = await uploadTestDocument(
       user.accessToken,
       `${testRunId}-extract-success.csv`,

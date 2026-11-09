@@ -2,6 +2,10 @@ import { INestApplication } from '@nestjs/common';
 import { Organization, User } from '@prisma/client';
 import request from 'supertest';
 import { PrismaService } from '../../src/prisma/prisma.service';
+import {
+  AI_PROVIDER_OPENAI,
+  AI_SCOPE_DOCUMENT_EXTRACTION,
+} from '../../src/ai-authorization/ai-authorization.constants';
 
 export type TestUser = {
   accessToken: string;
@@ -121,6 +125,27 @@ export async function seedReviewedFactors(
       },
     })),
     skipDuplicates: true,
+  });
+}
+
+export async function authorizeDocumentExtraction(
+  prisma: PrismaService,
+  user: TestUser,
+  consentVersion: string,
+) {
+  return prisma.organizationAiAuthorization.create({
+    data: {
+      organizationId: user.user.organizationId,
+      status: 'ENABLED',
+      consentVersion,
+      provider: AI_PROVIDER_OPENAI,
+      processingScope: AI_SCOPE_DOCUMENT_EXTRACTION,
+      evidenceReference: 'evidence://synthetic/e2e-document-extraction',
+      authorizedRepresentativeReference: 'synthetic-e2e-representative',
+      verifiedById: user.user.id,
+      verifiedAt: new Date('2026-11-01T00:00:00.000Z'),
+      effectiveAt: new Date('2026-11-01T00:00:00.000Z'),
+    },
   });
 }
 

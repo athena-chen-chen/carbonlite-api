@@ -29,6 +29,7 @@ describe('System and custom conversion factors (e2e)', () => {
     const user = await createTestUser(app, {
       organizationName: `${testRunId} New Org`,
       email: `new-user-${testRunId}@carbonlite-e2e.test`,
+      factorProfile: 'reviewed',
     });
     const auth = authHeader(user.accessToken);
 
@@ -80,6 +81,7 @@ describe('System and custom conversion factors (e2e)', () => {
     const userA = await createTestUser(app, {
       organizationName: `${testRunId} Org A`,
       email: `user-a-${testRunId}@carbonlite-e2e.test`,
+      factorProfile: 'reviewed',
     });
     const userB = await createTestUser(app, {
       organizationName: `${testRunId} Org B`,
@@ -136,6 +138,10 @@ describe('System and custom conversion factors (e2e)', () => {
         unit: 'liters',
         factorValue: 9.99, verified: true, country: 'Canada', region: 'Alberta',
         resultUnit: 'kgCO2e',
+        verificationStatus: 'VERIFIED',
+        applicability: 'CORPORATE_INVENTORY',
+        emissionBasis: 'DIRECT_CO2E',
+        methodologyProvenance: { sourceVersion: 'SYNTHETIC_SYSTEM_FACTOR_E2E_V1' },
       })
       .expect(201);
 

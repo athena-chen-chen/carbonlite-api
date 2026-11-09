@@ -2,6 +2,9 @@ import { assertSafeTestDatabaseTarget } from './helpers/database-safety';
 import * as XLSX from 'xlsx';
 import { INestApplication } from '@nestjs/common';
 import { MembershipRole } from '@prisma/client';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import request from 'supertest';
 import { PrismaService } from '../src/prisma/prisma.service';
 import { createE2eApp } from './helpers/e2e-app';
@@ -12,14 +15,26 @@ jest.mock('../src/openai/openai.client', () => ({ openai: { responses: { create:
 describe('platform, workspace and tenant authorization boundaries', () => {
   let app: INestApplication;
   let prisma: PrismaService;
+  let storageRoot: string;
   const run = uniqueTestId('authorization-wave');
+  const originalStoragePath = process.env.DOCUMENT_STORAGE_PATH;
   beforeAll(async () => {
+    storageRoot = await mkdtemp(join(tmpdir(), 'carbonlite-authorization-'));
+    process.env.DOCUMENT_STORAGE_PATH = storageRoot;
     const targetDatabase = assertSafeTestDatabaseTarget();
     const setup = await createE2eApp(); app = setup.app; prisma = setup.prisma;
     const [target] = await prisma.$queryRaw<Array<{ name: string }>>`SELECT current_database() AS name`;
     expect(target.name).toBe(targetDatabase.database);
   });
-  afterAll(async () => { if (prisma) await cleanupTestData(prisma, run); if (app) await app.close(); });
+  afterAll(async () => {
+    let teardownError: unknown;
+    try { if (prisma) await cleanupTestData(prisma, run); } catch (error) { teardownError = error; }
+    try { if (app) await app.close(); } catch (error) { teardownError ??= error; }
+    try { if (storageRoot) await rm(storageRoot, { recursive: true, force: true }); } catch (error) { teardownError ??= error; }
+    if (originalStoragePath === undefined) delete process.env.DOCUMENT_STORAGE_PATH;
+    else process.env.DOCUMENT_STORAGE_PATH = originalStoragePath;
+    if (teardownError) throw teardownError;
+  });
   async function actor(membershipRole?: MembershipRole, platform = false, pilot = false) {
     const result = await createTestUser(app, { organizationName: uniqueTestId(run), email: `${uniqueTestId(run)}@carbonlite-e2e.test`, factorProfile: 'reviewed' });
     await prisma.user.update({ where: { id: result.user.id }, data: { role: platform ? 'ADMIN' : 'USER', accountType: pilot ? 'PILOT_REVIEWER' : 'CUSTOMER' } });

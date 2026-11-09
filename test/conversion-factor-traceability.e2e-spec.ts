@@ -42,7 +42,13 @@ describe('Conversion factor traceability fields (e2e)', () => {
       sourceUrl: 'https://example.com/factors',
       methodology: 'MVP traceability test methodology',
       confidenceLevel: 'high',
+      verificationStatus: 'VERIFIED',
       verified: true,
+      applicability: 'CORPORATE_INVENTORY',
+      emissionBasis: 'DIRECT_CO2E',
+      methodologyProvenance: {
+        sourceVersion: 'SYNTHETIC_TRACEABILITY_E2E_V1',
+      },
       notes: 'Created by conversion factor traceability e2e test.',
       ...overrides,
     };
@@ -95,6 +101,31 @@ describe('Conversion factor traceability fields (e2e)', () => {
       verified: true,
       notes: 'Created by conversion factor traceability e2e test.',
     });
+
+    const incompletePayload = factorPayload({
+      name: `${testRunId} Incomplete governed factor`,
+      applicability: undefined,
+      emissionBasis: undefined,
+      methodologyProvenance: undefined,
+    });
+    const incomplete = await request(app.getHttpServer())
+      .post('/api/conversion-factors')
+      .set(authHeader(user.accessToken))
+      .send(incompletePayload)
+      .expect(201);
+
+    await request(app.getHttpServer())
+      .get(`/api/conversion-factors/${incomplete.body.id}`)
+      .set(authHeader(user.accessToken))
+      .expect(404);
+
+    const listAfterIncompleteCreate = await request(app.getHttpServer())
+      .get(`/api/conversion-factors?search=${testRunId}`)
+      .set(authHeader(user.accessToken))
+      .expect(200);
+    expect(
+      listAfterIncompleteCreate.body.items.map((item: { id: string }) => item.id),
+    ).not.toContain(incomplete.body.id);
   });
 
   it('updates traceability fields', async () => {
