@@ -66,7 +66,7 @@ describe('platform, workspace and tenant authorization boundaries', () => {
         await request(app.getHttpServer()).patch('/api/factor-versions/not-owned/draft').set(user.auth).send({}).expect(403);
         for (const action of ['verify', 'deprecate', 'archive']) await request(app.getHttpServer()).post(`/api/factor-versions/not-owned/${action}`).set(user.auth).send({}).expect(403);
         await request(app.getHttpServer()).post('/api/admin/pilot-reviewers').set(user.auth)
-          .send({ name: 'Test reviewer', email: `${uniqueTestId(run)}@carbonlite-e2e.test`, workspace: uniqueTestId(run) }).expect(403);
+          .send({ invitationPurpose: 'CUSTOMER', name: 'Test reviewer', email: `${uniqueTestId(run)}@carbonlite-e2e.test`, workspace: uniqueTestId(run) }).expect(403);
         await ownWorkspaceAdministration(user);
       }
     });
