@@ -10,6 +10,7 @@ import {
   authHeader,
   cleanupTestData,
   createTestUser,
+  loginAndGetToken,
   uniqueTestId,
 } from './helpers/factories';
 
@@ -27,6 +28,12 @@ describe('Document delete (e2e)', () => {
   });
 
   afterAll(async () => {
+    await prisma.legalHoldEvent.deleteMany({
+      where: { caseReference: { contains: testRunId } },
+    });
+    await prisma.legalHold.deleteMany({
+      where: { caseReference: { contains: testRunId } },
+    });
     await cleanupTestData(prisma, testRunId);
     await app.close();
   });
@@ -197,6 +204,99 @@ describe('Document delete (e2e)', () => {
     });
     expect(after).toEqual(before.map(row => ({ ...row, documentId: null })));
     expect(after.every(row => row.sourceDocumentId === documentId)).toBe(true);
+  });
+
+  it('blocks virtual spreadsheet-source deletion while a document legal hold is active', async () => {
+    const owner = await createTestUser(app, {
+      organizationName: `${testRunId} Virtual Hold Org`,
+      email: `virtual-hold-${testRunId}@carbonlite-e2e.test`,
+      factorProfile: 'reviewed',
+    });
+    const approver = await createTestUser(app, {
+      organizationName: `${testRunId} Virtual Hold Approver Org`,
+      email: `virtual-hold-approver-${testRunId}@carbonlite-e2e.test`,
+    });
+    await prisma.user.update({
+      where: { id: approver.user.id },
+      data: { role: 'ADMIN' },
+    });
+    const approverToken = await loginAndGetToken(
+      app,
+      approver.user.email,
+      approver.password,
+    );
+    const auth = authHeader(owner.accessToken);
+    const sourceFileName = `${testRunId}-virtual-held.xlsx`;
+    const staged = await request(app.getHttpServer())
+      .post('/api/spreadsheet-import/review-rows')
+      .set(auth)
+      .send({
+        sourceType: 'EXCEL',
+        sourceFileName,
+        importBatchId: `${testRunId}-virtual-held`,
+        rows: [{
+          rowId: 'virtual-held-0',
+          status: 'READY',
+          activityType: 'DIESEL',
+          recordDate: '2026-03-01',
+          quantity: 1,
+          unit: 'L',
+          jurisdictionCountry: 'Canada',
+          jurisdictionRegion: 'Alberta',
+          sourceFileName,
+          sourceSheetName: 'Synthetic',
+          sourceRow: 2,
+          sourceReference: 'VIRTUAL-HELD-0',
+          issues: [],
+        }],
+      })
+      .expect(201);
+    const documentId: string = staged.body.sourceDocument.id;
+    const confirmed = await request(app.getHttpServer())
+      .post('/api/document-extraction/confirm')
+      .set(auth)
+      .send({ documentId, activities: [] })
+      .expect(201);
+    expect(confirmed.body.createdIds).toHaveLength(1);
+
+    await request(app.getHttpServer())
+      .post('/api/admin/legal-holds/activate')
+      .set(authHeader(approverToken))
+      .send({
+        organizationId: owner.user.organizationId,
+        caseReference: `${testRunId}-virtual-document-hold`,
+        scopeType: 'DOCUMENT',
+        documentIds: [documentId],
+        authorityReference: `${testRunId}-virtual-hold-authority`,
+        requesterUserId: owner.user.id,
+        approvedByUserId: approver.user.id,
+      })
+      .expect(201);
+
+    const quarantine = jest.spyOn(storage, 'quarantine');
+    quarantine.mockClear();
+    await request(app.getHttpServer())
+      .delete(`/api/documents/${documentId}`)
+      .set(auth)
+      .expect(409)
+      .expect(({ body }) => expect(body).toMatchObject({
+        statusCode: 409,
+        code: 'LEGAL_HOLD_ACTIVE',
+        message: 'Deletion is temporarily restricted.',
+      }));
+    expect(quarantine).not.toHaveBeenCalled();
+    quarantine.mockRestore();
+
+    expect(await prisma.document.findUnique({ where: { id: documentId } }))
+      .not.toBeNull();
+    expect(await prisma.documentDeletionIntent.count({ where: { documentId } }))
+      .toBe(0);
+    expect(await prisma.activityData.findUnique({
+      where: { id: confirmed.body.createdIds[0] },
+    })).toMatchObject({
+      documentId,
+      sourceDocumentId: documentId,
+    });
   });
 
   it('preserves imported IDs, snapshots, metrics, provenance and Golden A totals after source deletion', async () => {

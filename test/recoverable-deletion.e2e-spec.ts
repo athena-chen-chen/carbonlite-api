@@ -199,12 +199,20 @@ describe('Recoverable document deletion (e2e)', () => {
   });
 
   it('returns 503 and preserves metadata when managed source bytes are missing', async () => {
-    const document = await upload(tenantToken, `${testRunId}-missing-delete.csv`);
+    const reconciliationTenant = await createTestUser(app, {
+      organizationName: `${testRunId} Reconciliation Tenant`,
+      email: `reconciliation-${testRunId}@example.test`,
+      password,
+    });
+    const document = await upload(
+      reconciliationTenant.accessToken,
+      `${testRunId}-missing-delete.csv`,
+    );
     await storage.delete(documentStorageKey(document.fileUrl));
 
     await request(app.getHttpServer())
       .delete(`/api/documents/${document.id}`)
-      .set(authHeader(tenantToken))
+      .set(authHeader(reconciliationTenant.accessToken))
       .expect(503)
       .expect(({ body }) => expect(body).toMatchObject({
         statusCode: 503,
