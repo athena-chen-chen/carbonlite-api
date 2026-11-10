@@ -21,6 +21,7 @@ import {
   DocumentStorage,
   DocumentStorageNotFoundError,
   documentStorageKey,
+  isVirtualSpreadsheetSourceUrl,
   persistedDocumentStorageUrl,
 } from './document-storage';
 import { OrganizationQuotasService } from '../organization-quotas/organization-quotas.service';
@@ -252,6 +253,27 @@ export class DocumentsService {
   }
 
   async remove(organizationId: string, id: string, userId?: string) {
+    const document = await this.prisma.document.findUnique({
+      where: { id },
+      select: { fileUrl: true },
+    });
+    if (document && isVirtualSpreadsheetSourceUrl(document.fileUrl)) {
+      const outcome = await this.recovery.deleteVirtualDocument(
+        organizationId,
+        id,
+        userId,
+      );
+      if (!outcome) throw new NotFoundException(`Document ${id} not found.`);
+      return {
+        deletedDocument: true,
+        deletedActivityRecords: 0,
+        preservedActivityRecords: outcome.preservedActivityRecords,
+        sourceEvidence: 'NONE' as const,
+        storageLifecycle: 'NOT_APPLICABLE' as const,
+        idempotent: false,
+      };
+    }
+
     const intent = await this.recovery.prepareDocument(organizationId, id, userId);
     if (!intent) throw new NotFoundException(`Document ${id} not found.`);
     const outcome = await this.recovery.completeDocument(organizationId, id, userId);

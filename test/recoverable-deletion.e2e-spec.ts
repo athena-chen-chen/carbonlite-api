@@ -198,6 +198,32 @@ describe('Recoverable document deletion (e2e)', () => {
     expect(retry).toMatchObject({ deletionIntentId: prepared.id, storageLifecycle: 'PENDING_PURGE' });
   });
 
+  it('returns 503 and preserves metadata when managed source bytes are missing', async () => {
+    const document = await upload(tenantToken, `${testRunId}-missing-delete.csv`);
+    await storage.delete(documentStorageKey(document.fileUrl));
+
+    await request(app.getHttpServer())
+      .delete(`/api/documents/${document.id}`)
+      .set(authHeader(tenantToken))
+      .expect(503)
+      .expect(({ body }) => expect(body).toMatchObject({
+        statusCode: 503,
+        message: 'Document deletion requires storage reconciliation; no permanent purge was attempted.',
+      }));
+
+    const intent = await prisma.documentDeletionIntent.findFirstOrThrow({
+      where: { documentId: document.id },
+    });
+    createdIntentIds.push(intent.id);
+    expect(intent).toMatchObject({
+      status: 'RECONCILIATION_REQUIRED',
+      reconciliationCode: 'ACTIVE_AND_QUARANTINE_MISSING',
+      databaseDeletedAt: null,
+    });
+    expect(await prisma.document.findUnique({ where: { id: document.id } }))
+      .not.toBeNull();
+  });
+
   it('uses the same recoverable protocol for managed report artifacts and blocks external artifacts', async () => {
     const storageKey = `${tenant.user.organizationId}/${testRunId}-report.pdf`;
     await storage.save(storageKey, Buffer.from('synthetic report'));

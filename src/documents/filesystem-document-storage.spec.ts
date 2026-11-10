@@ -5,9 +5,17 @@ import {
   FilesystemDocumentStorage,
   resolveDocumentStorageConfiguration,
 } from './filesystem-document-storage';
-import { DocumentStorageNotFoundError } from './document-storage';
+import {
+  DocumentStorageNotFoundError,
+  isVirtualSpreadsheetSourceUrl,
+} from './document-storage';
 
 describe('FilesystemDocumentStorage', () => {
+  it('distinguishes virtual spreadsheet sources from managed storage URLs', () => {
+    expect(isVirtualSpreadsheetSourceUrl('spreadsheet-import://batch-1')).toBe(true);
+    expect(isVirtualSpreadsheetSourceUrl('/uploads/org-a/source.xlsx')).toBe(false);
+  });
+
   let root: string;
 
   beforeEach(async () => {
