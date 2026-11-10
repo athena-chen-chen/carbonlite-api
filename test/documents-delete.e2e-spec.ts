@@ -3,7 +3,6 @@ import request from 'supertest';
 import {
   DOCUMENT_STORAGE,
   DocumentStorage,
-  documentStorageKey,
 } from '../src/documents/document-storage';
 import { PrismaService } from '../src/prisma/prisma.service';
 import { createE2eApp } from './helpers/e2e-app';
@@ -99,6 +98,105 @@ describe('Document delete (e2e)', () => {
       where: { id: documentA.id },
     });
     expect(stillExists).not.toBeNull();
+  });
+
+  it('deletes a virtual spreadsheet source without storage access and preserves five imported records', async () => {
+    const owner = await createTestUser(app, {
+      organizationName: `${testRunId} Virtual Source Org`,
+      email: `virtual-source-${testRunId}@carbonlite-e2e.test`,
+      factorProfile: 'reviewed',
+    });
+    const unrelated = await createTestUser(app, {
+      organizationName: `${testRunId} Virtual Source Other Org`,
+      email: `virtual-source-other-${testRunId}@carbonlite-e2e.test`,
+    });
+    const auth = authHeader(owner.accessToken);
+    const sourceFileName = `${testRunId}-virtual.xlsx`;
+    const staged = await request(app.getHttpServer())
+      .post('/api/spreadsheet-import/review-rows')
+      .set(auth)
+      .send({
+        sourceType: 'EXCEL',
+        sourceFileName,
+        importBatchId: `${testRunId}-virtual`,
+        rows: Array.from({ length: 5 }, (_, index) => ({
+          rowId: `virtual-${index}`,
+          status: 'READY',
+          activityType: 'DIESEL',
+          recordDate: `2026-03-${String(index + 1).padStart(2, '0')}`,
+          quantity: index + 1,
+          unit: 'L',
+          jurisdictionCountry: 'Canada',
+          jurisdictionRegion: 'Alberta',
+          sourceFileName,
+          sourceSheetName: 'Synthetic',
+          sourceRow: index + 2,
+          sourceReference: `VIRTUAL-${index}`,
+          issues: [],
+        })),
+      })
+      .expect(201);
+    const documentId: string = staged.body.sourceDocument.id;
+    const sourceDocument = await prisma.document.findUniqueOrThrow({
+      where: { id: documentId },
+    });
+    expect(sourceDocument.fileUrl).toBe(
+      `spreadsheet-import://${testRunId}-virtual`,
+    );
+
+    const confirmed = await request(app.getHttpServer())
+      .post('/api/document-extraction/confirm')
+      .set(auth)
+      .send({ documentId, activities: [] })
+      .expect(201);
+    expect(confirmed.body.createdIds).toHaveLength(5);
+    const before = await prisma.activityData.findMany({
+      where: { id: { in: confirmed.body.createdIds } },
+      orderBy: { id: 'asc' },
+    });
+    expect(before).toHaveLength(5);
+    expect(before.every(row => row.documentId === documentId)).toBe(true);
+    expect(before.every(row => row.sourceDocumentId === documentId)).toBe(true);
+
+    await request(app.getHttpServer())
+      .delete(`/api/documents/${documentId}`)
+      .set(authHeader(unrelated.accessToken))
+      .expect(403);
+    expect(await prisma.document.findUnique({ where: { id: documentId } }))
+      .not.toBeNull();
+
+    const quarantine = jest.spyOn(storage, 'quarantine');
+    quarantine.mockClear();
+    const deletion = await request(app.getHttpServer())
+      .delete(`/api/documents/${documentId}`)
+      .set(auth)
+      .expect(200);
+    expect(deletion.body).toEqual({
+      deletedDocument: true,
+      deletedActivityRecords: 0,
+      preservedActivityRecords: 5,
+      sourceEvidence: 'NONE',
+      storageLifecycle: 'NOT_APPLICABLE',
+      idempotent: false,
+    });
+    expect(quarantine).not.toHaveBeenCalled();
+    quarantine.mockRestore();
+
+    expect(await prisma.document.findUnique({ where: { id: documentId } }))
+      .toBeNull();
+    expect(await prisma.documentDeletionIntent.count({ where: { documentId } }))
+      .toBe(0);
+    expect(await prisma.documentExtraction.count({ where: { documentId } }))
+      .toBe(0);
+    expect(await prisma.spreadsheetImportReviewRow.count({
+      where: { sourceDocumentId: documentId },
+    })).toBe(0);
+    const after = await prisma.activityData.findMany({
+      where: { id: { in: confirmed.body.createdIds } },
+      orderBy: { id: 'asc' },
+    });
+    expect(after).toEqual(before.map(row => ({ ...row, documentId: null })));
+    expect(after.every(row => row.sourceDocumentId === documentId)).toBe(true);
   });
 
   it('preserves imported IDs, snapshots, metrics, provenance and Golden A totals after source deletion', async () => {
@@ -417,9 +515,7 @@ describe('Document delete (e2e)', () => {
       .expect(201);
     const documentId: string = staged.body.sourceDocument.id;
     const sourceDocument = await prisma.document.findUniqueOrThrow({ where: { id: documentId } });
-    const storageKey = documentStorageKey(sourceDocument.fileUrl);
-    await storage.save(storageKey, Buffer.from('Synthetic staged spreadsheet source evidence.'));
-    expect(await storage.exists(storageKey)).toBe(true);
+    expect(sourceDocument.fileUrl).toMatch(/^spreadsheet-import:\/\//);
     const confirmed = await request(app.getHttpServer()).post('/api/document-extraction/confirm').set(auth)
       .send({ documentId, activities: [] }).expect(201);
     expect(confirmed.body.count).toBe(3);
@@ -434,15 +530,12 @@ describe('Document delete (e2e)', () => {
       deletedDocument: true,
       deletedActivityRecords: 0,
       preservedActivityRecords: 3,
-      sourceEvidence: 'QUARANTINED',
-      storageLifecycle: 'PENDING_PURGE',
+      sourceEvidence: 'NONE',
+      storageLifecycle: 'NOT_APPLICABLE',
       idempotent: false,
     });
-    const intent = await prisma.documentDeletionIntent.findUniqueOrThrow({
-      where: { id: deletion.body.deletionIntentId },
-    });
-    expect(await storage.exists(storageKey)).toBe(false);
-    expect(await storage.quarantineExists(intent.quarantineKey)).toBe(true);
+    expect(deletion.body.deletionIntentId).toBeUndefined();
+    expect(await prisma.documentDeletionIntent.count({ where: { documentId } })).toBe(0);
     expect(await prisma.document.findUnique({ where: { id: documentId } })).toBeNull();
     expect(await prisma.activityData.findMany({ where: { id: { in: ids } }, orderBy: { id: 'asc' } }))
       .toEqual(before.map(row => ({ ...row, documentId: null })));
@@ -450,15 +543,7 @@ describe('Document delete (e2e)', () => {
     expect(await prisma.documentExtraction.count({ where: { documentId } })).toBe(0);
     const summaryAfter = await request(app.getHttpServer()).get('/api/metrics/summary').set(auth).expect(200);
     expect(summaryAfter.body.totalsByMetric).toEqual(summaryBefore.body.totalsByMetric);
-    await request(app.getHttpServer()).delete(`/api/documents/${documentId}`).set(auth).expect(200)
-      .expect(({ body }) => expect(body).toMatchObject({
-        deletionIntentId: intent.id,
-        idempotent: true,
-        preservedActivityRecords: 0,
-        storageLifecycle: 'PENDING_PURGE',
-      }));
-    expect(await storage.purgeQuarantine(intent.quarantineKey)).toBe('DELETED');
-    expect(await storage.quarantineExists(intent.quarantineKey)).toBe(false);
+    await request(app.getHttpServer()).delete(`/api/documents/${documentId}`).set(auth).expect(404);
   });
 
   it('preserves another source, both sources accounting records and the workspace total', async () => {

@@ -125,6 +125,6 @@ export function sanitizeMetadata(
 function isExpectedHttpError(error: unknown) {
   return (
     error instanceof HttpException &&
-    [400, 401, 403, 404, 409, 413, 429].includes(error.getStatus())
+    [400, 401, 403, 404, 409, 413, 429, 503].includes(error.getStatus())
   );
 }

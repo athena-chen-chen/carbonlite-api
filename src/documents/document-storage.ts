@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { extname } from 'node:path';
 
 export const DOCUMENT_STORAGE = Symbol('DOCUMENT_STORAGE');
+export const VIRTUAL_SPREADSHEET_SOURCE_PREFIX = 'spreadsheet-import://';
 
 export type DocumentStorageDeleteResult = 'DELETED' | 'NOT_FOUND';
 export type DocumentQuarantineResult = 'MOVED' | 'ALREADY_QUARANTINED' | 'NOT_FOUND';
@@ -46,6 +47,10 @@ export function documentStorageKey(fileUrl: string) {
 
 export function persistedDocumentStorageUrl(storageKey: string) {
   return `/uploads/${documentStorageKey(storageKey)}`;
+}
+
+export function isVirtualSpreadsheetSourceUrl(fileUrl: string) {
+  return String(fileUrl ?? '').startsWith(VIRTUAL_SPREADSHEET_SOURCE_PREFIX);
 }
 
 export function documentQuarantineKey(intentId: string, storageKey: string) {

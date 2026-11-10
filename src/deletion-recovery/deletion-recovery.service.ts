@@ -20,6 +20,7 @@ import {
   DocumentStorage,
   documentQuarantineKey,
   documentStorageKey,
+  isVirtualSpreadsheetSourceUrl,
 } from '../documents/document-storage';
 import { LegalHoldsService } from '../legal-holds/legal-holds.service';
 import { PrismaService } from '../prisma/prisma.service';
@@ -41,6 +42,71 @@ export class DeletionRecoveryService {
     @Inject(DOCUMENT_STORAGE) private readonly storage: DocumentStorage,
     private readonly legalHolds: LegalHoldsService,
   ) {}
+
+  async deleteVirtualDocument(
+    organizationId: string,
+    documentId: string,
+    requestedById?: string,
+  ) {
+    return this.legalHolds.withDeletionGuard(
+      {
+        organizationId,
+        operation: 'DELETE_DOCUMENT',
+        actorUserId: requestedById,
+        documentIds: [documentId],
+      },
+      async (tx) => {
+        const document = await tx.document.findUnique({
+          where: { id: documentId },
+          select: { id: true, organizationId: true, fileUrl: true },
+        });
+        if (!document) return null;
+        if (document.organizationId !== organizationId) {
+          throw new ForbiddenException('You cannot delete this document.');
+        }
+        if (!isVirtualSpreadsheetSourceUrl(document.fileUrl)) {
+          throw new BadRequestException(
+            'Document is not a virtual spreadsheet source.',
+          );
+        }
+
+        const preservedActivityRecords = await tx.activityData.count({
+          where: {
+            organizationId,
+            OR: [{ documentId }, { sourceDocumentId: documentId }],
+          },
+        });
+        await tx.document.delete({ where: { id: documentId } });
+        await tx.auditLog.create({
+          data: {
+            organizationId,
+            userId: requestedById ?? null,
+            action: 'DELETE_DOCUMENT',
+            entityType: 'Document',
+            entityId: documentId,
+            description:
+              'Virtual spreadsheet source metadata deleted; imported activity records preserved.',
+            newValue: {
+              documentId,
+              preservedActivityRecords,
+              sourceEvidence: 'NONE',
+            },
+          },
+        });
+        await tx.userActivityEvent.create({
+          data: {
+            organizationId,
+            userId: requestedById ?? null,
+            eventName: 'DOCUMENT_DELETED',
+            entityType: 'Document',
+            entityId: documentId,
+            metadata: { preservedActivityRecords, sourceEvidence: 'NONE' },
+          },
+        });
+        return { preservedActivityRecords };
+      },
+    );
+  }
 
   async prepareDocument(
     organizationId: string,

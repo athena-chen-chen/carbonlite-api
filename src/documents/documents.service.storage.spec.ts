@@ -54,6 +54,9 @@ describe('DocumentsService storage lifecycle', () => {
       getStatus: jest.fn().mockResolvedValue({ enabled: false }),
     };
     recovery = {
+      deleteVirtualDocument: jest.fn().mockResolvedValue({
+        preservedActivityRecords: 5,
+      }),
       prepareDocument: jest.fn().mockResolvedValue({ id: 'intent-a' }),
       completeDocument: jest.fn().mockResolvedValue({
         intent: { id: 'intent-a', status: 'PENDING_PURGE' },
@@ -130,6 +133,29 @@ describe('DocumentsService storage lifecycle', () => {
     expect(recovery.prepareDocument).toHaveBeenCalledWith('org-a', 'doc-a', 'user-a');
     expect(recovery.completeDocument).toHaveBeenCalledWith('org-a', 'doc-a', 'user-a');
     expect(storage.delete).not.toHaveBeenCalled();
+  });
+
+  it('uses database-only deletion for virtual spreadsheet sources', async () => {
+    prisma.document.findUnique.mockResolvedValueOnce({
+      fileUrl: 'spreadsheet-import://synthetic-batch',
+    });
+
+    await expect(service.remove('org-a', 'doc-a', 'user-a')).resolves.toEqual({
+      deletedDocument: true,
+      deletedActivityRecords: 0,
+      preservedActivityRecords: 5,
+      sourceEvidence: 'NONE',
+      storageLifecycle: 'NOT_APPLICABLE',
+      idempotent: false,
+    });
+    expect(recovery.deleteVirtualDocument).toHaveBeenCalledWith(
+      'org-a',
+      'doc-a',
+      'user-a',
+    );
+    expect(recovery.prepareDocument).not.toHaveBeenCalled();
+    expect(recovery.completeDocument).not.toHaveBeenCalled();
+    expect(storage.quarantine).not.toHaveBeenCalled();
   });
 
   it('returns an idempotent success for a completed intent', async () => {
