@@ -33,6 +33,7 @@ import {
   ensureGoldenSampleDataForWorkspace,
 } from '../sample-data/golden-sample-data.service';
 import { assertPublicRegistrationEnabled } from '../common/security/security-policy';
+import { SYNTHETIC_ONLY_PILOT_NOTICE } from '../common/policies/synthetic-only-pilot';
 
 export type AuthenticatedUser = {
   allowDemoFactorsForCalculations?: boolean;
@@ -59,6 +60,7 @@ type SafeUserSource = Prisma.UserGetPayload<{
 };
 
 const PILOT_REVIEWER_ACCOUNT_TYPE = 'PILOT_REVIEWER';
+const CUSTOMER_ACCOUNT_TYPE = 'CUSTOMER';
 const DEFAULT_PILOT_WORKSPACE_NAME = GOLDEN_SAMPLE_WORKSPACE_NAME;
 const DEFAULT_INVITE_TTL_HOURS = 48;
 const EMAIL_VALIDATION_MESSAGE =
@@ -168,6 +170,7 @@ export class AuthService {
         'Account setup is incomplete. Please contact an administrator.',
       );
     }
+    this.assertOrganizationAccessible(user);
 
     const passwordMatches = await bcrypt.compare(password, user.passwordHash);
     if (!passwordMatches) {
@@ -320,6 +323,10 @@ export class AuthService {
     return {
       success: true,
       invitationPurpose,
+      usageNotice:
+        invitationPurpose === InvitationPurpose.CUSTOMER
+          ? SYNTHETIC_ONLY_PILOT_NOTICE
+          : undefined,
       pilotReviewer: {
         name: this.formatUserName(result.user.firstName, result.user.lastName),
         email: result.user.email,
@@ -559,6 +566,7 @@ export class AuthService {
     }
 
     this.assertAccountNotExpired(user);
+    this.assertOrganizationAccessible(user);
 
     return this.toSafeUser(user);
   }
@@ -576,6 +584,10 @@ export class AuthService {
         organizationId: safeUser.organizationId,
       } satisfies JwtPayload),
       user: safeUser,
+      usageNotice:
+        safeUser.accountType === CUSTOMER_ACCOUNT_TYPE
+          ? SYNTHETIC_ONLY_PILOT_NOTICE
+          : undefined,
     };
   }
 
@@ -814,6 +826,22 @@ export class AuthService {
   private assertAccountNotExpired(user: { accountExpiresAt?: Date | null }) {
     if (user.accountExpiresAt && user.accountExpiresAt <= new Date()) {
       throw new UnauthorizedException('Account access has expired.');
+    }
+  }
+
+  private assertOrganizationAccessible(user: {
+    organization?: {
+      isActive?: boolean;
+      customerStatus?: OrganizationCustomerStatus;
+    } | null;
+  }) {
+    if (
+      user.organization?.isActive === false ||
+      user.organization?.customerStatus === OrganizationCustomerStatus.SUSPENDED
+    ) {
+      throw new UnauthorizedException(
+        'Organization access is unavailable. Please contact an administrator.',
+      );
     }
   }
 

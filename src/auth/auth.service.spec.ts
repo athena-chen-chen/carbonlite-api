@@ -8,6 +8,7 @@ import { MembershipRole, UserRole } from '@prisma/client';
 import bcrypt from 'bcryptjs';
 import { AuthService } from './auth.service';
 import { InvitationPurpose } from './dto/create-pilot-reviewer.dto';
+import { SYNTHETIC_ONLY_PILOT_NOTICE } from '../common/policies/synthetic-only-pilot';
 
 describe('AuthService login resilience', () => {
   const originalEnv = process.env;
@@ -124,6 +125,54 @@ describe('AuthService login resilience', () => {
     await expect(
       service.login('missing@example.com', 'Fictional-Test-Only!2026'),
     ).rejects.toBeInstanceOf(UnauthorizedException);
+  });
+
+  it('rejects login when the organization is suspended', async () => {
+    prisma.user.findUnique.mockResolvedValue({
+      id: 'user-1',
+      email: 'user@example.com',
+      organizationId: 'org-1',
+      passwordHash: bcrypt.hashSync('Fictional-Test-Only!2026', 10),
+      isActive: true,
+      role: UserRole.USER,
+      accountExpiresAt: null,
+      organization: {
+        id: 'org-1',
+        name: 'Suspended Org',
+        isActive: true,
+        customerStatus: 'SUSPENDED',
+      },
+    });
+
+    await expect(
+      service.login('user@example.com', 'Fictional-Test-Only!2026'),
+    ).rejects.toThrow('Organization access is unavailable');
+    expect(prisma.user.update).not.toHaveBeenCalled();
+  });
+
+  it('returns the synthetic-only notice when a customer logs in', async () => {
+    prisma.user.findUnique.mockResolvedValue({
+      id: 'customer-1',
+      email: 'customer@example.com',
+      organizationId: 'customer-org',
+      passwordHash: bcrypt.hashSync('Fictional-Test-Only!2026', 10),
+      isActive: true,
+      role: UserRole.USER,
+      accountType: 'CUSTOMER',
+      accountExpiresAt: null,
+      organization: {
+        id: 'customer-org',
+        name: 'Customer Org',
+        isActive: true,
+        customerStatus: 'ACTIVE',
+        allowDemoFactorsForCalculations: false,
+      },
+    });
+    prisma.user.update.mockResolvedValue({});
+
+    await expect(
+      service.login('customer@example.com', 'Fictional-Test-Only!2026'),
+    ).resolves.toMatchObject({ usageNotice: SYNTHETIC_ONLY_PILOT_NOTICE });
   });
 
   it('ensures golden sample data when an existing pilot reviewer logs in', async () => {
@@ -463,6 +512,7 @@ describe('AuthService login resilience', () => {
     )).resolves.toMatchObject({
       success: true,
       invitationPurpose: InvitationPurpose.CUSTOMER,
+      usageNotice: SYNTHETIC_ONLY_PILOT_NOTICE,
     });
 
     expect(tx.organization.update).toHaveBeenCalledWith({
@@ -1030,5 +1080,31 @@ describe('AuthService login resilience', () => {
     );
 
     expect(prisma.user.update).not.toHaveBeenCalled();
+  });
+
+  it('rejects existing JWTs when the organization is suspended', async () => {
+    prisma.user.findFirst.mockResolvedValue({
+      id: 'user-1',
+      email: 'user@example.com',
+      organizationId: 'org-1',
+      role: UserRole.USER,
+      isActive: true,
+      accountExpiresAt: null,
+      organization: {
+        id: 'org-1',
+        name: 'Suspended Org',
+        isActive: true,
+        customerStatus: 'SUSPENDED',
+      },
+      memberships: [],
+    });
+
+    await expect(
+      service.validateJwtPayload({
+        sub: 'user-1',
+        email: 'user@example.com',
+        organizationId: 'org-1',
+      } as never),
+    ).rejects.toThrow('Organization access is unavailable');
   });
 });

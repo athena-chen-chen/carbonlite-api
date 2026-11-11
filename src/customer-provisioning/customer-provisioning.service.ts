@@ -13,6 +13,7 @@ import {
 } from '@prisma/client';
 import type { AuthenticatedUser } from '../auth/auth.service';
 import { isPlatformAdmin } from '../common/permissions/workspace-permissions';
+import { SYNTHETIC_ONLY_PILOT_NOTICE } from '../common/policies/synthetic-only-pilot';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   getGoldenSampleActivityWhere,
@@ -20,12 +21,82 @@ import {
 } from '../sample-data/golden-sample-data.service';
 import { CleanupGoldenSampleDto } from './dto/cleanup-golden-sample.dto';
 import { ProvisionPaidPilotDto } from './dto/provision-paid-pilot.dto';
+import { CustomerPreflightQueryDto } from './dto/customer-preflight-query.dto';
+import { SuspendCustomerOrganizationDto } from './dto/suspend-customer-organization.dto';
 
 const CUSTOMER_ACCOUNT_TYPE = 'CUSTOMER';
 
 @Injectable()
 export class CustomerProvisioningService {
   constructor(private readonly prisma: PrismaService) {}
+
+  async getCustomerPreflight(query: CustomerPreflightQueryDto) {
+    const normalizedEmail = query.email?.trim().toLowerCase();
+    const organizationName = query.organizationName?.trim();
+    if (!normalizedEmail && !organizationName) {
+      throw new BadRequestException('An email or organization name is required.');
+    }
+
+    const user = normalizedEmail
+      ? await this.prisma.user.findUnique({
+          where: { email: normalizedEmail },
+          include: { memberships: true, organization: true },
+        })
+      : null;
+
+    let organization = user?.organization ?? null;
+    if (organizationName) {
+      const matches = await this.prisma.organization.findMany({
+        where: { name: { equals: organizationName, mode: 'insensitive' } },
+        take: 2,
+      });
+      if (matches.length > 1) {
+        throw new ConflictException(
+          'Organization name is ambiguous. Use an email lookup.',
+        );
+      }
+      const namedOrganization = matches[0] ?? null;
+      if (
+        organization &&
+        namedOrganization &&
+        organization.id !== namedOrganization.id
+      ) {
+        throw new BadRequestException(
+          'The email and organization name do not identify the same organization.',
+        );
+      }
+      organization ??= namedOrganization;
+    }
+
+    const organizationMetadata = organization
+      ? await this.getOrganizationPreflight(organization.id)
+      : null;
+    const membership = user?.memberships.find(
+      candidate => candidate.organizationId === user.organizationId,
+    );
+
+    return {
+      lookup: {
+        normalizedEmail: normalizedEmail ?? null,
+        organizationName: organizationName ?? null,
+      },
+      user: user
+        ? {
+            exists: true,
+            id: user.id,
+            normalizedEmail: user.email,
+            platformRole: user.role,
+            accountType: user.accountType,
+            isActive: user.isActive,
+            passwordSetupRequired: user.passwordSetupRequired,
+            invitationStatus: this.getInvitationStatus(user),
+            organizationId: user.organizationId,
+            membershipRole: membership?.role ?? null,
+          }
+        : { exists: false, normalizedEmail: normalizedEmail ?? null },
+      organization: organizationMetadata,
+    };
+  }
 
   async provisionPaidPilotOrganization(
     actor: AuthenticatedUser,
@@ -245,6 +316,66 @@ export class CustomerProvisioningService {
     });
   }
 
+  async suspendCustomerOrganization(
+    actor: AuthenticatedUser,
+    command: SuspendCustomerOrganizationDto,
+  ) {
+    this.assertAuthorized(actor, command.organizationId);
+    if (
+      command.confirmSuspend !== true ||
+      command.confirmationOrganizationId !== command.organizationId
+    ) {
+      throw new BadRequestException('Exact organization confirmation is required.');
+    }
+
+    return this.prisma.$transaction(async tx => {
+      const organization = await tx.organization.findUnique({
+        where: { id: command.organizationId },
+      });
+      if (!organization) throw new NotFoundException('Organization not found.');
+      if (organization.slug !== command.confirmationOrganizationSlug) {
+        throw new BadRequestException(
+          'Exact organization slug confirmation is required.',
+        );
+      }
+      if (organization.customerStatus === OrganizationCustomerStatus.SUSPENDED) {
+        return {
+          organizationId: organization.id,
+          status: 'ALREADY_SUSPENDED',
+          suspended: true,
+        };
+      }
+      if (organization.customerStatus !== OrganizationCustomerStatus.ACTIVE) {
+        throw new ConflictException(
+          'Only an active customer organization can be suspended.',
+        );
+      }
+
+      const suspended = await tx.organization.update({
+        where: { id: organization.id },
+        data: { customerStatus: OrganizationCustomerStatus.SUSPENDED },
+      });
+      await tx.auditLog.create({
+        data: {
+          organizationId: organization.id,
+          userId: actor.id,
+          action: 'CUSTOMER_ORGANIZATION_SUSPENDED',
+          entityType: 'Organization',
+          entityId: organization.id,
+          description: 'Suspended customer organization access without deleting data.',
+          oldValue: { customerStatus: organization.customerStatus },
+          newValue: { customerStatus: suspended.customerStatus },
+        },
+      });
+
+      return {
+        organizationId: organization.id,
+        status: 'SUSPENDED',
+        suspended: true,
+      };
+    });
+  }
+
   private async findGoldenSampleArtifacts(
     tx: Prisma.TransactionClient,
     organizationId: string,
@@ -262,6 +393,68 @@ export class CustomerProvisioningService {
       activityIds: activities.map(activity => activity.id),
       reportCount,
     };
+  }
+
+  private async getOrganizationPreflight(organizationId: string) {
+    const [organization, goldenSampleActivityCount, goldenSampleReportCount] =
+      await Promise.all([
+        this.prisma.organization.findUniqueOrThrow({
+          where: { id: organizationId },
+          include: {
+            _count: {
+              select: {
+                activityData: true,
+                reports: true,
+                documents: true,
+                memberships: true,
+              },
+            },
+          },
+        }),
+        this.prisma.activityData.count({
+          where: getGoldenSampleActivityWhere(organizationId),
+        }),
+        this.prisma.report.count({
+          where: { organizationId, title: GOLDEN_SAMPLE_REPORT_TITLE },
+        }),
+      ]);
+
+    return {
+      id: organization.id,
+      name: organization.name,
+      slug: organization.slug,
+      customerStatus: organization.customerStatus,
+      provisionedAt: organization.provisionedAt?.toISOString() ?? null,
+      isActive: organization.isActive,
+      allowDemoFactorsForCalculations:
+        organization.allowDemoFactorsForCalculations,
+      counts: {
+        activityData: organization._count.activityData,
+        reports: organization._count.reports,
+        documents: organization._count.documents,
+        goldenSampleArtifacts:
+          goldenSampleActivityCount + goldenSampleReportCount,
+        memberships: organization._count.memberships,
+      },
+    };
+  }
+
+  private getInvitationStatus(user: {
+    passwordSetupRequired: boolean;
+    passwordSetupTokenHash: string | null;
+    passwordSetupTokenExpiresAt: Date | null;
+    passwordSetupTokenUsedAt: Date | null;
+  }) {
+    if (user.passwordSetupTokenUsedAt) return 'used';
+    if (!user.passwordSetupRequired) return 'completed';
+    if (
+      !user.passwordSetupTokenHash ||
+      !user.passwordSetupTokenExpiresAt ||
+      user.passwordSetupTokenExpiresAt <= new Date()
+    ) {
+      return 'expired';
+    }
+    return 'pending';
   }
 
   private assertAuthorized(actor: AuthenticatedUser, organizationId: string) {
@@ -300,6 +493,7 @@ export class CustomerProvisioningService {
       provisionedAt: provisionedAt.toISOString(),
       alreadyProvisioned,
       warnings: [],
+      usageNotice: SYNTHETIC_ONLY_PILOT_NOTICE,
     };
   }
 }
