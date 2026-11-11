@@ -29,6 +29,7 @@ import {
 } from './dto/create-pilot-reviewer.dto';
 import { DeactivatePilotReviewerDto } from './dto/deactivate-pilot-reviewer.dto';
 import { RegeneratePilotReviewerInviteDto } from './dto/regenerate-pilot-reviewer-invite.dto';
+import { SYNTHETIC_ONLY_PILOT_NOTICE } from '../common/policies/synthetic-only-pilot';
 import { SetPasswordDto } from './dto/set-password.dto';
 import {
   GOLDEN_SAMPLE_WORKSPACE_NAME,
@@ -65,6 +66,7 @@ type SafeUserSource = Prisma.UserGetPayload<{
 };
 
 const PILOT_REVIEWER_ACCOUNT_TYPE = 'PILOT_REVIEWER';
+const CUSTOMER_ACCOUNT_TYPE = 'CUSTOMER';
 const DEFAULT_PILOT_WORKSPACE_NAME = GOLDEN_SAMPLE_WORKSPACE_NAME;
 const DEFAULT_INVITE_TTL_HOURS = 48;
 const EMAIL_VALIDATION_MESSAGE =
@@ -336,6 +338,10 @@ export class AuthService {
     return {
       success: true,
       invitationPurpose,
+      usageNotice:
+        invitationPurpose === InvitationPurpose.CUSTOMER
+          ? SYNTHETIC_ONLY_PILOT_NOTICE
+          : undefined,
       pilotReviewer: {
         name: this.formatUserName(result.user.firstName, result.user.lastName),
         email: result.user.email,
@@ -605,6 +611,10 @@ export class AuthService {
         organizationId: safeUser.organizationId,
       } satisfies JwtPayload),
       user: safeUser,
+      usageNotice:
+        safeUser.accountType === CUSTOMER_ACCOUNT_TYPE
+          ? SYNTHETIC_ONLY_PILOT_NOTICE
+          : undefined,
     };
   }
 

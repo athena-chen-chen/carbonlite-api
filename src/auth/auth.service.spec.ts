@@ -8,6 +8,7 @@ import { MembershipRole, UserRole } from '@prisma/client';
 import bcrypt from 'bcryptjs';
 import { AuthService } from './auth.service';
 import { InvitationPurpose } from './dto/create-pilot-reviewer.dto';
+import { SYNTHETIC_ONLY_PILOT_NOTICE } from '../common/policies/synthetic-only-pilot';
 import { ensureGoldenSampleDataForWorkspace } from '../sample-data/golden-sample-data.service';
 
 describe('AuthService login resilience', () => {
@@ -512,6 +513,7 @@ describe('AuthService login resilience', () => {
     )).resolves.toMatchObject({
       success: true,
       invitationPurpose: InvitationPurpose.CUSTOMER,
+      usageNotice: SYNTHETIC_ONLY_PILOT_NOTICE,
     });
 
     expect(tx.organization.update).toHaveBeenCalledWith({

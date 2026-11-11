@@ -1,6 +1,7 @@
 import { INestApplication } from '@nestjs/common';
 import request from 'supertest';
 import { PrismaService } from '../src/prisma/prisma.service';
+import { SYNTHETIC_ONLY_PILOT_NOTICE } from '../src/common/policies/synthetic-only-pilot';
 import {
   GOLDEN_SAMPLE_REPORT_TITLE,
   GOLDEN_SAMPLE_SOURCE_FILE,
@@ -103,11 +104,17 @@ describe('Real customer onboarding stays free of demo data (e2e)', () => {
       where: { organizationId: customerUser.organizationId },
     })).resolves.toBe(0);
     expect(firstCustomerInvite.body.invitationPurpose).toBe('CUSTOMER');
+    expect(firstCustomerInvite.body.usageNotice).toBe(
+      SYNTHETIC_ONLY_PILOT_NOTICE,
+    );
 
     const customerAuth = await acceptInvite(repeatedCustomerInvite.body.inviteLink);
     await provision(customerUser.organization, customerUser.id)
       .expect(201)
-      .expect(({ body }) => expect(body.status).toBe('PROVISIONED'));
+      .expect(({ body }) => {
+        expect(body.status).toBe('PROVISIONED');
+        expect(body.usageNotice).toBe(SYNTHETIC_ONLY_PILOT_NOTICE);
+      });
     await expect(prisma.organization.findUniqueOrThrow({
       where: { id: customerUser.organizationId },
     })).resolves.toMatchObject({
