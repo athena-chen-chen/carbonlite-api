@@ -14,6 +14,8 @@ describe('disposable database target policy', () => {
     'postgresql://ep-test.neon.tech/carbonlite_e2e',
     'postgresql://postgres/carbonlite_e2e',
     'postgresql://localhost/carbonlite_e2e_prod',
+    'postgresql://localhost/carbonlite_quota_e2e_latest',
+    'postgresql://localhost/carbonlite_quota_e2e_20261107',
     'postgresql://localhost/carbonlite_e2e/other',
     'postgresql://localhost/%63arbonlite_e2e',
     'file:./carbonlite_test', 'mysql://localhost/carbonlite_test',
@@ -36,8 +38,11 @@ describe('disposable database target policy', () => {
     'postgresql://localhost:5432/carbonlite_e2e', // Actual frontend CI service URL structure.
     'postgres://127.0.0.1:5432/carbonlite_test',
     'postgresql://[::1]:5432/carbonlite_ci_test',
+    'postgresql://localhost:5432/carbonlite_quota_e2e_20261107_1837',
   ])('accepts dedicated local/CI database %s', value => {
-    expect(assertSafeTestDatabaseTarget(value).database).toMatch(/^carbonlite_(e2e|test|ci_test)$/);
+    expect(assertSafeTestDatabaseTarget(value).database).toMatch(
+      /^carbonlite_(e2e|test|ci_test|quota_e2e_\d{8}_\d{4})$/,
+    );
   });
 
   it('never exposes credentials, query secrets, or raw parser input', () => {

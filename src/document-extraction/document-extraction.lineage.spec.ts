@@ -36,7 +36,7 @@ describe('document facility and optional cost lineage', () => {
     };
     const prisma = { document: { findFirst: jest.fn().mockResolvedValue(document) }, $transaction: jest.fn(async (fn) => fn(tx)) };
     const storage = { exists: jest.fn().mockResolvedValue(true), read: jest.fn().mockResolvedValue(Buffer.from('%PDF-1.4\nfixture\n%%EOF')) };
-    const subject = new DocumentExtractionService(prisma as never, { log: jest.fn() } as never, { track: jest.fn() } as never, { prepareCreate: jest.fn(async (_client, data) => ({ ...data, matchingStatus: 'MATCHED', calculationStatus: 'CALCULATED', reportTreatment: 'INCLUDED' })), fields: jest.fn() } as never, storage as never);
+    const subject = new DocumentExtractionService(prisma as never, { log: jest.fn() } as never, { track: jest.fn() } as never, { prepareCreate: jest.fn(async (_client, data) => ({ ...data, matchingStatus: 'MATCHED', calculationStatus: 'CALCULATED', reportTreatment: 'INCLUDED' })), fields: jest.fn() } as never, storage as never, { beginExtraction: jest.fn().mockResolvedValue(null), finishExtraction: jest.fn() } as never);
     const result = await subject.confirmImport('org', 'doc', sourceRows);
     expect(result.count).toBe(5);
     expect(created.map(({ activityType, facilityName, costCad }) => [activityType, facilityName, costCad])).toEqual(sourceRows.map((row) => [row.activityType, row.facilityName, null]));
@@ -47,11 +47,18 @@ describe('document facility and optional cost lineage', () => {
     const prisma = { $transaction: jest.fn(), document: { findFirst: jest.fn().mockResolvedValue(document), update: jest.fn() } };
     prisma.$transaction.mockImplementation(callback => callback(prisma));
     const storage = { exists: jest.fn().mockResolvedValue(true), read: jest.fn().mockResolvedValue(Buffer.from('%PDF-1.4\nfixture\n%%EOF')) };
-    const subject = new DocumentExtractionService(prisma as never, { log: jest.fn() } as never, { track: jest.fn() } as never, { prepareCreate: jest.fn(async (_client, data) => ({ ...data, matchingStatus: 'MATCHED', calculationStatus: 'CALCULATED', reportTreatment: 'INCLUDED' })), fields: jest.fn() } as never, storage as never);
+    const authorization = { assertProviderRequestAllowed: jest.fn().mockResolvedValue({}) };
+    const subject = new DocumentExtractionService(prisma as never, { log: jest.fn() } as never, { track: jest.fn() } as never, { prepareCreate: jest.fn(async (_client, data) => ({ ...data, matchingStatus: 'MATCHED', calculationStatus: 'CALCULATED', reportTreatment: 'INCLUDED' })), fields: jest.fn() } as never, storage as never, { beginExtraction: jest.fn().mockResolvedValue(null), finishExtraction: jest.fn() } as never, authorization as never);
     jest.spyOn(subject as any, 'saveExtractionResult').mockResolvedValue(undefined);
     (openai.responses.create as jest.Mock).mockResolvedValue({ output_text: JSON.stringify({ activities: sourceRows }), status: 'completed' });
     const result = await subject.extract('org', 'doc');
     const request = (openai.responses.create as jest.Mock).mock.calls.at(-1)[0];
+    expect(request.store).toBe(false);
+    expect(authorization.assertProviderRequestAllowed).toHaveBeenCalledWith(
+      'org',
+      'OPENAI',
+      'DOCUMENT_EXTRACTION',
+    );
     const schema = request.text.format.schema.properties.activities.items;
     expect(schema.required).toEqual(expect.arrayContaining(['facilityName', 'costCad', 'costCurrency']));
     expect(schema.properties.facilityName).toBeDefined();

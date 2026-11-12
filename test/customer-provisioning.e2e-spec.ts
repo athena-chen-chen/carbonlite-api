@@ -280,16 +280,85 @@ describe('Transactional customer provisioning (e2e)', () => {
       .send({ confirmation: 'RESET DEMO DATA' })
       .expect(403);
 
+    await prisma.organizationQuota.create({
+      data: {
+        organizationId: organizationA.id,
+        enabled: true,
+        dailyUploadLimit: 3,
+        maxConcurrentExtractions: 1,
+      },
+    });
+    await prisma.organizationAiAuthorization.create({
+      data: {
+        organizationId: organizationA.id,
+        status: 'ENABLED',
+        consentVersion: 'synthetic-external-pilot-v1',
+        provider: 'OPENAI',
+        processingScope: 'DOCUMENT_EXTRACTION',
+        evidenceReference: 'synthetic-evidence-reference',
+        authorizedRepresentativeReference: 'synthetic-representative-reference',
+        verifiedById: operator.user.id,
+        verifiedAt: new Date(),
+        effectiveAt: new Date(Date.now() - 1_000),
+      },
+    });
+
+    await request(app.getHttpServer())
+      .get(`/api/admin/customer-provisioning/preflight?email=${encodeURIComponent(userA.user.email)}`)
+      .set(authHeader(operatorToken))
+      .expect(200)
+      .expect(({ body }) => {
+        expect(body.organization).toMatchObject({
+          id: organizationA.id,
+          quota: {
+            enabled: true,
+            dailyUploadLimit: 3,
+            maxConcurrentExtractions: 1,
+          },
+          aiAuthorization: {
+            status: 'ENABLED',
+            provider: 'OPENAI',
+            processingScope: 'DOCUMENT_EXTRACTION',
+            consentVersion: 'synthetic-external-pilot-v1',
+          },
+        });
+      });
+
     await request(app.getHttpServer())
       .post('/api/admin/workspace-erasure/dry-run')
       .set(authHeader(operatorToken))
       .send({ organizationId: organizationA.id })
       .expect(201)
       .expect(({ body }) => {
-        expect(body).toEqual(
-          expect.objectContaining({ status: 'DRY_RUN', dataDeleted: false }),
-        );
+        expect(body).toMatchObject({
+          status: 'DRY_RUN',
+          dataDeleted: false,
+          inventory: { quotaPolicies: 1, aiAuthorizations: 1 },
+        });
       });
+
+    await request(app.getHttpServer())
+      .post('/api/admin/workspace-erasure/erase')
+      .set(authHeader(operatorToken))
+      .send({
+        organizationId: organizationA.id,
+        confirmationOrganizationId: organizationA.id,
+        confirmationOrganizationSlug: organizationA.slug,
+        confirmErase: true,
+      })
+      .expect(201)
+      .expect(({ body }) => {
+        expect(body).toMatchObject({
+          status: 'ERASED',
+          inventory: { quotaPolicies: 1, aiAuthorizations: 1 },
+        });
+      });
+    await expect(prisma.organizationQuota.findUnique({
+      where: { organizationId: organizationA.id },
+    })).resolves.toBeNull();
+    await expect(prisma.organizationAiAuthorization.findUnique({
+      where: { organizationId: organizationA.id },
+    })).resolves.toBeNull();
 
     expect(
       await prisma.organization.findUniqueOrThrow({

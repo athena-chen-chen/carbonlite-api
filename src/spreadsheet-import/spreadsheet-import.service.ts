@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, Inject, Injectable, ServiceUnavailableException } from '@nestjs/common';
 import {
   Prisma,
   SpreadsheetImportSourceType,
@@ -12,10 +12,16 @@ import {
   SpreadsheetReviewRowDto,
 } from './dto/save-spreadsheet-review-rows.dto';
 import { SpreadsheetReviewRowQueryDto } from './dto/spreadsheet-review-row-query.dto';
+import { OrganizationQuotasService } from '../organization-quotas/organization-quotas.service';
 
 @Injectable()
 export class SpreadsheetImportService {
-  constructor(private readonly prisma: PrismaService, private readonly activityTracking: ActivityTrackingService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly activityTracking: ActivityTrackingService,
+    @Inject(OrganizationQuotasService)
+    private readonly quotas: OrganizationQuotasService | undefined = undefined,
+  ) {}
 
   async findReviewRows(
     organizationId: string,
@@ -100,6 +106,7 @@ export class SpreadsheetImportService {
     if (!dto.rows?.length) {
       throw new BadRequestException('No spreadsheet review rows provided.');
     }
+    await this.quotaEnforcement.assertImportRows(organizationId, dto.rows.length);
 
     const counts = countRows(dto.rows);
     const sourceFileName = getSourceFileName(dto);
@@ -108,99 +115,124 @@ export class SpreadsheetImportService {
     const extractionJson = buildSpreadsheetExtractionJson(dto);
 
     const sourceDocument = await this.prisma.$transaction(async (tx) => {
-      const existingSource = await tx.document.findFirst({
-        where: {
-          organizationId,
-          type: 'SPREADSHEET',
-          importBatchId,
-        },
-        orderBy: { createdAt: 'asc' },
-      });
-      const document = existingSource
-        ? await tx.document.update({
-            where: { id: existingSource.id },
-            data: {
-              fileName: sourceFileName,
-              status: sourceStatus,
-              extractedJson: extractionJson,
-            },
-          })
-        : await tx.document.create({
-            data: {
-              organizationId,
-              uploadedById: userId ?? null,
-              fileName: sourceFileName,
-              fileUrl: `spreadsheet-import://${importBatchId}`,
-              mimeType: getSpreadsheetMimeType(dto.sourceType),
-              fileSize: null,
-              fileHash: null,
-              type: 'SPREADSHEET',
-              status: sourceStatus,
-              extractedJson: extractionJson,
-              importBatchId,
-            },
-          });
-
-      await tx.documentExtraction.upsert({
-        where: {
-          documentId: document.id,
-        },
-        create: {
-          organizationId,
-          documentId: document.id,
-          status: sourceStatus,
-          extractedJson: extractionJson,
-          extractedRows: buildSpreadsheetExtractionRows(document.id, sourceFileName, dto.rows),
-          sourceRowCount: dto.rows.length,
-          extractedRowCount: dto.rows.length,
-          possibleMissingRows: counts.needsReviewCount > 0,
-          warning:
-            counts.needsReviewCount > 0
-              ? `${counts.needsReviewCount} spreadsheet row(s) need review before import.`
-              : null,
-          extractedAt: new Date(),
-        },
-        update: {
-          organizationId,
-          status: sourceStatus,
-          extractedJson: extractionJson,
-          extractedRows: buildSpreadsheetExtractionRows(document.id, sourceFileName, dto.rows),
-          sourceRowCount: dto.rows.length,
-          extractedRowCount: dto.rows.length,
-          possibleMissingRows: counts.needsReviewCount > 0,
-          warning:
-            counts.needsReviewCount > 0
-              ? `${counts.needsReviewCount} spreadsheet row(s) need review before import.`
-              : null,
-          extractedAt: new Date(),
-        },
-      });
-
-      for (const row of dto.rows) {
-        const idempotencyKey = buildIdempotencyKey(dto, row);
-        await tx.spreadsheetImportReviewRow.upsert({
+      const accept = async () => {
+        const existingSource = await tx.document.findFirst({
           where: {
-            SpreadsheetImportReviewRow_idempotency_key: {
-              organizationId,
-              idempotencyKey,
-            },
+            organizationId,
+            type: 'SPREADSHEET',
+            importBatchId,
+          },
+          orderBy: { createdAt: 'asc' },
+        });
+        const document = existingSource
+          ? await tx.document.update({
+              where: { id: existingSource.id },
+              data: {
+                fileName: sourceFileName,
+                status: sourceStatus,
+                extractedJson: extractionJson,
+              },
+            })
+          : await tx.document.create({
+              data: {
+                organizationId,
+                uploadedById: userId ?? null,
+                fileName: sourceFileName,
+                fileUrl: `spreadsheet-import://${importBatchId}`,
+                mimeType: getSpreadsheetMimeType(dto.sourceType),
+                fileSize: null,
+                fileHash: null,
+                type: 'SPREADSHEET',
+                status: sourceStatus,
+                extractedJson: extractionJson,
+                importBatchId,
+              },
+            });
+
+        await tx.documentExtraction.upsert({
+          where: {
+            documentId: document.id,
           },
           create: {
-            ...buildReviewRowData(organizationId, dto, row, userId, document.id),
-            idempotencyKey,
+            organizationId,
+            documentId: document.id,
+            status: sourceStatus,
+            extractedJson: extractionJson,
+            extractedRows: buildSpreadsheetExtractionRows(document.id, sourceFileName, dto.rows),
+            sourceRowCount: dto.rows.length,
+            extractedRowCount: dto.rows.length,
+            possibleMissingRows: counts.needsReviewCount > 0,
+            warning:
+              counts.needsReviewCount > 0
+                ? `${counts.needsReviewCount} spreadsheet row(s) need review before import.`
+                : null,
+            extractedAt: new Date(),
           },
-          update: buildReviewRowData(organizationId, dto, row, userId, document.id),
+          update: {
+            organizationId,
+            status: sourceStatus,
+            extractedJson: extractionJson,
+            extractedRows: buildSpreadsheetExtractionRows(document.id, sourceFileName, dto.rows),
+            sourceRowCount: dto.rows.length,
+            extractedRowCount: dto.rows.length,
+            possibleMissingRows: counts.needsReviewCount > 0,
+            warning:
+              counts.needsReviewCount > 0
+                ? `${counts.needsReviewCount} spreadsheet row(s) need review before import.`
+                : null,
+            extractedAt: new Date(),
+          },
         });
-      }
 
-      if (!existingSource) {
-        await this.activityTracking.track({
-          organizationId, userId,
-          eventName: 'DOCUMENT_UPLOADED', entityType: 'Document', entityId: document.id,
-          metadata: { sourceFileName, sourceDocumentId: document.id, importBatchId, sourceType: dto.sourceType, reviewableRowCount: dto.rows.length },
-        }, tx);
-      }
-      return document;
+        for (const row of dto.rows) {
+          const idempotencyKey = buildIdempotencyKey(dto, row);
+          await tx.spreadsheetImportReviewRow.upsert({
+            where: {
+              SpreadsheetImportReviewRow_idempotency_key: {
+                organizationId,
+                idempotencyKey,
+              },
+            },
+            create: {
+              ...buildReviewRowData(organizationId, dto, row, userId, document.id),
+              idempotencyKey,
+            },
+            update: buildReviewRowData(organizationId, dto, row, userId, document.id),
+          });
+        }
+
+        if (!existingSource) {
+          await this.activityTracking.track({
+            organizationId,
+            userId,
+            eventName: 'DOCUMENT_UPLOADED',
+            entityType: 'Document',
+            entityId: document.id,
+            metadata: {
+              sourceFileName,
+              sourceDocumentId: document.id,
+              importBatchId,
+              sourceType: dto.sourceType,
+              reviewableRowCount: dto.rows.length,
+            },
+          }, tx);
+        }
+        return {
+          value: document,
+          accepted: !existingSource,
+          documentId: document.id,
+          metadata: {
+            source: 'SPREADSHEET_IMPORT',
+            sourceType: dto.sourceType,
+            rowCount: dto.rows.length,
+          },
+        };
+      };
+      return this.quotaEnforcement.withUploadAcceptance(
+        tx,
+        { organizationId, userId, fileSize: null },
+        accept,
+      );
     });
 
     return {
@@ -217,6 +249,13 @@ export class SpreadsheetImportService {
       },
       failedRows: [],
     };
+  }
+
+  private get quotaEnforcement() {
+    if (!this.quotas) {
+      throw new ServiceUnavailableException('Organization quota enforcement is unavailable.');
+    }
+    return this.quotas;
   }
 }
 

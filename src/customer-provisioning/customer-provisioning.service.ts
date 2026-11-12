@@ -401,6 +401,8 @@ export class CustomerProvisioningService {
         this.prisma.organization.findUniqueOrThrow({
           where: { id: organizationId },
           include: {
+            quotaPolicy: true,
+            aiAuthorization: true,
             _count: {
               select: {
                 activityData: true,
@@ -436,6 +438,31 @@ export class CustomerProvisioningService {
           goldenSampleActivityCount + goldenSampleReportCount,
         memberships: organization._count.memberships,
       },
+      quota: organization.quotaPolicy
+        ? {
+            enabled: organization.quotaPolicy.enabled,
+            periodDays: organization.quotaPolicy.periodDays,
+            uploadLimit: organization.quotaPolicy.uploadLimit,
+            dailyUploadLimit: organization.quotaPolicy.dailyUploadLimit,
+            maxFileSizeBytes: organization.quotaPolicy.maxFileSizeBytes,
+            maxConcurrentExtractions:
+              organization.quotaPolicy.maxConcurrentExtractions,
+            maxImportRows: organization.quotaPolicy.maxImportRows,
+          }
+        : null,
+      aiAuthorization: organization.aiAuthorization
+        ? {
+            status: organization.aiAuthorization.status,
+            provider: organization.aiAuthorization.provider,
+            processingScope: organization.aiAuthorization.processingScope,
+            consentVersion: organization.aiAuthorization.consentVersion,
+            effectiveAt: organization.aiAuthorization.effectiveAt.toISOString(),
+            expiresAt:
+              organization.aiAuthorization.expiresAt?.toISOString() ?? null,
+            withdrawnAt:
+              organization.aiAuthorization.withdrawnAt?.toISOString() ?? null,
+          }
+        : null,
     };
   }
 

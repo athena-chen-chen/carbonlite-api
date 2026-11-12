@@ -5,12 +5,21 @@ export const EXTRACTION_TIMEOUT_MS = 60_000;
 export const MAX_PROVIDER_OUTPUT_TOKENS = 16_384;
 export const MAX_PROVIDER_OUTPUT_CHARACTERS = 2 * 1024 * 1024;
 
-/** Resource admission only: process-local, no queue or distributed correctness claim. */
+/** Process-local duplicate suppression. Organization capacity is database-backed. */
 export class ExtractionWorkload {
   private readonly running = new Set<string>();
-  async run<T>(key: string, work: () => Promise<T>): Promise<T> {
+  async run<T>(
+    key: string,
+    work: () => Promise<T>,
+    enforceProcessCapacity = true,
+  ): Promise<T> {
     if (this.running.has(key)) throw new ConflictException('Extraction is already running for this document. Please wait before retrying.');
-    if (this.running.size >= MAX_CONCURRENT_EXTRACTIONS) throw new HttpException('Extraction capacity is busy. Please retry shortly.', HttpStatus.TOO_MANY_REQUESTS);
+    if (enforceProcessCapacity && this.running.size >= MAX_CONCURRENT_EXTRACTIONS) {
+      throw new HttpException(
+        'Extraction capacity is busy. Please retry shortly.',
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
+    }
     this.running.add(key);
     try { return await work(); }
     finally { this.running.delete(key); }

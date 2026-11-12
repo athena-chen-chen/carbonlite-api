@@ -41,6 +41,10 @@ export type WorkspaceErasureInventory = {
   auditLogs: number;
   feedback: number;
   activityEvents: number;
+  quotaPolicies: number;
+  quotaPeriods: number;
+  quotaUsages: number;
+  aiAuthorizations: number;
 };
 
 type InventoryPlan = {
@@ -195,6 +199,7 @@ export class WorkspaceErasureService {
       spreadsheetReviewRows, activityRecords, calculationSnapshots, activityImports,
       documentImports, metricResults, reports, reportArtifacts, aiJobs,
       customConversionFactors, auditLogs, feedback, activityEvents,
+      quotaPolicies, quotaPeriods, quotaUsages, aiAuthorizations,
     ] = await Promise.all([
       this.prisma.user.count({ where: { organizationId } }),
       this.prisma.membership.count({
@@ -217,6 +222,10 @@ export class WorkspaceErasureService {
       this.prisma.auditLog.count({ where: { organizationId } }),
       this.prisma.feedback.count({ where: { organizationId } }),
       this.prisma.userActivityEvent.count({ where: { organizationId } }),
+      this.prisma.organizationQuota.count({ where: { organizationId } }),
+      this.prisma.organizationQuotaPeriod.count({ where: { organizationId } }),
+      this.prisma.organizationQuotaUsage.count({ where: { organizationId } }),
+      this.prisma.organizationAiAuthorization.count({ where: { organizationId } }),
     ]);
 
     const documentStorageKeys = documents
@@ -258,6 +267,10 @@ export class WorkspaceErasureService {
         auditLogs,
         feedback,
         activityEvents,
+        quotaPolicies,
+        quotaPeriods,
+        quotaUsages,
+        aiAuthorizations,
       },
       storageKeys: [...new Set([...documentStorageKeys, ...managedReportArtifactKeys])],
       unsupportedReportArtifacts,

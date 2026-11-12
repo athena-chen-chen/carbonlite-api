@@ -177,6 +177,16 @@ enum AIJobStatus {
   FAILED
 }
 
+enum AiAuthorizationStatus {
+  DISABLED
+  ENABLED
+  WITHDRAWN
+}
+
+enum QuotaUsageType {
+  DOCUMENT_UPLOAD
+}
+
 enum FeedbackType {
   BUG
   SUGGESTION
@@ -227,6 +237,7 @@ model User {
   factorReviews  FactorReviewLog[]   @relation("FactorReviewReviewedBy")
   factorChanges  FactorChangeLog[]   @relation("FactorChangeChangedBy")
   feedback       Feedback[]          @relation("FeedbackUser")
+  quotaUsages    OrganizationQuotaUsage[] @relation("QuotaUsageUser")
 
   @@index([organizationId])
   @@index([accountType])
@@ -281,6 +292,10 @@ model Organization {
   activityEvents      UserActivityEvent[]
   documentExtractions DocumentExtraction[]
   spreadsheetReviewRows SpreadsheetImportReviewRow[]
+  quotaPolicy         OrganizationQuota?
+  quotaPeriods        OrganizationQuotaPeriod[]
+  quotaUsages         OrganizationQuotaUsage[]
+  aiAuthorization     OrganizationAiAuthorization?
 
   // 缺的就是这两个
   activityData  ActivityData[]
@@ -797,6 +812,7 @@ model Document {
   aiJobs       AIJob[]
   extractions  DocumentExtraction[]
   spreadsheetReviewRows SpreadsheetImportReviewRow[]
+  quotaUsages OrganizationQuotaUsage[]
 
   @@index([organizationId])
   @@index([organizationId, fileHash])
@@ -844,6 +860,7 @@ model AIJob {
   errorMessage   String?
   startedAt      DateTime?
   completedAt    DateTime?
+  leaseExpiresAt DateTime?
   createdAt      DateTime    @default(now())
   updatedAt      DateTime    @updatedAt
 
@@ -857,6 +874,7 @@ model AIJob {
   @@index([documentId])
   @@index([status])
   @@index([jobType])
+  @@index([organizationId, jobType, status, leaseExpiresAt])
 }
 
 model AuditLog {
@@ -883,6 +901,80 @@ model AuditLog {
   @@index([entityType])
   @@index([entityType, entityId])
   @@index([createdAt])
+}
+
+model OrganizationAiAuthorization {
+  organizationId                   String                @id
+  status                           AiAuthorizationStatus @default(DISABLED)
+  consentVersion                   String
+  provider                         String
+  processingScope                  String
+  evidenceReference                String
+  authorizedRepresentativeReference String
+  verifiedById                     String
+  verifiedAt                       DateTime
+  effectiveAt                      DateTime
+  expiresAt                        DateTime?
+  withdrawnAt                      DateTime?
+  withdrawalReference              String?
+  createdAt                        DateTime              @default(now())
+  updatedAt                        DateTime              @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([status, provider, processingScope])
+  @@index([consentVersion])
+}
+
+model OrganizationQuota {
+  organizationId           String   @id
+  enabled                  Boolean  @default(false)
+  periodDays               Int      @default(28)
+  uploadLimit              Int      @default(20)
+  dailyUploadLimit         Int      @default(10)
+  maxFileSizeBytes         Int      @default(10485760)
+  maxConcurrentExtractions Int      @default(2)
+  maxImportRows            Int      @default(500)
+  createdAt                DateTime @default(now())
+  updatedAt                DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+}
+
+model OrganizationQuotaPeriod {
+  id             String    @id @default(cuid())
+  organizationId String
+  startsAt       DateTime
+  endsAt         DateTime
+  closedAt       DateTime?
+  resetByUserId  String?
+  createdAt      DateTime  @default(now())
+
+  organization Organization             @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  usages       OrganizationQuotaUsage[]
+
+  @@unique([organizationId, startsAt])
+  @@index([organizationId, closedAt, endsAt])
+}
+
+model OrganizationQuotaUsage {
+  id             String         @id @default(cuid())
+  organizationId String
+  periodId       String
+  userId         String?
+  documentId     String?
+  usageType      QuotaUsageType
+  occurredAt     DateTime       @default(now())
+  metadata       Json?
+
+  organization Organization            @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  period       OrganizationQuotaPeriod @relation(fields: [periodId], references: [id], onDelete: Restrict)
+  user         User?                   @relation("QuotaUsageUser", fields: [userId], references: [id], onDelete: SetNull)
+  document     Document?               @relation(fields: [documentId], references: [id], onDelete: SetNull)
+
+  @@unique([documentId, usageType])
+  @@index([organizationId, usageType, occurredAt])
+  @@index([periodId, usageType])
 }
 
 model Feedback {

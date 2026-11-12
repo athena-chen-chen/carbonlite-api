@@ -94,6 +94,7 @@ describe('ActivityDataService canonical calculation persistence', () => {
       auditLog as never,
       activityTracking as never,
       { prepareCreate: jest.fn(async (_client, data) => data), recalculate: jest.fn(async (_client, row) => row) } as never,
+      { assertImportRows: jest.fn().mockResolvedValue(undefined) } as never,
     );
   });
 

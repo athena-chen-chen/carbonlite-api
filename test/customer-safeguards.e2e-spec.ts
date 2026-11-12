@@ -182,6 +182,28 @@ describe('External customer safeguards (e2e)', () => {
       platform.user.email,
       password,
     );
+    await prisma.organizationQuota.create({
+      data: {
+        organizationId: organization.id,
+        enabled: true,
+        dailyUploadLimit: 3,
+        maxConcurrentExtractions: 1,
+      },
+    });
+    await prisma.organizationAiAuthorization.create({
+      data: {
+        organizationId: organization.id,
+        status: 'ENABLED',
+        consentVersion: 'synthetic-external-pilot-v1',
+        provider: 'OPENAI',
+        processingScope: 'DOCUMENT_EXTRACTION',
+        evidenceReference: 'synthetic-evidence-reference',
+        authorizedRepresentativeReference: 'synthetic-representative-reference',
+        verifiedById: platform.user.id,
+        verifiedAt: new Date(),
+        effectiveAt: new Date(Date.now() - 1_000),
+      },
+    });
     const unrelatedBefore = await prisma.organization.findUniqueOrThrow({
       where: { id: unrelated.user.organizationId },
     });
@@ -257,6 +279,11 @@ describe('External customer safeguards (e2e)', () => {
       .set(authHeader(customerToken))
       .expect(401);
     await request(app.getHttpServer())
+      .post('/api/document-extraction/extract')
+      .set(authHeader(customerToken))
+      .send({ documentId: document.id })
+      .expect(401);
+    await request(app.getHttpServer())
       .post('/api/admin/customer-provisioning/suspend')
       .set(authHeader(platformToken))
       .send(command)
@@ -269,6 +296,18 @@ describe('External customer safeguards (e2e)', () => {
     await expect(prisma.activityData.findUnique({ where: { id: activity.id } })).resolves.not.toBeNull();
     await expect(prisma.report.findUnique({ where: { id: report.id } })).resolves.not.toBeNull();
     await expect(prisma.document.findUnique({ where: { id: document.id } })).resolves.not.toBeNull();
+    await expect(prisma.organizationQuota.findUnique({
+      where: { organizationId: organization.id },
+    })).resolves.toMatchObject({ enabled: true, maxConcurrentExtractions: 1 });
+    await expect(prisma.organizationAiAuthorization.findUnique({
+      where: { organizationId: organization.id },
+    })).resolves.toMatchObject({ status: 'ENABLED', provider: 'OPENAI' });
+    await expect(prisma.organizationQuotaUsage.count({
+      where: { organizationId: organization.id },
+    })).resolves.toBe(0);
+    await expect(prisma.aIJob.count({
+      where: { organizationId: organization.id },
+    })).resolves.toBe(0);
     await expect(prisma.conversionFactor.findUniqueOrThrow({ where: { id: globalFactorId } })).resolves.toEqual(globalFactorBefore);
     await expect(prisma.organization.findUniqueOrThrow({ where: { id: unrelated.user.organizationId } })).resolves.toEqual(unrelatedBefore);
     await expect(prisma.auditLog.count({

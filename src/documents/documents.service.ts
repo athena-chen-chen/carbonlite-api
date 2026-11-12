@@ -22,6 +22,7 @@ import {
   documentStorageKey,
   persistedDocumentStorageUrl,
 } from './document-storage';
+import { OrganizationQuotasService } from '../organization-quotas/organization-quotas.service';
 
 @Injectable()
 export class DocumentsService {
@@ -32,6 +33,8 @@ export class DocumentsService {
     private readonly auditLog: AuditLogService,
     private readonly activityTracking: ActivityTrackingService,
     @Inject(DOCUMENT_STORAGE) private readonly storage: DocumentStorage,
+    @Inject(OrganizationQuotasService)
+    private readonly quotas: OrganizationQuotasService | undefined = undefined,
   ) {}
 
   async upload(
@@ -59,32 +62,43 @@ export class DocumentsService {
       });
       savedStorageKey = createDocumentStorageKey(organizationId, file.originalname);
       await this.storage.save(savedStorageKey, buffer);
-      created = await this.prisma.$transaction(async tx => {
-        const created = await tx.document.create({
-          data: {
+      created = await this.quotaEnforcement.withUploadTransaction(
+        { organizationId, userId, fileSize: file.size },
+        async (tx) => {
+          const acceptedDocument = await tx.document.create({
+            data: {
+              organizationId,
+              uploadedById: userId,
+              fileName: file.originalname,
+              fileUrl: persistedDocumentStorageUrl(savedStorageKey!),
+              mimeType: file.mimetype,
+              fileSize: file.size,
+              fileHash,
+              type: (type as any) ?? 'OTHER',
+              status: 'UPLOADED',
+            },
+          });
+          await this.auditLog.log({
             organizationId,
-            uploadedById: userId,
-            fileName: file.originalname,
-            fileUrl: persistedDocumentStorageUrl(savedStorageKey!),
-            mimeType: file.mimetype,
-            fileSize: file.size,
-            fileHash,
-            type: (type as any) ?? 'OTHER',
-            status: 'UPLOADED',
-          },
-        });
-        await this.auditLog.log({
-          organizationId,
-          userId,
-          action: 'UPLOAD_DOCUMENT',
-          entityType: 'Document',
-          entityId: created.id,
-          description: `Uploaded document ${created.fileName}`,
-          newValue: created,
-        }, tx);
-        return created;
-      });
-
+            userId,
+            action: 'UPLOAD_DOCUMENT',
+            entityType: 'Document',
+            entityId: acceptedDocument.id,
+            description: `Uploaded document ${acceptedDocument.fileName}`,
+            newValue: acceptedDocument,
+          }, tx);
+          return {
+            value: acceptedDocument,
+            accepted: true,
+            documentId: acceptedDocument.id,
+            metadata: {
+              source: 'DOCUMENT_UPLOAD',
+              fileSize: file.size,
+              mimeType: file.mimetype,
+            },
+          };
+        },
+      );
     } catch (error) {
       if (savedStorageKey && !created) {
         try {
@@ -155,6 +169,7 @@ export class DocumentsService {
       }),
       this.prisma.document.count({ where }),
     ]);
+    const quotaStatus = await this.quotaEnforcement.getStatus(organizationId);
 
     return {
       items: items.map((item) => {
@@ -172,6 +187,7 @@ export class DocumentsService {
       pageSize,
       total,
       totalPages: Math.ceil(total / pageSize),
+      ...(quotaStatus?.enabled ? { quotaStatus } : {}),
     };
   }
 
@@ -325,5 +341,12 @@ export class DocumentsService {
         sourceEvidence,
       };
     });
+  }
+
+  private get quotaEnforcement() {
+    if (!this.quotas) {
+      throw new ServiceUnavailableException('Organization quota enforcement is unavailable.');
+    }
+    return this.quotas;
   }
 }

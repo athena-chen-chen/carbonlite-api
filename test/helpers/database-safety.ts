@@ -7,6 +7,7 @@ const disposableNames = new Set([
   'carbonlite_test',
   'carbonlite_ci_test',
 ]);
+const uniqueQuotaDatabaseName = /^carbonlite_quota_e2e_\d{8}_\d{4}$/;
 
 export function assertSafeTestDatabaseTarget(value = process.env.DATABASE_URL) {
   const refuse = (reason: string): never => {
@@ -31,7 +32,10 @@ export function assertSafeTestDatabaseTarget(value = process.env.DATABASE_URL) {
     return refuse('Test DATABASE_URL must not contain query options or a fragment.');
   }
   const database = url.pathname.slice(1);
-  if (!localHosts.has(url.hostname) || !disposableNames.has(database)) {
+  if (
+    !localHosts.has(url.hostname) ||
+    (!disposableNames.has(database) && !uniqueQuotaDatabaseName.test(database))
+  ) {
     return refuse(
       'Target is not a recognized disposable local CarbonLite test database. ' +
       'Use loopback PostgreSQL with carbonlite_e2e, carbonlite_test, or carbonlite_ci_test.',

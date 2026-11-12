@@ -1,14 +1,16 @@
-import { ExtractionWorkload, EXTRACTION_TIMEOUT_MS, MAX_CONCURRENT_EXTRACTIONS, withExtractionDeadline } from './extraction-workload';
+import { ExtractionWorkload, EXTRACTION_TIMEOUT_MS, withExtractionDeadline } from './extraction-workload';
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>(done => { resolve = done; }); return { promise, resolve }; }
 
-it('caps simultaneous work, prevents duplicate keys, and releases capacity after success and failure', async () => {
-  const limiter = new ExtractionWorkload(); const releases = Array.from({ length: MAX_CONCURRENT_EXTRACTIONS }, () => deferred<void>());
+it('preserves process capacity by default and permits database-leased tenant work', async () => {
+  const limiter = new ExtractionWorkload(); const releases = Array.from({ length: 3 }, () => deferred<void>());
   let active = 0, maximum = 0;
-  const running = releases.map((release, i) => limiter.run(String(i), async () => { active++; maximum = Math.max(maximum, active); await release.promise; active--; }));
+  const running = releases.slice(0, 2).map((release, i) => limiter.run(String(i), async () => { active++; maximum = Math.max(maximum, active); await release.promise; active--; }));
   try {
     await expect(limiter.run('0', async () => undefined)).rejects.toThrow('already running');
-    await expect(limiter.run('overflow', async () => undefined)).rejects.toThrow('capacity');
-    expect(maximum).toBe(MAX_CONCURRENT_EXTRACTIONS);
+    await expect(limiter.run('legacy-capacity', async () => undefined)).rejects.toThrow('capacity is busy');
+    running.push(limiter.run('database-leased', async () => { active++; maximum = Math.max(maximum, active); await releases[2].promise; active--; }, false));
+    await Promise.resolve();
+    expect(maximum).toBe(3);
   } finally { releases.forEach(release => release.resolve(undefined)); await Promise.all(running); }
   await expect(limiter.run('failure', async () => { throw Error('synthetic failure'); })).rejects.toThrow('synthetic failure');
   await expect(limiter.run('failure', async () => 'retried')).resolves.toBe('retried');

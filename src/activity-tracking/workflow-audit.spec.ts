@@ -61,7 +61,14 @@ describe('workflow audit persistence', () => {
   it('audits a newly persisted spreadsheet source once and not repeated review saves', async () => {
     const { client, events } = database();
     client.document.findFirst.mockResolvedValueOnce(null).mockResolvedValue({ id: 'source', fileName: 'operations.xlsx' });
-    const subject = new SpreadsheetImportService(client, new ActivityTrackingService(client));
+    const subject = new SpreadsheetImportService(
+      client,
+      new ActivityTrackingService(client),
+      {
+        assertImportRows: jest.fn().mockResolvedValue(undefined),
+        withUploadAcceptance: jest.fn(async (_tx, _input, accept) => (await accept()).value),
+      } as never,
+    );
     const dto: any = { sourceType: 'EXCEL', importBatchId: 'batch-a', sourceFileName: 'operations.xlsx', rows: importRows.map((row, i) => ({ ...row, rowId: `row-${i}`, status: 'READY', issues: [], rawSourceRow: { confidential: 'do not copy' } })) };
     await subject.saveReviewRows('org-a', dto, 'actor-a');
     await subject.saveReviewRows('org-a', dto, 'actor-a');

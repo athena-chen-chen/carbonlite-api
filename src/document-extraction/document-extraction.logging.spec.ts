@@ -14,11 +14,18 @@ it('F16 omits provider credentials, raw message/stack and document content from 
   const prisma: any = { document: { findFirst: jest.fn().mockResolvedValue(document), update: jest.fn() }, $transaction: jest.fn() };
   prisma.$transaction.mockImplementation((callback: (client: unknown) => unknown) => callback(prisma));
   const storage = { exists: jest.fn().mockResolvedValue(true), read: jest.fn().mockResolvedValue(Buffer.from('%PDF-1.4\nfixture\n%%EOF')) };
-  const service = new DocumentExtractionService(prisma, { log: jest.fn() } as never, { track: jest.fn() } as never, null as never, storage as never);
+  const authorization = { assertProviderRequestAllowed: jest.fn().mockResolvedValue({}) };
+  const quotas = { beginExtraction: jest.fn().mockResolvedValue(null), finishExtraction: jest.fn().mockResolvedValue(undefined) };
+  const service = new DocumentExtractionService(prisma, { log: jest.fn() } as never, { track: jest.fn() } as never, null as never, storage as never, quotas as never, authorization as never);
   const logs = ['error', 'warn', 'log'].map(method => jest.spyOn(Logger.prototype, method as 'error').mockImplementation(() => undefined));
   await expect(service.extract('org-1', 'doc-1')).rejects.toThrow('Extraction failed. Please try again or upload the file again.');
   const output = JSON.stringify(logs.map(log => log.mock.calls));
   expect(output).not.toContain('secret-'); expect(output).toContain('doc-1'); expect(output).toContain('502');
   expect(openai.responses.create).toHaveBeenCalled();
+  expect(authorization.assertProviderRequestAllowed).toHaveBeenCalledWith(
+    'org-1',
+    'OPENAI',
+    'DOCUMENT_EXTRACTION',
+  );
   expect(prisma.document.update).toHaveBeenCalledWith({ where: { id: 'doc-1' }, data: { status: 'EXTRACTION_FAILED' } });
 });

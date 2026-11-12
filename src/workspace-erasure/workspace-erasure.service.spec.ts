@@ -52,6 +52,8 @@ function setup() {
     },
     aIJob: count(1), conversionFactor: count(1), feedback: count(1),
     userActivityEvent: count(2),
+    organizationQuota: count(1), organizationQuotaPeriod: count(1),
+    organizationQuotaUsage: count(2), organizationAiAuthorization: count(1),
     auditLog: {
       count: jest.fn().mockResolvedValue(2),
       create: jest.fn().mockResolvedValue({ id: 'audit' }),
@@ -83,6 +85,8 @@ describe('WorkspaceErasureService', () => {
         organizationId: 'org-a', documents: 2, physicalFiles: 2,
         activityRecords: 4, calculationSnapshots: 3, importBatches: 1,
         customConversionFactors: 1,
+        quotaPolicies: 1, quotaPeriods: 1, quotaUsages: 2,
+        aiAuthorizations: 1,
       },
     });
     expect(storage.delete).not.toHaveBeenCalled();
