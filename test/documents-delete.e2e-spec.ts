@@ -17,12 +17,14 @@ import {
 describe('Document delete (e2e)', () => {
   let app: INestApplication;
   let prisma: PrismaService;
+  let storage: DocumentStorage;
   const testRunId = uniqueTestId('document-delete');
 
   beforeAll(async () => {
     const e2e = await createE2eApp();
     app = e2e.app;
     prisma = e2e.prisma;
+    storage = app.get(DOCUMENT_STORAGE);
   });
 
   afterAll(async () => {

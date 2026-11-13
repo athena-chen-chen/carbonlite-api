@@ -51,6 +51,17 @@ describe('DeletionRecoveryService virtual spreadsheet deletion', () => {
         entityId: 'doc-a',
         newValue: {
           documentId: 'doc-a',
+          deletedActivityRecords: 0,
+          preservedActivityRecords: 5,
+          sourceEvidence: 'NONE',
+        },
+      }),
+    });
+    expect(tx.userActivityEvent.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        eventName: 'DOCUMENT_DELETED',
+        metadata: {
+          deletedActivityRecords: 0,
           preservedActivityRecords: 5,
           sourceEvidence: 'NONE',
         },

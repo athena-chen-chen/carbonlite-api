@@ -50,6 +50,10 @@ describe('Recoverable document deletion (e2e)', () => {
       createTestUser(app, { organizationName: `${testRunId} Approver`, email: `approver-${testRunId}@example.test`, password }),
       createTestUser(app, { organizationName: `${testRunId} Operator`, email: `operator-${testRunId}@example.test`, password }),
     ]);
+    await prisma.organization.update({
+      where: { id: tenant.user.organizationId },
+      data: { customerStatus: 'ACTIVE' },
+    });
     await prisma.user.updateMany({
       where: { id: { in: [approver.user.id, operator.user.id] } },
       data: { role: 'ADMIN' },

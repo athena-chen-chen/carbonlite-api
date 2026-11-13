@@ -88,6 +88,7 @@ export class DeletionRecoveryService {
               'Virtual spreadsheet source metadata deleted; imported activity records preserved.',
             newValue: {
               documentId,
+              deletedActivityRecords: 0,
               preservedActivityRecords,
               sourceEvidence: 'NONE',
             },
@@ -100,7 +101,11 @@ export class DeletionRecoveryService {
             eventName: 'DOCUMENT_DELETED',
             entityType: 'Document',
             entityId: documentId,
-            metadata: { preservedActivityRecords, sourceEvidence: 'NONE' },
+            metadata: {
+              deletedActivityRecords: 0,
+              preservedActivityRecords,
+              sourceEvidence: 'NONE',
+            },
           },
         });
         return { preservedActivityRecords };
@@ -219,7 +224,12 @@ export class DeletionRecoveryService {
           entityType: 'DocumentDeletionIntent',
           entityId: completed.id,
           description: 'Source document moved to recoverable quarantine and database metadata deleted.',
-          newValue: { documentId, deletionIntentId: completed.id, preservedActivityRecords },
+          newValue: {
+            documentId,
+            deletionIntentId: completed.id,
+            deletedActivityRecords: 0,
+            preservedActivityRecords,
+          },
         },
       });
       await tx.userActivityEvent.create({
@@ -229,7 +239,12 @@ export class DeletionRecoveryService {
           eventName: 'DOCUMENT_DELETED',
           entityType: 'Document',
           entityId: documentId,
-          metadata: { deletionIntentId: completed.id, preservedActivityRecords, sourceEvidence: 'QUARANTINED' },
+          metadata: {
+            deletionIntentId: completed.id,
+            deletedActivityRecords: 0,
+            preservedActivityRecords,
+            sourceEvidence: 'QUARANTINED',
+          },
         },
       });
       return { kind: 'COMPLETE' as const, intent: completed, idempotent: false, preservedActivityRecords };

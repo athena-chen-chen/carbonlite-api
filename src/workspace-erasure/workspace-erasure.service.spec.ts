@@ -39,7 +39,10 @@ function setup() {
     document: {
       findMany: jest.fn().mockImplementation(({ select }) => Promise.resolve(
         select.fileUrl
-          ? [{ fileUrl: '/uploads/org-a/a.pdf' }, { fileUrl: '/uploads/org-a/b.csv' }]
+          ? [
+              { id: 'document-a', fileUrl: '/uploads/org-a/a.pdf' },
+              { id: 'document-b', fileUrl: '/uploads/org-a/b.csv' },
+            ]
           : [{ importBatchId: 'batch-a' }],
       )),
     },
@@ -82,6 +85,10 @@ function setup() {
     conversionFactor: prisma.conversionFactor,
     feedback: prisma.feedback,
     userActivityEvent: prisma.userActivityEvent,
+    organizationQuota: prisma.organizationQuota,
+    organizationQuotaPeriod: prisma.organizationQuotaPeriod,
+    organizationQuotaUsage: prisma.organizationQuotaUsage,
+    organizationAiAuthorization: prisma.organizationAiAuthorization,
     auditLog: { ...prisma.auditLog, create: tx.auditLog.create },
   });
   const storage = storageMock();
