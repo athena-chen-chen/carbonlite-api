@@ -10,14 +10,20 @@ import { assertSafeTestDatabaseTarget } from './helpers/database-safety';
 describe('organization real-data authorization gate', () => {
   let app: INestApplication;
   let prisma: PrismaService;
-  let previousEvidenceKey: string | undefined;
+  let previousEvidenceVersion: string | undefined;
+  let previousEvidenceKeyring: string | undefined;
+  const evidenceKey = Buffer.alloc(32, 9).toString('base64');
   const run = uniqueTestId('real-data-gate');
   const evidenceDecisionIds: string[] = [];
 
   beforeAll(async () => {
     assertSafeTestDatabaseTarget();
-    previousEvidenceKey = process.env.REAL_DATA_EVIDENCE_HMAC_KEY;
-    process.env.REAL_DATA_EVIDENCE_HMAC_KEY = 'e2e-only-real-data-evidence-key-32-characters';
+    previousEvidenceVersion = process.env.REAL_DATA_EVIDENCE_HMAC_ACTIVE_VERSION;
+    previousEvidenceKeyring = process.env.REAL_DATA_EVIDENCE_HMAC_KEYRING;
+    process.env.REAL_DATA_EVIDENCE_HMAC_ACTIVE_VERSION = 'e2e-v1';
+    process.env.REAL_DATA_EVIDENCE_HMAC_KEYRING = JSON.stringify([
+      { version: 'e2e-v1', key: `base64:${evidenceKey}` },
+    ]);
     const setup = await createE2eApp();
     app = setup.app;
     prisma = setup.prisma;
@@ -31,8 +37,10 @@ describe('organization real-data authorization gate', () => {
       });
     }
     if (app) await app.close();
-    if (previousEvidenceKey === undefined) delete process.env.REAL_DATA_EVIDENCE_HMAC_KEY;
-    else process.env.REAL_DATA_EVIDENCE_HMAC_KEY = previousEvidenceKey;
+    if (previousEvidenceVersion === undefined) delete process.env.REAL_DATA_EVIDENCE_HMAC_ACTIVE_VERSION;
+    else process.env.REAL_DATA_EVIDENCE_HMAC_ACTIVE_VERSION = previousEvidenceVersion;
+    if (previousEvidenceKeyring === undefined) delete process.env.REAL_DATA_EVIDENCE_HMAC_KEYRING;
+    else process.env.REAL_DATA_EVIDENCE_HMAC_KEYRING = previousEvidenceKeyring;
   });
 
   it('is fail-closed, platform-admin controlled, revision-bound, and tenant isolated', async () => {
@@ -183,7 +191,10 @@ describe('organization real-data authorization gate', () => {
       where: { authorizationDecisionId: approved.body.authorization.decisionId },
     });
     expect(evidence).toHaveLength(2);
+    expect(evidence.every(row => row.hmacKeyVersion === 'e2e-v1')).toBe(true);
     expect(JSON.stringify(evidence)).not.toContain(organization.name);
     expect(JSON.stringify(evidence)).not.toContain(customer.user.email);
+    expect(JSON.stringify(evidence)).not.toContain(evidenceKey);
+    expect(JSON.stringify(approved.body)).not.toContain(evidenceKey);
   });
 });

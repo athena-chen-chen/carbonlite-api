@@ -1,4 +1,4 @@
-import { createHmac, randomUUID } from 'crypto';
+import { randomUUID } from 'crypto';
 import {
   BadRequestException,
   ConflictException,
@@ -27,13 +27,15 @@ import {
   INGESTION_MODE_REAL,
   INGESTION_MODE_SYNTHETIC,
   REAL_DATA_ALLOWED_SCOPE_CODE,
-  REAL_DATA_EVIDENCE_HMAC_KEY_ENV,
   REAL_DATA_POLICY_VERSION,
   RealDataEffectiveReason,
 } from './real-data-authorization.constants';
+import { RealDataEvidenceHmacKeyring } from './real-data-evidence-hmac-keyring';
 
 @Injectable()
 export class RealDataAuthorizationService {
+  private readonly evidenceKeyring = new RealDataEvidenceHmacKeyring();
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly auditLog: AuditLogService,
@@ -334,7 +336,7 @@ export class RealDataAuthorizationService {
     if (!authorization) return { count: 0 };
 
     return tx.realDataAuthorizationEvidence.updateMany({
-      where: { organizationIdHash: this.digestEvidenceValue(organizationId) },
+      where: { authorizationDecisionId: authorization.decisionId },
       data: { workspaceErasedAt: erasedAt },
     });
   }
@@ -442,37 +444,29 @@ export class RealDataAuthorizationService {
   }
 
   private writeEvidence(tx: Prisma.TransactionClient, authorization: any) {
+    const signer = this.evidenceKeyring.activeSigner();
     return tx.realDataAuthorizationEvidence.create({
       data: {
-        organizationIdHash: this.digestEvidenceValue(authorization.organizationId),
+        hmacKeyVersion: signer.hmacKeyVersion,
+        organizationIdHash: signer.digest(authorization.organizationId),
         authorizationDecisionId: authorization.decisionId,
         approvalRevision: authorization.approvalRevision,
         decision: authorization.status,
         policyVersion: authorization.policyVersion,
         allowedDataScopeCode: REAL_DATA_ALLOWED_SCOPE_CODE,
-        agreementEvidenceReferenceHash: this.digestEvidenceValue(authorization.agreementEvidenceReference),
-        readinessEvidenceReferenceHash: this.digestEvidenceValue(authorization.privacySecurityReadinessReference),
-        approvedByIdHash: this.digestEvidenceValue(authorization.approvedById),
+        agreementEvidenceReferenceHash: signer.digest(authorization.agreementEvidenceReference),
+        readinessEvidenceReferenceHash: signer.digest(authorization.privacySecurityReadinessReference),
+        approvedByIdHash: signer.digest(authorization.approvedById),
         approvedAt: authorization.approvedAt,
         effectiveAt: authorization.effectiveAt,
         expiresAt: authorization.expiresAt,
         reviewDueAt: authorization.reviewDueAt,
         withdrawnByIdHash: authorization.withdrawnById
-          ? this.digestEvidenceValue(authorization.withdrawnById)
+          ? signer.digest(authorization.withdrawnById)
           : null,
         withdrawnAt: authorization.withdrawnAt,
         withdrawalReasonCode: authorization.withdrawnAt ? 'WITHDRAWN' : null,
       },
     });
-  }
-
-  private digestEvidenceValue(value: string) {
-    const key = process.env[REAL_DATA_EVIDENCE_HMAC_KEY_ENV];
-    if (!key || key.length < 32) {
-      throw new ServiceUnavailableException(
-        codedServiceUnavailable('REAL_DATA_EVIDENCE_KEY_UNAVAILABLE', 'Real-data evidence protection is unavailable.'),
-      );
-    }
-    return createHmac('sha256', key).update(value).digest('hex');
   }
 }

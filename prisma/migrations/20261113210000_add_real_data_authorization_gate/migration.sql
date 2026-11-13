@@ -42,6 +42,7 @@ CREATE TABLE "OrganizationRealDataAuthorization" (
 
 CREATE TABLE "RealDataAuthorizationEvidence" (
   "id" TEXT NOT NULL,
+  "hmacKeyVersion" TEXT NOT NULL,
   "organizationIdHash" TEXT NOT NULL,
   "authorizationDecisionId" TEXT NOT NULL,
   "approvalRevision" INTEGER NOT NULL,

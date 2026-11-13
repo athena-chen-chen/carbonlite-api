@@ -7,7 +7,7 @@ import {
 import { BadRequestException, ForbiddenException, ServiceUnavailableException } from '@nestjs/common';
 import { RealDataAuthorizationService } from './real-data-authorization.service';
 
-const hmacKey = 'test-real-data-evidence-key-that-is-at-least-32-bytes';
+const hmacKey = Buffer.alloc(32, 7).toString('base64');
 
 function effectiveAuthorization(overrides: Record<string, unknown> = {}) {
   return {
@@ -78,11 +78,15 @@ function setup() {
 
 describe('RealDataAuthorizationService', () => {
   beforeEach(() => {
-    process.env.REAL_DATA_EVIDENCE_HMAC_KEY = hmacKey;
+    process.env.REAL_DATA_EVIDENCE_HMAC_ACTIVE_VERSION = 'test-v1';
+    process.env.REAL_DATA_EVIDENCE_HMAC_KEYRING = JSON.stringify([
+      { version: 'test-v1', key: `base64:${hmacKey}` },
+    ]);
   });
 
   afterEach(() => {
-    delete process.env.REAL_DATA_EVIDENCE_HMAC_KEY;
+    delete process.env.REAL_DATA_EVIDENCE_HMAC_ACTIVE_VERSION;
+    delete process.env.REAL_DATA_EVIDENCE_HMAC_KEYRING;
   });
 
   it('resolves a missing authorization to synthetic-only', async () => {
@@ -146,6 +150,7 @@ describe('RealDataAuthorizationService', () => {
     await expect(service.approve('org-a', 'admin-a', dto)).resolves.toMatchObject({ result: 'APPROVED' });
     expect(tx.realDataAuthorizationEvidence.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
+        hmacKeyVersion: 'test-v1',
         organizationIdHash: expect.stringMatching(/^[a-f0-9]{64}$/),
         agreementEvidenceReferenceHash: expect.stringMatching(/^[a-f0-9]{64}$/),
       }),
@@ -200,10 +205,26 @@ describe('RealDataAuthorizationService', () => {
   it('does not require evidence hashing when erasing an organization that was never approved', async () => {
     const { service, tx, authorization } = setup();
     authorization.findUnique.mockResolvedValueOnce(null);
-    delete process.env.REAL_DATA_EVIDENCE_HMAC_KEY;
+    delete process.env.REAL_DATA_EVIDENCE_HMAC_ACTIVE_VERSION;
+    delete process.env.REAL_DATA_EVIDENCE_HMAC_KEYRING;
     await expect(
       service.markWorkspaceErased(tx, 'synthetic-org', new Date('2026-11-13T20:00:00Z')),
     ).resolves.toEqual({ count: 0 });
     expect(tx.realDataAuthorizationEvidence.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('marks historical evidence by immutable decision ID after key rotation', async () => {
+    const { service, tx, authorization } = setup();
+    authorization.findUnique.mockResolvedValueOnce({ decisionId: 'historical-decision' });
+    process.env.REAL_DATA_EVIDENCE_HMAC_ACTIVE_VERSION = 'test-v2';
+    process.env.REAL_DATA_EVIDENCE_HMAC_KEYRING = JSON.stringify([
+      { version: 'test-v2', key: `base64:${Buffer.alloc(32, 8).toString('base64')}` },
+    ]);
+    const erasedAt = new Date('2026-11-13T20:00:00Z');
+    await expect(service.markWorkspaceErased(tx, 'org-a', erasedAt)).resolves.toEqual({ count: 1 });
+    expect(tx.realDataAuthorizationEvidence.updateMany).toHaveBeenCalledWith({
+      where: { authorizationDecisionId: 'historical-decision' },
+      data: { workspaceErasedAt: erasedAt },
+    });
   });
 });

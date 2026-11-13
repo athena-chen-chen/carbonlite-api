@@ -1010,6 +1010,7 @@ model OrganizationRealDataAuthorization {
 /// Organization or User foreign keys so it can survive workspace erasure.
 model RealDataAuthorizationEvidence {
   id                             String                      @id @default(cuid())
+  hmacKeyVersion                 String
   organizationIdHash             String
   authorizationDecisionId        String
   approvalRevision               Int
