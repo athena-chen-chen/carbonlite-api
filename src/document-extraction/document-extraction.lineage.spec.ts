@@ -58,6 +58,7 @@ describe('document facility and optional cost lineage', () => {
       'org',
       'OPENAI',
       'DOCUMENT_EXTRACTION',
+      undefined,
     );
     const schema = request.text.format.schema.properties.activities.items;
     expect(schema.required).toEqual(expect.arrayContaining(['facilityName', 'costCad', 'costCurrency']));

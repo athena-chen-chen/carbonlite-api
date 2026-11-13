@@ -183,6 +183,22 @@ enum AiAuthorizationStatus {
   WITHDRAWN
 }
 
+enum AiAuthorizedDataMode {
+  SYNTHETIC_TEST_ONLY
+  REAL_CUSTOMER_DATA
+}
+
+enum IngestionDataMode {
+  SYNTHETIC_TEST
+  REAL_CUSTOMER_DATA
+}
+
+enum RealDataAuthorizationStatus {
+  SYNTHETIC_ONLY
+  REAL_DATA_APPROVED
+  WITHDRAWN
+}
+
 enum QuotaUsageType {
   DOCUMENT_UPLOAD
 }
@@ -328,6 +344,7 @@ model Organization {
   quotaPeriods        OrganizationQuotaPeriod[]
   quotaUsages         OrganizationQuotaUsage[]
   aiAuthorization     OrganizationAiAuthorization?
+  realDataAuthorization OrganizationRealDataAuthorization?
 
   // 缺的就是这两个
   activityData  ActivityData[]
@@ -831,6 +848,7 @@ model Document {
   importBatchId  String?
   type           DocumentType   @default(OTHER)
   status         DocumentStatus @default(UPLOADED)
+  ingestionDataMode IngestionDataMode @default(SYNTHETIC_TEST)
   extractedText  String?
   extractedJson  Json?
   createdAt      DateTime       @default(now())
@@ -949,6 +967,8 @@ model OrganizationAiAuthorization {
   expiresAt                        DateTime?
   withdrawnAt                      DateTime?
   withdrawalReference              String?
+  authorizedDataMode               AiAuthorizedDataMode @default(SYNTHETIC_TEST_ONLY)
+  realDataApprovalRevision          Int?
   createdAt                        DateTime              @default(now())
   updatedAt                        DateTime              @updatedAt
 
@@ -956,6 +976,62 @@ model OrganizationAiAuthorization {
 
   @@index([status, provider, processingScope])
   @@index([consentVersion])
+}
+
+model OrganizationRealDataAuthorization {
+  organizationId                    String                      @id
+  decisionId                        String                      @unique @default(cuid())
+  status                            RealDataAuthorizationStatus @default(SYNTHETIC_ONLY)
+  approvalRevision                  Int
+  policyVersion                     String
+  agreementEvidenceReference        String
+  allowedDataScopeReference         String
+  privacySecurityReadinessReference String
+  approvedById                      String
+  approvedAt                        DateTime
+  effectiveAt                       DateTime
+  expiresAt                         DateTime?
+  reviewDueAt                       DateTime?
+  withdrawnById                     String?
+  withdrawnAt                       DateTime?
+  withdrawalReason                  String?
+  createdAt                         DateTime                    @default(now())
+  updatedAt                         DateTime                    @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([status, effectiveAt])
+  @@index([policyVersion])
+  @@index([expiresAt])
+  @@index([reviewDueAt])
+}
+
+/// Minimal append-only authorization evidence. Deliberately has no
+/// Organization or User foreign keys so it can survive workspace erasure.
+model RealDataAuthorizationEvidence {
+  id                             String                      @id @default(cuid())
+  organizationIdHash             String
+  authorizationDecisionId        String
+  approvalRevision               Int
+  decision                       RealDataAuthorizationStatus
+  policyVersion                  String
+  allowedDataScopeCode           String
+  agreementEvidenceReferenceHash String
+  readinessEvidenceReferenceHash String
+  approvedByIdHash               String?
+  approvedAt                     DateTime
+  effectiveAt                    DateTime
+  expiresAt                      DateTime?
+  reviewDueAt                    DateTime?
+  withdrawnByIdHash              String?
+  withdrawnAt                    DateTime?
+  withdrawalReasonCode           String?
+  workspaceErasedAt              DateTime?
+  createdAt                      DateTime                    @default(now())
+
+  @@index([organizationIdHash, approvalRevision], map: "RealDataAuthEvidence_orgHash_revision_idx")
+  @@index([authorizationDecisionId])
+  @@index([approvedAt])
 }
 
 model OrganizationQuota {

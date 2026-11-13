@@ -8,9 +8,10 @@ import {
   OrganizationAiAuthorizationController,
 } from './ai-authorization.controller';
 import { AiAuthorizationService } from './ai-authorization.service';
+import { RealDataAuthorizationModule } from '../real-data-authorization/real-data-authorization.module';
 
 @Module({
-  imports: [PrismaModule, AuditLogModule, AuthModule],
+  imports: [PrismaModule, AuditLogModule, AuthModule, RealDataAuthorizationModule],
   controllers: [AiAuthorizationController, OrganizationAiAuthorizationController],
   providers: [AiAuthorizationService, PlatformAdminGuard],
   exports: [AiAuthorizationService],

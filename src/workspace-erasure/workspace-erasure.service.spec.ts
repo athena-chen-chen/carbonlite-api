@@ -60,6 +60,7 @@ function setup() {
     userActivityEvent: count(2),
     organizationQuota: count(1), organizationQuotaPeriod: count(1),
     organizationQuotaUsage: count(2), organizationAiAuthorization: count(1),
+    organizationRealDataAuthorization: count(1),
     auditLog: {
       count: jest.fn().mockResolvedValue(2),
       create: jest.fn().mockResolvedValue({ id: 'audit' }),
@@ -89,6 +90,7 @@ function setup() {
     organizationQuotaPeriod: prisma.organizationQuotaPeriod,
     organizationQuotaUsage: prisma.organizationQuotaUsage,
     organizationAiAuthorization: prisma.organizationAiAuthorization,
+    organizationRealDataAuthorization: prisma.organizationRealDataAuthorization,
     auditLog: { ...prisma.auditLog, create: tx.auditLog.create },
   });
   const storage = storageMock();
@@ -103,9 +105,18 @@ function setup() {
       })))),
     quarantinePreparedIntent: jest.fn().mockResolvedValue(true),
   };
+  const realDataAuthorization = {
+    markWorkspaceErased: jest.fn().mockResolvedValue({ count: 1 }),
+  };
   return {
-    prisma, storage, tx, recovery,
-    service: new WorkspaceErasureService(prisma, storage, legalHolds as never, recovery as never),
+    prisma, storage, tx, recovery, realDataAuthorization,
+    service: new WorkspaceErasureService(
+      prisma,
+      storage,
+      legalHolds as never,
+      recovery as never,
+      realDataAuthorization as never,
+    ),
   };
 }
 
@@ -128,6 +139,7 @@ describe('WorkspaceErasureService', () => {
         customConversionFactors: 1,
         quotaPolicies: 1, quotaPeriods: 1, quotaUsages: 2,
         aiAuthorizations: 1,
+        realDataAuthorizations: 1,
       },
     });
     expect(storage.delete).not.toHaveBeenCalled();

@@ -51,7 +51,11 @@ function subject(record: unknown) {
   };
   const auditLog = { log: jest.fn() };
   return {
-    service: new AiAuthorizationService(prisma as never, auditLog as never),
+    service: new AiAuthorizationService(
+      prisma as never,
+      auditLog as never,
+      { assertEffectiveRealDataApproval: jest.fn().mockResolvedValue({ approvalRevision: 1 }) } as never,
+    ),
     prisma,
     tx,
     auditLog,

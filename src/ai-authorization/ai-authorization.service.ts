@@ -5,7 +5,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { AiAuthorizationStatus, Prisma } from '@prisma/client';
+import { AiAuthorizedDataMode, AiAuthorizationStatus, Prisma } from '@prisma/client';
 import { AuditLogService } from '../audit-log/audit-log.service';
 import { PrismaService } from '../prisma/prisma.service';
 import {
@@ -14,6 +14,12 @@ import {
   AI_UNAVAILABLE_MESSAGE,
 } from './ai-authorization.constants';
 import { RecordAiAuthorizationDto } from './dto/record-ai-authorization.dto';
+import { RealDataAuthorizationService } from '../real-data-authorization/real-data-authorization.service';
+import {
+  type DeclaredIngestionDataMode,
+  INGESTION_MODE_REAL,
+  INGESTION_MODE_SYNTHETIC,
+} from '../real-data-authorization/real-data-authorization.constants';
 
 type AuthorizationWithOrganization =
   Prisma.OrganizationAiAuthorizationGetPayload<{
@@ -29,6 +35,7 @@ export class AiAuthorizationService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly auditLog: AuditLogService,
+    private readonly realDataAuthorization: RealDataAuthorizationService,
   ) {}
 
   getForAdmin(organizationId: string) {
@@ -54,6 +61,9 @@ export class AiAuthorizationService {
       effectiveAt: authorization?.effectiveAt ?? null,
       expiresAt: authorization?.expiresAt ?? null,
       withdrawnAt: authorization?.withdrawnAt ?? null,
+      authorizedDataMode:
+        authorization?.authorizedDataMode ?? AiAuthorizedDataMode.SYNTHETIC_TEST_ONLY,
+      realDataApprovalRevision: authorization?.realDataApprovalRevision ?? null,
     };
   }
 
@@ -81,6 +91,24 @@ export class AiAuthorizationService {
     if (expiresAt && expiresAt <= effectiveAt) {
       throw new BadRequestException('Authorization expiry must be after its effective time.');
     }
+    const authorizedDataMode = dto.authorizedDataMode ?? AiAuthorizedDataMode.SYNTHETIC_TEST_ONLY;
+    let realDataApprovalRevision: number | null = null;
+    if (authorizedDataMode === AiAuthorizedDataMode.REAL_CUSTOMER_DATA) {
+      if (!dto.realDataApprovalRevision) {
+        throw new BadRequestException(
+          'Real-customer-data AI authorization requires a real-data approval revision.',
+        );
+      }
+      await this.realDataAuthorization.assertEffectiveRealDataApproval(
+        organizationId,
+        dto.realDataApprovalRevision,
+      );
+      realDataApprovalRevision = dto.realDataApprovalRevision;
+    } else if (dto.realDataApprovalRevision !== undefined) {
+      throw new BadRequestException(
+        'Synthetic-only AI authorization cannot reference a real-data approval revision.',
+      );
+    }
 
     return this.prisma.$transaction(async (tx) => {
       const previous = await tx.organizationAiAuthorization.findUnique({
@@ -101,6 +129,8 @@ export class AiAuthorizationService {
           verifiedAt: new Date(),
           effectiveAt,
           expiresAt,
+          authorizedDataMode,
+          realDataApprovalRevision,
         },
         update: {
           status: dto.status,
@@ -114,6 +144,8 @@ export class AiAuthorizationService {
           verifiedAt: new Date(),
           effectiveAt,
           expiresAt,
+          authorizedDataMode,
+          realDataApprovalRevision,
           withdrawnAt: null,
           withdrawalReference: null,
         },
@@ -140,6 +172,8 @@ export class AiAuthorizationService {
             consentVersion: authorization.consentVersion,
             provider: authorization.provider,
             processingScope: authorization.processingScope,
+            authorizedDataMode: authorization.authorizedDataMode,
+            realDataApprovalRevision: authorization.realDataApprovalRevision,
             evidenceReferencePresent: Boolean(authorization.evidenceReference),
             authorizedRepresentativeReferencePresent: Boolean(
               authorization.authorizedRepresentativeReference,
@@ -207,6 +241,7 @@ export class AiAuthorizationService {
     organizationId: string,
     provider = AI_PROVIDER_OPENAI,
     processingScope = AI_SCOPE_DOCUMENT_EXTRACTION,
+    ingestionDataMode: DeclaredIngestionDataMode = INGESTION_MODE_SYNTHETIC,
   ) {
     const authorization = await this.findAuthorization(organizationId);
     const now = new Date();
@@ -214,11 +249,29 @@ export class AiAuthorizationService {
       this.deny();
     }
 
+    if (ingestionDataMode === INGESTION_MODE_REAL) {
+      if (
+        authorization?.authorizedDataMode !== AiAuthorizedDataMode.REAL_CUSTOMER_DATA ||
+        !authorization.realDataApprovalRevision
+      ) {
+        this.deny('AI_REAL_DATA_CONSENT_REQUIRED');
+      }
+      await this.realDataAuthorization.assertEffectiveRealDataApproval(
+        organizationId,
+        authorization.realDataApprovalRevision,
+      );
+    }
+
     return authorization;
   }
 
-  private deny(): never {
-    throw new ForbiddenException(AI_UNAVAILABLE_MESSAGE);
+  private deny(code = 'AI_AUTHORIZATION_REQUIRED'): never {
+    throw new ForbiddenException({
+      statusCode: 403,
+      code,
+      message: AI_UNAVAILABLE_MESSAGE,
+      error: 'Forbidden',
+    });
   }
 
   private findAuthorization(organizationId: string) {

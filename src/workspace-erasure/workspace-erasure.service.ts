@@ -22,6 +22,7 @@ import { EraseWorkspaceDto } from './dto/workspace-erasure.dto';
 import { LegalHoldsService } from '../legal-holds/legal-holds.service';
 import { DeletionRecoveryService, DeletionStorageItem } from '../deletion-recovery/deletion-recovery.service';
 import { DocumentDeletionIntentStatus, DocumentDeletionTargetType } from '@prisma/client';
+import { RealDataAuthorizationService } from '../real-data-authorization/real-data-authorization.service';
 
 export type WorkspaceErasureInventory = {
   organizationId: string;
@@ -49,6 +50,7 @@ export type WorkspaceErasureInventory = {
   quotaPeriods: number;
   quotaUsages: number;
   aiAuthorizations: number;
+  realDataAuthorizations: number;
 };
 
 type InventoryPlan = {
@@ -66,6 +68,7 @@ export class WorkspaceErasureService {
     @Inject(DOCUMENT_STORAGE) private readonly storage: DocumentStorage,
     @Optional() private readonly legalHolds?: LegalHoldsService,
     @Optional() private readonly deletionRecovery?: DeletionRecoveryService,
+    private readonly realDataAuthorization?: RealDataAuthorizationService,
   ) {}
 
   async dryRun(actor: AuthenticatedUser, organizationId: string) {
@@ -141,6 +144,14 @@ export class WorkspaceErasureService {
           where: { id: command.organizationId },
           select: { id: true },
         });
+        if (!this.realDataAuthorization) {
+          throw new ServiceUnavailableException('Real-data authorization evidence preservation is unavailable.');
+        }
+        await this.realDataAuthorization.markWorkspaceErased(
+          tx,
+          command.organizationId,
+          completedAt,
+        );
         if (organization) await tx.organization.delete({ where: { id: command.organizationId } });
         await tx.documentDeletionIntent.updateMany({
           where: {
@@ -230,7 +241,7 @@ export class WorkspaceErasureService {
       spreadsheetReviewRows, activityRecords, calculationSnapshots, activityImports,
       documentImports, metricResults, reports, reportArtifacts, aiJobs,
       customConversionFactors, auditLogs, feedback, activityEvents,
-      quotaPolicies, quotaPeriods, quotaUsages, aiAuthorizations,
+      quotaPolicies, quotaPeriods, quotaUsages, aiAuthorizations, realDataAuthorizations,
     ] = await Promise.all([
       db.user.count({ where: { organizationId } }),
       db.membership.count({
@@ -257,6 +268,7 @@ export class WorkspaceErasureService {
       db.organizationQuotaPeriod.count({ where: { organizationId } }),
       db.organizationQuotaUsage.count({ where: { organizationId } }),
       db.organizationAiAuthorization.count({ where: { organizationId } }),
+      db.organizationRealDataAuthorization.count({ where: { organizationId } }),
     ]);
 
     const documentStorageItems = documents
@@ -311,6 +323,7 @@ export class WorkspaceErasureService {
         quotaPeriods,
         quotaUsages,
         aiAuthorizations,
+        realDataAuthorizations,
       },
       storageItems,
       unsupportedReportArtifacts,

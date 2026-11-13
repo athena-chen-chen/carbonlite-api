@@ -13,6 +13,8 @@ import {
 } from './dto/save-spreadsheet-review-rows.dto';
 import { SpreadsheetReviewRowQueryDto } from './dto/spreadsheet-review-row-query.dto';
 import { OrganizationQuotasService } from '../organization-quotas/organization-quotas.service';
+import type { DeclaredIngestionDataMode } from '../real-data-authorization/real-data-authorization.constants';
+import { INGESTION_MODE_SYNTHETIC } from '../real-data-authorization/real-data-authorization.constants';
 
 @Injectable()
 export class SpreadsheetImportService {
@@ -102,6 +104,7 @@ export class SpreadsheetImportService {
     organizationId: string,
     dto: SaveSpreadsheetReviewRowsDto,
     userId?: string,
+    ingestionDataMode: DeclaredIngestionDataMode = INGESTION_MODE_SYNTHETIC,
   ) {
     if (!dto.rows?.length) {
       throw new BadRequestException('No spreadsheet review rows provided.');
@@ -131,6 +134,7 @@ export class SpreadsheetImportService {
                 fileName: sourceFileName,
                 status: sourceStatus,
                 extractedJson: extractionJson,
+                ingestionDataMode,
               },
             })
           : await tx.document.create({
@@ -146,6 +150,7 @@ export class SpreadsheetImportService {
                 status: sourceStatus,
                 extractedJson: extractionJson,
                 importBatchId,
+                ingestionDataMode,
               },
             });
 

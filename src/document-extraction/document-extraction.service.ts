@@ -312,16 +312,6 @@ export class DocumentExtractionService {
         localText = fileBuffer.toString('utf-8');
       }
 
-      const inputModality = this.getOpenAiInputModality(mimeType);
-      const userContent = this.buildExtractionUserContent({
-        fileName: document.fileName,
-        mimeType,
-        base64,
-      });
-      this.logger.log(
-        `[DocumentExtraction] OpenAI request prepared documentId=${documentId} model=${this.extractionModel} mimeType=${mimeType} inputModality=${inputModality} fileSize=${fileBuffer.length}`,
-      );
-
       if (!this.aiAuthorization) {
         throw new InternalServerErrorException(
           'AI authorization control is unavailable.',
@@ -331,6 +321,17 @@ export class DocumentExtractionService {
         organizationId,
         AI_PROVIDER_OPENAI,
         AI_SCOPE_DOCUMENT_EXTRACTION,
+        document.ingestionDataMode,
+      );
+
+      const inputModality = this.getOpenAiInputModality(mimeType);
+      const userContent = this.buildExtractionUserContent({
+        fileName: document.fileName,
+        mimeType,
+        base64,
+      });
+      this.logger.log(
+        `[DocumentExtraction] OpenAI request prepared documentId=${documentId} model=${this.extractionModel} mimeType=${mimeType} inputModality=${inputModality} fileSize=${fileBuffer.length}`,
       );
 
       const response = await withExtractionDeadline(signal => openai.responses.create({

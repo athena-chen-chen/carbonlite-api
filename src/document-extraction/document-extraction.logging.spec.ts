@@ -26,6 +26,7 @@ it('F16 omits provider credentials, raw message/stack and document content from 
     'org-1',
     'OPENAI',
     'DOCUMENT_EXTRACTION',
+    undefined,
   );
   expect(prisma.document.update).toHaveBeenCalledWith({ where: { id: 'doc-1' }, data: { status: 'EXTRACTION_FAILED' } });
 });

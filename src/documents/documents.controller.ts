@@ -25,6 +25,7 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { throwCapturedAppError } from '../common/monitoring/capture-app-error';
 import { assertCanContributeActivityData } from '../common/permissions/activity-data-permissions';
+import { RealDataAuthorizationService } from '../real-data-authorization/real-data-authorization.service';
 
 @UseGuards(JwtAuthGuard, WorkspaceMutationGuard)
 @Controller('documents')
@@ -32,6 +33,7 @@ export class DocumentsController {
   constructor(
     @Inject(DocumentsService)
     private readonly documentsService: DocumentsService,
+    private readonly realDataAuthorization: RealDataAuthorizationService,
   ) {}
 
   @Post('upload')
@@ -41,6 +43,7 @@ export class DocumentsController {
     @UploadedFile() file: Express.Multer.File,
     @Body('type') type: string,
     @Body('allowDuplicate') allowDuplicate?: string,
+    @Headers('x-carbonlite-data-mode') rawDataMode?: string,
   ) {
     assertCanContributeActivityData(
       user,
@@ -51,6 +54,12 @@ export class DocumentsController {
       throw new BadRequestException('File is required.');
     }
 
+    const ingestionDataMode = await this.realDataAuthorization.resolveIngestionMode(
+      user.organizationId,
+      rawDataMode,
+      user.id,
+    );
+
     try {
       return await this.documentsService.upload(
         user.organizationId,
@@ -58,6 +67,7 @@ export class DocumentsController {
         file,
         type,
         allowDuplicate === 'true',
+        ingestionDataMode,
       );
     } catch (error) {
       throwCapturedAppError(

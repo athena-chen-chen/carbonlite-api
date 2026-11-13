@@ -24,6 +24,7 @@ import { OrganizationQuotasModule } from './organization-quotas/organization-quo
 import { AiAuthorizationModule } from './ai-authorization/ai-authorization.module';
 import { LegalHoldsModule } from './legal-holds/legal-holds.module';
 import { DeletionRecoveryModule } from './deletion-recovery/deletion-recovery.module';
+import { RealDataAuthorizationModule } from './real-data-authorization/real-data-authorization.module';
 
 @Module({
   imports: [
@@ -37,6 +38,7 @@ import { DeletionRecoveryModule } from './deletion-recovery/deletion-recovery.mo
     AiAuthorizationModule,
     LegalHoldsModule,
     DeletionRecoveryModule,
+    RealDataAuthorizationModule,
     AuthModule,
     ActivityDataModule,
     MetricsModule,

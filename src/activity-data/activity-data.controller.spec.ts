@@ -85,8 +85,12 @@ describe('ActivityDataController canonical calculation fields', () => {
     bulkUpdateProvince: jest.fn(),
     bulkUpdateFacility: jest.fn(),
   };
+  const realDataAuthorization = {
+    resolveIngestionMode: jest.fn().mockResolvedValue('SYNTHETIC_TEST'),
+  };
   const controller = new ActivityDataController(
     activityDataService as unknown as ActivityDataService,
+    realDataAuthorization as never,
   );
 
   beforeEach(() => {

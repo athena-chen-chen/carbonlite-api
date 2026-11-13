@@ -11,6 +11,7 @@ import {
   Patch,
   Post,
   Query,
+  Headers,
   UseGuards,
 } from '@nestjs/common';
 import { ActivityDataService } from './activity-data.service';
@@ -26,6 +27,7 @@ import { AuthenticatedUser } from '../auth/auth.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { assertCanContributeActivityData } from '../common/permissions/activity-data-permissions';
+import { RealDataAuthorizationService } from '../real-data-authorization/real-data-authorization.service';
 
 @UseGuards(JwtAuthGuard, WorkspaceMutationGuard)
 @Controller('activity-data')
@@ -33,23 +35,33 @@ export class ActivityDataController {
   constructor(
     @Inject(ActivityDataService)
     private readonly activityDataService: ActivityDataService,
+    private readonly realDataAuthorization: RealDataAuthorizationService,
   ) {}
 
   @Post()
-  create(@CurrentUser() user: AuthenticatedUser, @Body() dto: CreateActivityDataDto) {
+  create(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() dto: CreateActivityDataDto,
+    @Headers('x-carbonlite-data-mode') rawDataMode?: string,
+  ) {
     assertCanContributeActivityData(user);
 
-    return this.activityDataService.create(user.organizationId, dto, user.id);
+    return this.realDataAuthorization
+      .resolveIngestionMode(user.organizationId, rawDataMode, user.id)
+      .then(() => this.activityDataService.create(user.organizationId, dto, user.id));
   }
 
   @Post('bulk-import')
   bulkImport(
     @CurrentUser() user: AuthenticatedUser,
     @Body() dto: BulkImportActivityDataDto,
+    @Headers('x-carbonlite-data-mode') rawDataMode?: string,
   ) {
     assertCanContributeActivityData(user);
 
-    return this.activityDataService.bulkImport(user.organizationId, dto, user.id);
+    return this.realDataAuthorization
+      .resolveIngestionMode(user.organizationId, rawDataMode, user.id)
+      .then(() => this.activityDataService.bulkImport(user.organizationId, dto, user.id));
   }
 
   @Post('json-preview')

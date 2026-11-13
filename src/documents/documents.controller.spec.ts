@@ -23,8 +23,12 @@ describe('DocumentsController permissions', () => {
   const documentsService = {
     upload: jest.fn(),
   };
+  const realDataAuthorization = {
+    resolveIngestionMode: jest.fn().mockResolvedValue('SYNTHETIC_TEST'),
+  };
   const controller = new DocumentsController(
     documentsService as unknown as DocumentsService,
+    realDataAuthorization as never,
   );
 
   beforeEach(() => {
@@ -51,6 +55,7 @@ describe('DocumentsController permissions', () => {
       uploadFile,
       'UTILITY_BILL',
       false,
+      'SYNTHETIC_TEST',
     );
   });
 
@@ -74,4 +79,3 @@ describe('DocumentsController permissions', () => {
     expect(documentsService.upload).not.toHaveBeenCalled();
   });
 });
-

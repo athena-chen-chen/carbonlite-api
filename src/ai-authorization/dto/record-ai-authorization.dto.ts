@@ -1,10 +1,12 @@
 import {
   IsDateString,
+  IsInt,
   IsIn,
   IsNotEmpty,
   IsOptional,
   IsString,
   MaxLength,
+  Min,
 } from 'class-validator';
 import {
   AI_PROVIDER_OPENAI,
@@ -42,4 +44,13 @@ export class RecordAiAuthorizationDto {
   @IsOptional()
   @IsDateString()
   expiresAt?: string;
+
+  @IsOptional()
+  @IsIn(['SYNTHETIC_TEST_ONLY', 'REAL_CUSTOMER_DATA'])
+  authorizedDataMode?: 'SYNTHETIC_TEST_ONLY' | 'REAL_CUSTOMER_DATA';
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  realDataApprovalRevision?: number;
 }

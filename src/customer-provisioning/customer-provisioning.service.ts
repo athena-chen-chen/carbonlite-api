@@ -26,6 +26,7 @@ import { ProvisionPaidPilotDto } from './dto/provision-paid-pilot.dto';
 import { CustomerPreflightQueryDto } from './dto/customer-preflight-query.dto';
 import { SuspendCustomerOrganizationDto } from './dto/suspend-customer-organization.dto';
 import { LegalHoldsService } from '../legal-holds/legal-holds.service';
+import { RealDataAuthorizationService } from '../real-data-authorization/real-data-authorization.service';
 
 const CUSTOMER_ACCOUNT_TYPE = 'CUSTOMER';
 
@@ -34,6 +35,7 @@ export class CustomerProvisioningService {
   constructor(
     private readonly prisma: PrismaService,
     @Optional() private readonly legalHolds?: LegalHoldsService,
+    private readonly realDataAuthorization?: RealDataAuthorizationService,
   ) {}
 
   async getCustomerPreflight(query: CustomerPreflightQueryDto) {
@@ -374,6 +376,20 @@ export class CustomerProvisioningService {
         where: { id: organization.id },
         data: { customerStatus: OrganizationCustomerStatus.SUSPENDED },
       });
+      const realDataAuthorization = await tx.organizationRealDataAuthorization.findUnique({
+        where: { organizationId: organization.id },
+      });
+      if (realDataAuthorization && realDataAuthorization.status !== 'WITHDRAWN') {
+        if (!this.realDataAuthorization) {
+          throw new ServiceUnavailableException('Real-data authorization enforcement is unavailable.');
+        }
+        await this.realDataAuthorization.withdrawWithinTransaction(
+          tx,
+          organization.id,
+          actor.id,
+          'ORGANIZATION_SUSPENDED',
+        );
+      }
       await tx.auditLog.create({
         data: {
           organizationId: organization.id,
@@ -423,6 +439,7 @@ export class CustomerProvisioningService {
           include: {
             quotaPolicy: true,
             aiAuthorization: true,
+            realDataAuthorization: true,
             _count: {
               select: {
                 activityData: true,
@@ -481,6 +498,24 @@ export class CustomerProvisioningService {
               organization.aiAuthorization.expiresAt?.toISOString() ?? null,
             withdrawnAt:
               organization.aiAuthorization.withdrawnAt?.toISOString() ?? null,
+            authorizedDataMode: organization.aiAuthorization.authorizedDataMode,
+            realDataApprovalRevision: organization.aiAuthorization.realDataApprovalRevision,
+          }
+        : null,
+      realDataAuthorization: organization.realDataAuthorization
+        ? {
+            configuredStatus: organization.realDataAuthorization.status,
+            approvalRevision: organization.realDataAuthorization.approvalRevision,
+            policyVersion: organization.realDataAuthorization.policyVersion,
+            effectiveAt: organization.realDataAuthorization.effectiveAt.toISOString(),
+            expiresAt: organization.realDataAuthorization.expiresAt?.toISOString() ?? null,
+            reviewDueAt: organization.realDataAuthorization.reviewDueAt?.toISOString() ?? null,
+            withdrawnAt: organization.realDataAuthorization.withdrawnAt?.toISOString() ?? null,
+            evidenceReferencesPresent: Boolean(
+              organization.realDataAuthorization.agreementEvidenceReference &&
+              organization.realDataAuthorization.allowedDataScopeReference &&
+              organization.realDataAuthorization.privacySecurityReadinessReference,
+            ),
           }
         : null,
     };

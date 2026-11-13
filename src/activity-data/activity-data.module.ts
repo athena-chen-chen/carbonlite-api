@@ -5,9 +5,10 @@ import { AdminActivityRecordsController } from './admin-activity-records.control
 import { ActivityDataController } from './activity-data.controller';
 import { ActivityDataService } from './activity-data.service';
 import { PrismaModule } from '../prisma/prisma.module';
+import { RealDataAuthorizationModule } from '../real-data-authorization/real-data-authorization.module';
 
 @Module({
-  imports: [PrismaModule, CalculationModule],
+  imports: [PrismaModule, CalculationModule, RealDataAuthorizationModule],
   controllers: [ActivityDataController, AdminActivityRecordsController],
   providers: [ActivityDataService, RolesGuard],
   exports: [ActivityDataService],

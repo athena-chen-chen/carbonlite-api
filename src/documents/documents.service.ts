@@ -26,6 +26,8 @@ import {
 } from './document-storage';
 import { OrganizationQuotasService } from '../organization-quotas/organization-quotas.service';
 import { DeletionRecoveryService } from '../deletion-recovery/deletion-recovery.service';
+import type { DeclaredIngestionDataMode } from '../real-data-authorization/real-data-authorization.constants';
+import { INGESTION_MODE_SYNTHETIC } from '../real-data-authorization/real-data-authorization.constants';
 
 @Injectable()
 export class DocumentsService {
@@ -47,6 +49,7 @@ export class DocumentsService {
     file: Express.Multer.File,
     type?: string,
     allowDuplicate = false,
+    ingestionDataMode: DeclaredIngestionDataMode = INGESTION_MODE_SYNTHETIC,
   ) {
     let created;
     let savedStorageKey: string | undefined;
@@ -80,6 +83,7 @@ export class DocumentsService {
               fileHash,
               type: (type as any) ?? 'OTHER',
               status: 'UPLOADED',
+              ingestionDataMode,
             },
           });
           await this.auditLog.log({
