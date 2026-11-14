@@ -108,7 +108,7 @@ describe('organization real-data authorization gate', () => {
       confirmationOrganizationId: organization.id,
       confirmationOrganizationSlug: organization.slug,
       confirmRealDataApproval: true,
-      policyVersion: '0.2',
+      policyVersion: 'CARBONLITE_ALLOWED_DATA_POLICY_V0_2',
       agreementEvidenceReference: 'agreement://opaque-e2e-reference',
       allowedDataScopeReference: 'allowed-data://policy-v0.2',
       privacySecurityReadinessReference: 'readiness://opaque-e2e-reference',
@@ -117,12 +117,27 @@ describe('organization real-data authorization gate', () => {
     };
     await request(app.getHttpServer()).put(endpoint).set(authHeader(customer.accessToken)).send(approval).expect(403);
     await request(app.getHttpServer()).put(endpoint).set(authHeader(other.accessToken)).send(approval).expect(403);
+    for (const policyVersion of ['0.2', 'latest', 'customer-policy-v2']) {
+      await request(app.getHttpServer())
+        .put(endpoint)
+        .set(authHeader(platform.accessToken))
+        .send({ ...approval, policyVersion })
+        .expect(400)
+        .expect(({ body }) => expect(body.code).toBe('UNSUPPORTED_REAL_DATA_POLICY_VERSION'));
+    }
     const approved = await request(app.getHttpServer())
       .put(endpoint)
       .set(authHeader(platform.accessToken))
       .send(approval)
       .expect(200);
-    expect(approved.body).toMatchObject({ result: 'APPROVED', authorization: { status: 'REAL_DATA_APPROVED', approvalRevision: 1 } });
+    expect(approved.body).toMatchObject({
+      result: 'APPROVED',
+      authorization: {
+        status: 'REAL_DATA_APPROVED',
+        approvalRevision: 1,
+        policyVersion: 'CARBONLITE_ALLOWED_DATA_POLICY_V0_2',
+      },
+    });
     evidenceDecisionIds.push(approved.body.authorization.decisionId);
 
     await request(app.getHttpServer())

@@ -15,7 +15,7 @@ function effectiveAuthorization(overrides: Record<string, unknown> = {}) {
     decisionId: 'decision-a',
     status: RealDataAuthorizationStatus.REAL_DATA_APPROVED,
     approvalRevision: 1,
-    policyVersion: '0.2',
+    policyVersion: 'CARBONLITE_ALLOWED_DATA_POLICY_V0_2',
     agreementEvidenceReference: 'agreement-1',
     allowedDataScopeReference: 'scope-1',
     privacySecurityReadinessReference: 'readiness-1',
@@ -140,7 +140,7 @@ describe('RealDataAuthorizationService', () => {
       confirmationOrganizationId: 'org-a',
       confirmationOrganizationSlug: 'org-a',
       confirmRealDataApproval: true as const,
-      policyVersion: '0.2',
+      policyVersion: 'CARBONLITE_ALLOWED_DATA_POLICY_V0_2',
       agreementEvidenceReference: 'agreement-1',
       allowedDataScopeReference: 'scope-1',
       privacySecurityReadinessReference: 'readiness-1',
@@ -159,6 +159,28 @@ describe('RealDataAuthorizationService', () => {
     await expect(service.approve('org-a', 'admin-a', dto)).resolves.toMatchObject({ result: 'ALREADY_APPROVED' });
     expect(authorization.upsert).toHaveBeenCalledTimes(1);
   });
+
+  it.each(['0.2', 'latest', 'customer-policy-v2'])(
+    'rejects unsupported policy identifier %s',
+    async (policyVersion) => {
+      const { service, authorization } = setup();
+      await expect(service.approve('org-a', 'admin-a', {
+        organizationId: 'org-a',
+        confirmationOrganizationId: 'org-a',
+        confirmationOrganizationSlug: 'org-a',
+        confirmRealDataApproval: true,
+        policyVersion,
+        agreementEvidenceReference: 'agreement-1',
+        allowedDataScopeReference: 'scope-1',
+        privacySecurityReadinessReference: 'readiness-1',
+        effectiveAt: '2026-11-13T18:00:00.000Z',
+        reviewDueAt: '2099-01-01T00:00:00.000Z',
+      })).rejects.toMatchObject({
+        response: expect.objectContaining({ code: 'UNSUPPORTED_REAL_DATA_POLICY_VERSION' }),
+      });
+      expect(authorization.upsert).not.toHaveBeenCalled();
+    },
+  );
 
   it('withdraws only a real-customer-data AI authorization transactionally', async () => {
     const { service, authorization, aiAuthorization } = setup();
