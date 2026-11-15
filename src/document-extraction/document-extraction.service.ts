@@ -16,6 +16,7 @@ import {
 import type { ResponseInputContent } from 'openai/resources/responses/responses';
 import { PrismaService } from '../prisma/prisma.service';
 import { openai } from '../openai/openai.client';
+import { writeSafeOpenAiProviderError } from '../openai/openai-safe-error';
 import {
   ActivityType,
   DocumentStatus,
@@ -478,7 +479,15 @@ export class DocumentExtractionService {
             },
           },
         },
-      }, { signal, timeout: EXTRACTION_TIMEOUT_MS, maxRetries: 0 }));
+      }, { signal, timeout: EXTRACTION_TIMEOUT_MS, maxRetries: 0 })).catch((error: unknown) => {
+        writeSafeOpenAiProviderError(
+          this.logger,
+          'openai-document-extraction',
+          error,
+          { organizationId, documentId },
+        );
+        throw error;
+      });
 
       const rawText = response.output_text;
       if (typeof rawText !== 'string' || rawText.length > MAX_PROVIDER_OUTPUT_CHARACTERS) throw new BadRequestException('Extraction output exceeded the processing limit.');
