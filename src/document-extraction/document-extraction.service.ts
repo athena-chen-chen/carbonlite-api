@@ -16,7 +16,14 @@ import {
 import type { ResponseInputContent } from 'openai/resources/responses/responses';
 import { PrismaService } from '../prisma/prisma.service';
 import { openai } from '../openai/openai.client';
-import { ActivityType, Prisma, SpreadsheetImportReviewRow } from '@prisma/client';
+import {
+  ActivityType,
+  DocumentStatus,
+  DocumentType,
+  IngestionDataMode,
+  Prisma,
+  SpreadsheetImportReviewRow,
+} from '@prisma/client';
 import { AuditLogService } from '../audit-log/audit-log.service';
 import { ActivityTrackingService, trackOptionalActivity } from '../activity-tracking/activity-tracking.service';
 import {
@@ -162,6 +169,19 @@ export class DocumentExtractionService {
     userId?: string,
     userEmail?: string,
   ) {
+    const document = await this.prisma.document.findFirst({
+      where: { id: documentId, organizationId },
+    });
+
+    if (!document) {
+      throw new NotFoundException('Document not found');
+    }
+
+    this.validateSupportedFile(document);
+    if (this.requiresProviderExtraction(document.fileName)) {
+      await this.assertProviderExtractionAllowed(document);
+    }
+
     const lease = await this.quotaEnforcement.beginExtraction({
       organizationId,
       documentId,
@@ -169,7 +189,7 @@ export class DocumentExtractionService {
     });
     try {
       const result = await extractionWorkload.run(`${organizationId}:${documentId}`, () =>
-        this.extractWithinLimits(organizationId, documentId, userId, userEmail), !lease);
+        this.extractWithinLimits(document, userId, userEmail), !lease);
       await this.quotaEnforcement.finishExtraction(organizationId, lease?.id, 'COMPLETED');
       return result;
     } catch (error) {
@@ -191,18 +211,20 @@ export class DocumentExtractionService {
   }
 
   private async extractWithinLimits(
-    organizationId: string,
-    documentId: string,
+    document: {
+      id: string;
+      organizationId: string;
+      fileName: string;
+      fileUrl: string;
+      mimeType: string | null;
+      type: DocumentType;
+      status: DocumentStatus;
+      ingestionDataMode: IngestionDataMode;
+    },
     userId?: string,
     userEmail?: string,
   ) {
-    const document = await this.prisma.document.findFirst({
-      where: { id: documentId, organizationId },
-    });
-
-    if (!document) {
-      throw new NotFoundException('Document not found');
-    }
+    const { id: documentId, organizationId } = document;
 
     await this.prisma.document.update({
       where: { id: documentId },
@@ -312,17 +334,9 @@ export class DocumentExtractionService {
         localText = fileBuffer.toString('utf-8');
       }
 
-      if (!this.aiAuthorization) {
-        throw new InternalServerErrorException(
-          'AI authorization control is unavailable.',
-        );
-      }
-      await this.aiAuthorization.assertProviderRequestAllowed(
-        organizationId,
-        AI_PROVIDER_OPENAI,
-        AI_SCOPE_DOCUMENT_EXTRACTION,
-        document.ingestionDataMode,
-      );
+      // Recheck immediately before the provider request so a withdrawal that
+      // occurs while a previously authorized extraction is queued still wins.
+      await this.assertProviderExtractionAllowed(document);
 
       const inputModality = this.getOpenAiInputModality(mimeType);
       const userContent = this.buildExtractionUserContent({
@@ -690,6 +704,27 @@ export class DocumentExtractionService {
     mimeType: string | null;
   }) {
     validateDocumentType(document.fileName, document.mimeType);
+  }
+
+  private requiresProviderExtraction(fileName: string) {
+    return !/\.(?:xlsx?|json)$/i.test(fileName);
+  }
+
+  private async assertProviderExtractionAllowed(document: {
+    organizationId: string;
+    ingestionDataMode: IngestionDataMode;
+  }) {
+    if (!this.aiAuthorization) {
+      throw new InternalServerErrorException(
+        'AI authorization control is unavailable.',
+      );
+    }
+    await this.aiAuthorization.assertProviderRequestAllowed(
+      document.organizationId,
+      AI_PROVIDER_OPENAI,
+      AI_SCOPE_DOCUMENT_EXTRACTION,
+      document.ingestionDataMode,
+    );
   }
 
   private buildExtractionUserContent(input: {

@@ -6,7 +6,16 @@ jest.mock('../openai/openai.client', () => ({
   openai: { responses: { create: jest.fn() } },
 }));
 
-function subject(assertProviderRequestAllowed: jest.Mock) {
+function subject(
+  assertProviderRequestAllowed: jest.Mock,
+  overrides: Partial<{
+    fileName: string;
+    mimeType: string;
+    type: string;
+    status: string;
+    ingestionDataMode: 'SYNTHETIC_TEST' | 'REAL_CUSTOMER_DATA';
+  }> = {},
+) {
   const document = {
     id: 'doc-1',
     organizationId: 'org-a',
@@ -15,6 +24,8 @@ function subject(assertProviderRequestAllowed: jest.Mock) {
     mimeType: 'application/pdf',
     type: 'PDF',
     status: 'UPLOADED',
+    ingestionDataMode: 'SYNTHETIC_TEST',
+    ...overrides,
   };
   const prisma: any = {
     document: {
@@ -34,42 +45,124 @@ function subject(assertProviderRequestAllowed: jest.Mock) {
     beginExtraction: jest.fn().mockResolvedValue(null),
     finishExtraction: jest.fn().mockResolvedValue(undefined),
   };
+  const auditLog = { log: jest.fn() };
+  const activityTracking = { track: jest.fn() };
   const service = new DocumentExtractionService(
     prisma,
-    { log: jest.fn() } as never,
-    { track: jest.fn() } as never,
+    auditLog as never,
+    activityTracking as never,
     null as never,
     storage as never,
     quotas as never,
     { assertProviderRequestAllowed } as never,
   );
-  return { service, prisma, storage };
+  return { service, prisma, storage, quotas, auditLog, activityTracking, document };
 }
 
 describe('DocumentExtractionService AI authorization boundary', () => {
   beforeEach(() => jest.clearAllMocks());
 
-  it('makes zero provider calls when the organization is not authorized', async () => {
+  it('denies a synthetic PDF before leases, status changes, tracking, or provider calls when AI is not authorized', async () => {
     const authorization = jest
       .fn()
       .mockRejectedValue(new ForbiddenException('AI processing is disabled.'));
-    const { service, prisma } = subject(authorization);
+    const { service, prisma, quotas, activityTracking } = subject(authorization);
 
     await expect(service.extract('org-a', 'doc-1')).rejects.toBeInstanceOf(
       ForbiddenException,
     );
     expect(authorization).toHaveBeenCalledTimes(1);
     expect(openai.responses.create).not.toHaveBeenCalled();
-    expect(prisma.document.update).toHaveBeenCalledWith({
-      where: { id: 'doc-1' },
-      data: { status: 'EXTRACTION_FAILED' },
+    expect(quotas.beginExtraction).not.toHaveBeenCalled();
+    expect(quotas.finishExtraction).not.toHaveBeenCalled();
+    expect(prisma.document.update).not.toHaveBeenCalled();
+    expect(activityTracking.track).not.toHaveBeenCalled();
+  });
+
+  it('denies a real-data PDF with synthetic-only AI consent before extraction side effects', async () => {
+    const authorization = jest
+      .fn()
+      .mockRejectedValue(new ForbiddenException('Real-data AI consent is required.'));
+    const { service, prisma, quotas, activityTracking } = subject(authorization, {
+      ingestionDataMode: 'REAL_CUSTOMER_DATA',
     });
+
+    await expect(service.extract('org-a', 'doc-1')).rejects.toBeInstanceOf(ForbiddenException);
+    expect(authorization).toHaveBeenCalledWith(
+      'org-a',
+      'OPENAI',
+      'DOCUMENT_EXTRACTION',
+      'REAL_CUSTOMER_DATA',
+    );
+    expect(openai.responses.create).not.toHaveBeenCalled();
+    expect(quotas.beginExtraction).not.toHaveBeenCalled();
+    expect(prisma.document.update).not.toHaveBeenCalled();
+    expect(activityTracking.track).not.toHaveBeenCalled();
+  });
+
+  it('allows a real-data PDF with AI consent bound to the current real-data approval revision to reach the provider', async () => {
+    const authorization = jest.fn().mockResolvedValue({
+      status: 'ENABLED',
+      authorizedDataMode: 'REAL_CUSTOMER_DATA',
+      realDataApprovalRevision: 1,
+    });
+    (openai.responses.create as jest.Mock).mockRejectedValueOnce(
+      new Error('synthetic provider failure'),
+    );
+    const { service, quotas } = subject(authorization, {
+      ingestionDataMode: 'REAL_CUSTOMER_DATA',
+    });
+
+    await expect(service.extract('org-a', 'doc-1')).rejects.toThrow(
+      'Extraction failed. Please try again or upload the file again.',
+    );
+    expect(authorization).toHaveBeenCalledTimes(2);
+    expect(quotas.beginExtraction).toHaveBeenCalledTimes(1);
+    expect(openai.responses.create).toHaveBeenCalledTimes(1);
+  });
+
+  it('denies a stale real-data AI approval revision before extraction side effects', async () => {
+    const authorization = jest
+      .fn()
+      .mockRejectedValue(new ForbiddenException('Real-data approval revision does not match.'));
+    const { service, prisma, quotas } = subject(authorization, {
+      ingestionDataMode: 'REAL_CUSTOMER_DATA',
+    });
+
+    await expect(service.extract('org-a', 'doc-1')).rejects.toBeInstanceOf(ForbiddenException);
+    expect(openai.responses.create).not.toHaveBeenCalled();
+    expect(quotas.beginExtraction).not.toHaveBeenCalled();
+    expect(prisma.document.update).not.toHaveBeenCalled();
+  });
+
+  it('keeps supported local JSON extraction independent from OpenAI authorization', async () => {
+    const authorization = jest.fn();
+    const { service, quotas, storage } = subject(authorization, {
+      fileName: 'activities.json',
+      mimeType: 'application/json',
+      type: 'OTHER',
+    });
+    storage.read.mockResolvedValue(Buffer.from('{"activities":[]}'));
+    jest.spyOn(service as any, 'extractStructuredJsonDocument').mockResolvedValue({
+      documentId: 'doc-1',
+      status: 'REVIEW_REQUIRED',
+      parsedActivities: [],
+    });
+
+    await expect(service.extract('org-a', 'doc-1')).resolves.toMatchObject({
+      documentId: 'doc-1',
+      status: 'REVIEW_REQUIRED',
+    });
+    expect(authorization).not.toHaveBeenCalled();
+    expect(quotas.beginExtraction).toHaveBeenCalledTimes(1);
+    expect(openai.responses.create).not.toHaveBeenCalled();
   });
 
   it('rechecks authorization immediately before the provider call so withdrawal blocks queued work', async () => {
     const authorization = jest
       .fn()
-      .mockRejectedValue(new ForbiddenException('Authorization withdrawn.'));
+      .mockResolvedValueOnce({ status: 'ENABLED' })
+      .mockRejectedValueOnce(new ForbiddenException('Authorization withdrawn.'));
     const { service, storage } = subject(authorization);
     let releaseRead!: (value: Buffer) => void;
     let markReadStarted!: () => void;
@@ -83,13 +176,13 @@ describe('DocumentExtractionService AI authorization boundary', () => {
 
     const queued = service.extract('org-a', 'doc-1');
     await readStarted;
-    expect(authorization).not.toHaveBeenCalled();
+    expect(authorization).toHaveBeenCalledTimes(1);
     releaseRead(Buffer.from('%PDF-1.4\nsynthetic fixture\n%%EOF'));
 
     await expect(queued).rejects.toBeInstanceOf(
       ForbiddenException,
     );
-    expect(authorization).toHaveBeenCalledTimes(1);
+    expect(authorization).toHaveBeenCalledTimes(2);
     expect(openai.responses.create).not.toHaveBeenCalled();
   });
 
@@ -103,7 +196,7 @@ describe('DocumentExtractionService AI authorization boundary', () => {
     await expect(service.extract('org-a', 'doc-1')).rejects.toThrow(
       'Extraction failed. Please try again or upload the file again.',
     );
-    expect(authorization).toHaveBeenCalledTimes(1);
+    expect(authorization).toHaveBeenCalledTimes(2);
     expect(openai.responses.create).toHaveBeenCalledTimes(1);
     expect(authorization.mock.invocationCallOrder[0]).toBeLessThan(
       (openai.responses.create as jest.Mock).mock.invocationCallOrder[0],

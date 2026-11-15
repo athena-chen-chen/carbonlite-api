@@ -43,7 +43,7 @@ describe('document facility and optional cost lineage', () => {
     expect(created.every((row) => row.facilityId == null)).toBe(true);
   });
   it('requests facility and explicit optional cost fields in PDF extraction and retains them in review rows', async () => {
-    const document = { id: 'doc', fileName: 'operations.pdf', fileUrl: '/uploads/operations.pdf', mimeType: 'application/pdf' };
+    const document = { id: 'doc', organizationId: 'org', fileName: 'operations.pdf', fileUrl: '/uploads/operations.pdf', mimeType: 'application/pdf' };
     const prisma = { $transaction: jest.fn(), document: { findFirst: jest.fn().mockResolvedValue(document), update: jest.fn() } };
     prisma.$transaction.mockImplementation(callback => callback(prisma));
     const storage = { exists: jest.fn().mockResolvedValue(true), read: jest.fn().mockResolvedValue(Buffer.from('%PDF-1.4\nfixture\n%%EOF')) };

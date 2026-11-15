@@ -10,7 +10,7 @@ it('F16 omits provider credentials, raw message/stack and document content from 
     response: { data: { extractedText: 'secret-source' } },
   });
   (openai.responses.create as jest.Mock).mockRejectedValue(error);
-  const document = { id: 'doc-1', fileName: 'bill.pdf', fileUrl: '/uploads/bill.pdf', mimeType: 'application/pdf', type: 'PDF', status: 'UPLOADED' };
+  const document = { id: 'doc-1', organizationId: 'org-1', fileName: 'bill.pdf', fileUrl: '/uploads/bill.pdf', mimeType: 'application/pdf', type: 'PDF', status: 'UPLOADED' };
   const prisma: any = { document: { findFirst: jest.fn().mockResolvedValue(document), update: jest.fn() }, $transaction: jest.fn() };
   prisma.$transaction.mockImplementation((callback: (client: unknown) => unknown) => callback(prisma));
   const storage = { exists: jest.fn().mockResolvedValue(true), read: jest.fn().mockResolvedValue(Buffer.from('%PDF-1.4\nfixture\n%%EOF')) };
