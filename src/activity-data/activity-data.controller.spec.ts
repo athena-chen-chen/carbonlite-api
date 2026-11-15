@@ -1,4 +1,4 @@
-import { ArgumentMetadata, ValidationPipe } from '@nestjs/common';
+import { ArgumentMetadata, BadRequestException, ValidationPipe } from '@nestjs/common';
 import { ActivityDataController } from './activity-data.controller';
 import { AdminActivityRecordsController } from './admin-activity-records.controller';
 import { ActivityDataService } from './activity-data.service';
@@ -210,6 +210,40 @@ describe('ActivityDataController canonical calculation fields', () => {
       expect.objectContaining(legacyPayload),
       'user-1',
     );
+  });
+
+  it('rejects a missing data mode before creating ActivityData', async () => {
+    const missingModeError = new BadRequestException({
+      statusCode: 400,
+      code: 'DATA_MODE_REQUIRED',
+      message: 'Ingestion data mode is required.',
+    });
+    realDataAuthorization.resolveIngestionMode.mockRejectedValueOnce(missingModeError);
+
+    await expect(
+      controller.create(
+        {
+          ...authenticatedUser,
+          accountType: 'CUSTOMER',
+          membershipRole: 'OWNER',
+        },
+        canonicalPayload as any,
+        undefined,
+      ),
+    ).rejects.toMatchObject({
+      status: 400,
+      response: expect.objectContaining({
+        code: 'DATA_MODE_REQUIRED',
+        message: 'Ingestion data mode is required.',
+      }),
+    });
+
+    expect(realDataAuthorization.resolveIngestionMode).toHaveBeenCalledWith(
+      'org-1',
+      undefined,
+      'user-1',
+    );
+    expect(activityDataService.create).not.toHaveBeenCalled();
   });
 
   it('allows customer users to import activity records in their workspace', async () => {

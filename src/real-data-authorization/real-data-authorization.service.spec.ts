@@ -4,7 +4,7 @@ import {
   OrganizationCustomerStatus,
   RealDataAuthorizationStatus,
 } from '@prisma/client';
-import { BadRequestException, ForbiddenException, ServiceUnavailableException } from '@nestjs/common';
+import { ForbiddenException, ServiceUnavailableException } from '@nestjs/common';
 import { RealDataAuthorizationService } from './real-data-authorization.service';
 
 const hmacKey = Buffer.alloc(32, 7).toString('base64');
@@ -114,9 +114,16 @@ describe('RealDataAuthorizationService', () => {
   });
 
   it('rejects missing mode for an effectively approved organization', async () => {
-    const { service, authorization } = setup();
+    const { service, authorization, auditLog } = setup();
     authorization.findUnique.mockResolvedValueOnce(effectiveAuthorization());
-    await expect(service.resolveIngestionMode('org-a', undefined, 'user-a')).rejects.toBeInstanceOf(BadRequestException);
+    await expect(service.resolveIngestionMode('org-a', undefined, 'user-a')).rejects.toMatchObject({
+      status: 400,
+      response: expect.objectContaining({
+        code: 'DATA_MODE_REQUIRED',
+        message: 'Ingestion data mode is required.',
+      }),
+    });
+    expect(auditLog.log).not.toHaveBeenCalled();
   });
 
   it('rejects real-customer-data mode for a synthetic organization', async () => {
