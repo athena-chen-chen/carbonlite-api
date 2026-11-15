@@ -1,4 +1,5 @@
 import { ForbiddenException } from '@nestjs/common';
+import { AiAuthorizationService } from '../ai-authorization/ai-authorization.service';
 import { openai } from '../openai/openai.client';
 import { DocumentExtractionService } from './document-extraction.service';
 
@@ -133,6 +134,79 @@ describe('DocumentExtractionService AI authorization boundary', () => {
     expect(openai.responses.create).not.toHaveBeenCalled();
     expect(quotas.beginExtraction).not.toHaveBeenCalled();
     expect(prisma.document.update).not.toHaveBeenCalled();
+  });
+
+  it('denies revision-1 real-data AI consent when the effective real-data approval is revision 2 before extraction side effects', async () => {
+    const realDataAuthorization = {
+      assertEffectiveRealDataApproval: jest.fn(
+        async (_organizationId: string, expectedRevision: number) => {
+          if (expectedRevision !== 2) {
+            throw new ForbiddenException({
+              statusCode: 403,
+              code: 'REAL_DATA_APPROVAL_REVISION_MISMATCH',
+              message: 'Real-data authorization revision does not match.',
+              error: 'Forbidden',
+            });
+          }
+          return { approvalRevision: 2 };
+        },
+      ),
+    };
+    const aiAuthorization = new AiAuthorizationService(
+      {
+        organizationAiAuthorization: {
+          findUnique: jest.fn().mockResolvedValue({
+            organizationId: 'org-a',
+            status: 'ENABLED',
+            consentVersion: 'real-data-consent-r1',
+            provider: 'OPENAI',
+            processingScope: 'DOCUMENT_EXTRACTION',
+            evidenceReference: 'evidence://real-data-consent-r1',
+            authorizedRepresentativeReference: 'representative-r1',
+            verifiedById: 'platform-admin-a',
+            verifiedAt: new Date('2026-11-15T20:00:00.000Z'),
+            effectiveAt: new Date('2026-11-15T20:00:00.000Z'),
+            expiresAt: null,
+            withdrawnAt: null,
+            authorizedDataMode: 'REAL_CUSTOMER_DATA',
+            realDataApprovalRevision: 1,
+            organization: { isActive: true, customerStatus: 'ACTIVE' },
+          }),
+        },
+      } as never,
+      { log: jest.fn() } as never,
+      realDataAuthorization as never,
+    );
+    const authorization = jest.fn(
+      aiAuthorization.assertProviderRequestAllowed.bind(aiAuthorization),
+    );
+    const {
+      service,
+      prisma,
+      storage,
+      quotas,
+      auditLog,
+      activityTracking,
+      document,
+    } = subject(authorization, { ingestionDataMode: 'REAL_CUSTOMER_DATA' });
+
+    await expect(service.extract('org-a', 'doc-1')).rejects.toMatchObject({
+      response: expect.objectContaining({
+        code: 'REAL_DATA_APPROVAL_REVISION_MISMATCH',
+      }),
+    });
+    expect(realDataAuthorization.assertEffectiveRealDataApproval).toHaveBeenCalledWith(
+      'org-a',
+      1,
+    );
+    expect(openai.responses.create).not.toHaveBeenCalled();
+    expect(quotas.beginExtraction).not.toHaveBeenCalled();
+    expect(quotas.finishExtraction).not.toHaveBeenCalled();
+    expect(storage.read).not.toHaveBeenCalled();
+    expect(prisma.document.update).not.toHaveBeenCalled();
+    expect(activityTracking.track).not.toHaveBeenCalled();
+    expect(auditLog.log).not.toHaveBeenCalled();
+    expect(document.status).toBe('UPLOADED');
   });
 
   it('keeps supported local JSON extraction independent from OpenAI authorization', async () => {
