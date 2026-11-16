@@ -1,7 +1,7 @@
 import { DocumentExtractionService } from './document-extraction.service';
 import { openai } from '../openai/openai.client';
 
-jest.mock('../openai/openai.client', () => ({ openai: { responses: { create: jest.fn() } } }));
+jest.mock('../openai/openai.client', () => ({ isOpenAiConfigured: jest.fn().mockReturnValue(true), openai: { responses: { create: jest.fn() } } }));
 
 const sourceRows = [
   ['ELECTRICITY', 1250, 'kWh', 'Calgary HQ'],

@@ -3,7 +3,7 @@ import { DocumentExtractionService } from './document-extraction.service';
 import { openai } from '../openai/openai.client';
 import { AuthenticationError } from 'openai';
 
-jest.mock('../openai/openai.client', () => ({ openai: { responses: { create: jest.fn() } } }));
+jest.mock('../openai/openai.client', () => ({ isOpenAiConfigured: jest.fn().mockReturnValue(true), openai: { responses: { create: jest.fn() } } }));
 afterEach(() => jest.restoreAllMocks());
 it('F16 omits provider credentials, raw message/stack and document content from final extraction logs', async () => {
   const error = new AuthenticationError(

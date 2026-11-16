@@ -1,4 +1,5 @@
 jest.mock('../src/openai/openai.client', () => ({
+  isOpenAiConfigured: jest.fn().mockReturnValue(true),
   openai: {
     responses: {
       create: jest.fn().mockRejectedValue(

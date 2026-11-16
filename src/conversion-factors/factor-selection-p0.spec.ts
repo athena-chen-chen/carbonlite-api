@@ -8,7 +8,7 @@ import { ActivityDataService } from '../activity-data/activity-data.service';
 import { buildJsonActivityPreview, toJsonPreviewFactorCandidates } from '../activity-data/json-activity-records';
 import { matchBestFactor } from '../metrics/metrics.utils';
 
-jest.mock('../openai/openai.client', () => ({ openai: { responses: { create: jest.fn() } } }));
+jest.mock('../openai/openai.client', () => ({ isOpenAiConfigured: jest.fn().mockReturnValue(true), openai: { responses: { create: jest.fn() } } }));
 const factor = (overrides: any = {}) => ({ id: 'official', name: 'Diesel combustion', activityType: 'DIESEL', type: 'EMISSION',
   organizationId: null, unit: 'L', factorValue: new Prisma.Decimal(2.68), resultUnit: 'kgCO2e', country: 'Canada', region: 'Alberta', jurisdiction: 'Alberta',
   sourceYear: 2026, sourceAuthority: 'Environment and Climate Change Canada', sourceDocument: 'Reviewed source', verified: true,

@@ -1,6 +1,6 @@
 import { INestApplication } from '@nestjs/common';
 import request from 'supertest';
-import { openai } from '../src/openai/openai.client';
+import { isOpenAiConfigured, openai } from '../src/openai/openai.client';
 import { PrismaService } from '../src/prisma/prisma.service';
 import { createE2eApp } from './helpers/e2e-app';
 import {
@@ -18,14 +18,20 @@ describe('organization AI authorization administration', () => {
 
   beforeAll(async () => {
     assertSafeTestDatabaseTarget();
+    (isOpenAiConfigured as jest.Mock).mockReturnValue(false);
     const setup = await createE2eApp();
     app = setup.app;
     prisma = setup.prisma;
+    (isOpenAiConfigured as jest.Mock).mockReturnValue(true);
   });
 
   afterAll(async () => {
     if (prisma) await cleanupTestData(prisma, run);
     if (app) await app.close();
+  });
+
+  afterEach(() => {
+    (isOpenAiConfigured as jest.Mock).mockReturnValue(true);
   });
 
   it('defaults to no authorization, isolates tenants, and records platform-admin changes without evidence content in audit values', async () => {
@@ -178,5 +184,105 @@ describe('organization AI authorization administration', () => {
           }),
         );
     expect(openai.responses.create).not.toHaveBeenCalled();
+  });
+
+  it('boots without provider configuration and rejects an authorized provider extraction before execution side effects', async () => {
+    const customer = await createTestUser(app, {
+      organizationName: `${run} optional provider customer`,
+      email: `${uniqueTestId(run)}@carbonlite-e2e.test`,
+      factorProfile: 'reviewed',
+    });
+    const platform = await createTestUser(app, {
+      organizationName: `${run} optional provider platform`,
+      email: `${uniqueTestId(run)}@carbonlite-e2e.test`,
+    });
+    await prisma.user.update({
+      where: { id: platform.user.id },
+      data: { role: 'ADMIN', accountType: 'INTERNAL' },
+    });
+    await prisma.organization.update({
+      where: { id: customer.user.organizationId },
+      data: { customerStatus: 'ACTIVE', provisionedAt: new Date() },
+    });
+    await request(app.getHttpServer())
+      .put(`/api/admin/organizations/${customer.user.organizationId}/ai-authorization`)
+      .set(authHeader(platform.accessToken))
+      .send({
+        status: 'ENABLED',
+        consentVersion: 'synthetic-provider-optional-v1',
+        provider: 'OPENAI',
+        processingScope: 'DOCUMENT_EXTRACTION',
+        authorizedDataMode: 'SYNTHETIC_TEST_ONLY',
+        evidenceReference: 'evidence://synthetic/provider-optional',
+        authorizedRepresentativeReference: 'synthetic-provider-optional-representative',
+        effectiveAt: '2026-11-01T00:00:00.000Z',
+      })
+      .expect(200);
+
+    const upload = await request(app.getHttpServer())
+      .post('/api/documents/upload')
+      .set(authHeader(customer.accessToken))
+      .set('X-CarbonLite-Data-Mode', 'SYNTHETIC_TEST')
+      .field('type', 'PDF')
+      .attach(
+        'file',
+        Buffer.from('%PDF-1.4\n% Synthetic optional-provider fixture\n%%EOF\n'),
+        {
+          filename: `${run}-optional-provider.pdf`,
+          contentType: 'application/pdf',
+        },
+      )
+      .expect(201);
+
+    const baseline = {
+      jobs: await prisma.aIJob.count({
+        where: { organizationId: customer.user.organizationId },
+      }),
+      starts: await prisma.userActivityEvent.count({
+        where: {
+          organizationId: customer.user.organizationId,
+          eventName: 'DOCUMENT_EXTRACT_STARTED',
+        },
+      }),
+      results: await prisma.documentExtraction.count({
+        where: { organizationId: customer.user.organizationId },
+      }),
+    };
+    (isOpenAiConfigured as jest.Mock).mockReturnValue(false);
+    (openai.responses.create as jest.Mock).mockClear();
+
+    await request(app.getHttpServer())
+      .post('/api/document-extraction/extract')
+      .set(authHeader(customer.accessToken))
+      .send({ documentId: upload.body.id })
+      .expect(503)
+      .expect(({ body }) =>
+        expect(body).toMatchObject({
+          statusCode: 503,
+          code: 'AI_PROVIDER_NOT_CONFIGURED',
+          message: 'AI document extraction is temporarily unavailable.',
+        }),
+      );
+
+    expect(openai.responses.create).not.toHaveBeenCalled();
+    await expect(
+      prisma.document.findUniqueOrThrow({ where: { id: upload.body.id } }),
+    ).resolves.toMatchObject({ status: 'UPLOADED' });
+    await expect(
+      prisma.aIJob.count({ where: { organizationId: customer.user.organizationId } }),
+    ).resolves.toBe(baseline.jobs);
+    await expect(
+      prisma.userActivityEvent.count({
+        where: {
+          organizationId: customer.user.organizationId,
+          eventName: 'DOCUMENT_EXTRACT_STARTED',
+        },
+      }),
+    ).resolves.toBe(baseline.starts);
+    await expect(
+      prisma.documentExtraction.count({
+        where: { organizationId: customer.user.organizationId },
+      }),
+    ).resolves.toBe(baseline.results);
   });
 });

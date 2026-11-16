@@ -7,7 +7,7 @@ import { PrismaService } from '../src/prisma/prisma.service';
 import { createE2eApp } from './helpers/e2e-app';
 import { authHeader, cleanupTestData, createTestUser, uniqueTestId } from './helpers/factories';
 
-jest.mock('../src/openai/openai.client', () => ({ openai: { responses: { create: jest.fn().mockRejectedValue(new Error('Unexpected provider request in authorization test')) } } }));
+jest.mock('../src/openai/openai.client', () => ({ isOpenAiConfigured: jest.fn().mockReturnValue(true), openai: { responses: { create: jest.fn().mockRejectedValue(new Error('Unexpected provider request in authorization test')) } } }));
 
 describe('platform, workspace and tenant authorization boundaries', () => {
   let app: INestApplication;

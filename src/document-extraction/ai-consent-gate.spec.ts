@@ -1,9 +1,10 @@
 import { ForbiddenException } from '@nestjs/common';
 import { AiAuthorizationService } from '../ai-authorization/ai-authorization.service';
-import { openai } from '../openai/openai.client';
+import { isOpenAiConfigured, openai } from '../openai/openai.client';
 import { DocumentExtractionService } from './document-extraction.service';
 
 jest.mock('../openai/openai.client', () => ({
+  isOpenAiConfigured: jest.fn().mockReturnValue(true),
   openai: { responses: { create: jest.fn() } },
 }));
 
@@ -69,7 +70,10 @@ function subject(
 }
 
 describe('DocumentExtractionService AI authorization boundary', () => {
-  beforeEach(() => jest.clearAllMocks());
+  beforeEach(() => {
+    jest.clearAllMocks();
+    (isOpenAiConfigured as jest.Mock).mockReturnValue(true);
+  });
   afterEach(() => {
     restoreEnvironment('REAL_DATA_AI_PROCESSING_ENABLED', originalRealDataAiFlag);
     restoreEnvironment('CARBONLITE_AI_CONSENT_VERSION', originalConsentVersion);
@@ -90,6 +94,57 @@ describe('DocumentExtractionService AI authorization boundary', () => {
     expect(quotas.finishExtraction).not.toHaveBeenCalled();
     expect(prisma.document.update).not.toHaveBeenCalled();
     expect(activityTracking.track).not.toHaveBeenCalled();
+  });
+
+  it('preserves authorization failure precedence when the provider is not configured', async () => {
+    (isOpenAiConfigured as jest.Mock).mockReturnValue(false);
+    const authorization = jest
+      .fn()
+      .mockRejectedValue(new ForbiddenException('AI processing is disabled.'));
+    const { service, prisma, storage, quotas, activityTracking } = subject(authorization);
+
+    await expect(service.extract('org-a', 'doc-1')).rejects.toBeInstanceOf(
+      ForbiddenException,
+    );
+    expect(authorization).toHaveBeenCalledTimes(1);
+    expect(openai.responses.create).not.toHaveBeenCalled();
+    expect(quotas.beginExtraction).not.toHaveBeenCalled();
+    expect(storage.read).not.toHaveBeenCalled();
+    expect(prisma.document.update).not.toHaveBeenCalled();
+    expect(activityTracking.track).not.toHaveBeenCalled();
+  });
+
+  it('denies an authorized provider extraction with a controlled 503 before every extraction side effect when the provider is not configured', async () => {
+    (isOpenAiConfigured as jest.Mock).mockReturnValue(false);
+    const authorization = jest.fn().mockResolvedValue({ status: 'ENABLED' });
+    const {
+      service,
+      prisma,
+      storage,
+      quotas,
+      auditLog,
+      activityTracking,
+      document,
+    } = subject(authorization);
+
+    await expect(service.extract('org-a', 'doc-1')).rejects.toMatchObject({
+      status: 503,
+      response: {
+        statusCode: 503,
+        code: 'AI_PROVIDER_NOT_CONFIGURED',
+        message: 'AI document extraction is temporarily unavailable.',
+        error: 'Service Unavailable',
+      },
+    });
+    expect(authorization).toHaveBeenCalledTimes(1);
+    expect(openai.responses.create).not.toHaveBeenCalled();
+    expect(quotas.beginExtraction).not.toHaveBeenCalled();
+    expect(quotas.finishExtraction).not.toHaveBeenCalled();
+    expect(storage.read).not.toHaveBeenCalled();
+    expect(prisma.document.update).not.toHaveBeenCalled();
+    expect(activityTracking.track).not.toHaveBeenCalled();
+    expect(auditLog.log).not.toHaveBeenCalled();
+    expect(document.status).toBe('UPLOADED');
   });
 
   it('denies a real-data PDF with synthetic-only AI consent before extraction side effects', async () => {
@@ -283,6 +338,7 @@ describe('DocumentExtractionService AI authorization boundary', () => {
   });
 
   it('keeps supported local JSON extraction independent from OpenAI authorization', async () => {
+    (isOpenAiConfigured as jest.Mock).mockReturnValue(false);
     const authorization = jest.fn();
     const { service, quotas, storage } = subject(authorization, {
       fileName: 'activities.json',

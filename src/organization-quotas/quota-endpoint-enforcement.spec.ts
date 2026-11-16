@@ -10,6 +10,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { SpreadsheetImportService } from '../spreadsheet-import/spreadsheet-import.service';
 
 jest.mock('../openai/openai.client', () => ({
+  isOpenAiConfigured: jest.fn().mockReturnValue(true),
   openai: { responses: { create: jest.fn() } },
 }));
 

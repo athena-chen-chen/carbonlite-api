@@ -15,7 +15,7 @@ import {
 } from '@nestjs/common';
 import type { ResponseInputContent } from 'openai/resources/responses/responses';
 import { PrismaService } from '../prisma/prisma.service';
-import { openai } from '../openai/openai.client';
+import { isOpenAiConfigured, openai } from '../openai/openai.client';
 import { writeSafeOpenAiProviderError } from '../openai/openai-safe-error';
 import {
   ActivityType,
@@ -181,6 +181,7 @@ export class DocumentExtractionService {
     this.validateSupportedFile(document);
     if (this.requiresProviderExtraction(document.fileName)) {
       await this.assertProviderExtractionAllowed(document);
+      this.assertProviderConfigured();
     }
 
     const lease = await this.quotaEnforcement.beginExtraction({
@@ -209,6 +210,20 @@ export class DocumentExtractionService {
       }
       throw error;
     }
+  }
+
+  private assertProviderConfigured(): void {
+    if (isOpenAiConfigured()) return;
+
+    this.logger.warn(
+      '[DocumentExtraction] provider unavailable provider=OPENAI code=AI_PROVIDER_NOT_CONFIGURED configured=false',
+    );
+    throw new ServiceUnavailableException({
+      statusCode: 503,
+      code: 'AI_PROVIDER_NOT_CONFIGURED',
+      message: 'AI document extraction is temporarily unavailable.',
+      error: 'Service Unavailable',
+    });
   }
 
   private async extractWithinLimits(

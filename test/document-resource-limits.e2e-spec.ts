@@ -16,7 +16,7 @@ import * as policy from '../src/documents/document-resource-policy';
 import * as workload from '../src/document-extraction/extraction-workload';
 import { authHeader, cleanupTestData, createTestUser, uniqueTestId } from './helpers/factories';
 
-jest.mock('../src/openai/openai.client', () => ({ openai: { responses: { create: jest.fn() } } }));
+jest.mock('../src/openai/openai.client', () => ({ isOpenAiConfigured: jest.fn().mockReturnValue(true), openai: { responses: { create: jest.fn() } } }));
 const provider = openai.responses.create as jest.Mock;
 const pdf = Buffer.from('%PDF-1.4\n% Synthetic resource-boundary fixture\n%%EOF\n');
 const emptyResult = { output_text: '{"activities":[]}', status: 'completed' };

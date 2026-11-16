@@ -3,7 +3,7 @@ import { parseSpreadsheetActivityRows } from './spreadsheet-activity-rows';
 import { DocumentExtractionService } from './document-extraction.service';
 import { openai } from '../openai/openai.client';
 
-jest.mock('../openai/openai.client', () => ({ openai: { responses: { create: jest.fn() } } }));
+jest.mock('../openai/openai.client', () => ({ isOpenAiConfigured: jest.fn().mockReturnValue(true), openai: { responses: { create: jest.fn() } } }));
 
 function workbook(rows: unknown[][]) {
   const w = XLSX.utils.book_new();

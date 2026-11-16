@@ -12,7 +12,7 @@ import { JwtStrategy } from '../auth/jwt.strategy';
 import { DocumentExtractionService } from '../document-extraction/document-extraction.service';
 import { SpreadsheetImportService } from '../spreadsheet-import/spreadsheet-import.service';
 
-jest.mock('../openai/openai.client', () => ({ openai: {} }));
+jest.mock('../openai/openai.client', () => ({ isOpenAiConfigured: jest.fn().mockReturnValue(true), openai: {} }));
 
 function database() {
   const events: any[] = [];

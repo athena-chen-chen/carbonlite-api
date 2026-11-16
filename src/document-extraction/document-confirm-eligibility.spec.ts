@@ -1,7 +1,7 @@
 import { CalculationQualityService } from '../metrics/calculation-quality.service';
 import { CalculationSnapshotsService } from '../metrics/calculation-snapshots.service';
 import { DocumentExtractionService } from './document-extraction.service';
-jest.mock('../openai/openai.client', () => ({ openai: { responses: { create: jest.fn() } } }));
+jest.mock('../openai/openai.client', () => ({ isOpenAiConfigured: jest.fn().mockReturnValue(true), openai: { responses: { create: jest.fn() } } }));
 
 const ready = { matchingStatus: 'MATCHED', calculationStatus: 'CALCULATED', reportTreatment: 'INCLUDED', calculatedEmissionsKgCO2e: 26.8 };
 const tracked = { matchingStatus: 'TRACKED_ONLY', calculationStatus: 'TRACKED_ONLY', reportTreatment: 'TRACKED_ONLY', scope: 'TRACKED_METRIC', calculatedEmissionsKgCO2e: null };
