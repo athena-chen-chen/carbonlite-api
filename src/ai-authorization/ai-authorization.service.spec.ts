@@ -50,17 +50,34 @@ function subject(record: unknown) {
     $transaction: jest.fn(async (work: (client: typeof tx) => unknown) => work(tx)),
   };
   const auditLog = { log: jest.fn() };
+  const realDataAuthorization = {
+    assertEffectiveRealDataApproval: jest.fn().mockResolvedValue({ approvalRevision: 1 }),
+  };
   return {
     service: new AiAuthorizationService(
       prisma as never,
       auditLog as never,
-      { assertEffectiveRealDataApproval: jest.fn().mockResolvedValue({ approvalRevision: 1 }) } as never,
+      realDataAuthorization as never,
     ),
     prisma,
     tx,
     auditLog,
+    realDataAuthorization,
   };
 }
+
+const originalRealDataAiFlag = process.env.REAL_DATA_AI_PROCESSING_ENABLED;
+const originalConsentVersion = process.env.CARBONLITE_AI_CONSENT_VERSION;
+
+function restoreEnvironment(name: string, value: string | undefined) {
+  if (value === undefined) delete process.env[name];
+  else process.env[name] = value;
+}
+
+afterEach(() => {
+  restoreEnvironment('REAL_DATA_AI_PROCESSING_ENABLED', originalRealDataAiFlag);
+  restoreEnvironment('CARBONLITE_AI_CONSENT_VERSION', originalConsentVersion);
+});
 
 describe('AiAuthorizationService provider gate', () => {
   it.each([
@@ -103,6 +120,23 @@ describe('AiAuthorizationService provider gate', () => {
     ).resolves.toBe(authorization);
   });
 
+  it('keeps synthetic-only AI authorization independent from the real-data runtime gates', async () => {
+    delete process.env.REAL_DATA_AI_PROCESSING_ENABLED;
+    delete process.env.CARBONLITE_AI_CONSENT_VERSION;
+    const authorization = enabledAuthorization({
+      authorizedDataMode: 'SYNTHETIC_TEST_ONLY',
+      realDataApprovalRevision: null,
+    });
+    const { service } = subject(authorization);
+
+    await expect(service.assertProviderRequestAllowed(
+      'org-a',
+      AI_PROVIDER_OPENAI,
+      AI_SCOPE_DOCUMENT_EXTRACTION,
+      'SYNTHETIC_TEST',
+    )).resolves.toBe(authorization);
+  });
+
   it('returns a customer-safe status without evidence or verifier metadata', async () => {
     const { service } = subject(enabledAuthorization());
     const status = await service.getCustomerStatus('org-a');
@@ -130,6 +164,153 @@ describe('AiAuthorizationService provider gate', () => {
         AI_SCOPE_DOCUMENT_EXTRACTION,
       ),
     ).rejects.toThrow('synthetic database failure');
+  });
+});
+
+describe('AiAuthorizationService real-data runtime gate', () => {
+  function realDataAuthorization(overrides: Record<string, unknown> = {}) {
+    return enabledAuthorization({
+      consentVersion: 'P0-AI-MATRIX-REAL-DATA-R2',
+      authorizedDataMode: 'REAL_CUSTOMER_DATA',
+      realDataApprovalRevision: 2,
+      ...overrides,
+    });
+  }
+
+  it.each([
+    ['missing', undefined],
+    ['empty', ''],
+    ['false', 'false'],
+    ['malformed uppercase', 'TRUE'],
+    ['malformed padded value', ' true '],
+  ])('denies when REAL_DATA_AI_PROCESSING_ENABLED is %s', async (_name, value) => {
+    if (value === undefined) delete process.env.REAL_DATA_AI_PROCESSING_ENABLED;
+    else process.env.REAL_DATA_AI_PROCESSING_ENABLED = value;
+    process.env.CARBONLITE_AI_CONSENT_VERSION = 'P0-AI-MATRIX-REAL-DATA-R2';
+    const { service, prisma, realDataAuthorization: approval } = subject(
+      realDataAuthorization(),
+    );
+
+    await expect(service.assertProviderRequestAllowed(
+      'org-a',
+      AI_PROVIDER_OPENAI,
+      AI_SCOPE_DOCUMENT_EXTRACTION,
+      'REAL_CUSTOMER_DATA',
+    )).rejects.toMatchObject({
+      response: expect.objectContaining({ code: 'AI_REAL_DATA_PROCESSING_DISABLED' }),
+    });
+    expect(prisma.organizationAiAuthorization.findUnique).not.toHaveBeenCalled();
+    expect(approval.assertEffectiveRealDataApproval).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['missing', undefined],
+    ['empty', ''],
+    ['blank', '   '],
+  ])('denies when CARBONLITE_AI_CONSENT_VERSION is %s', async (_name, value) => {
+    process.env.REAL_DATA_AI_PROCESSING_ENABLED = 'true';
+    if (value === undefined) delete process.env.CARBONLITE_AI_CONSENT_VERSION;
+    else process.env.CARBONLITE_AI_CONSENT_VERSION = value;
+    const { service, prisma, realDataAuthorization: approval } = subject(
+      realDataAuthorization(),
+    );
+
+    await expect(service.assertProviderRequestAllowed(
+      'org-a',
+      AI_PROVIDER_OPENAI,
+      AI_SCOPE_DOCUMENT_EXTRACTION,
+      'REAL_CUSTOMER_DATA',
+    )).rejects.toMatchObject({
+      response: expect.objectContaining({ code: 'AI_RUNTIME_CONSENT_VERSION_REQUIRED' }),
+    });
+    expect(prisma.organizationAiAuthorization.findUnique).not.toHaveBeenCalled();
+    expect(approval.assertEffectiveRealDataApproval).not.toHaveBeenCalled();
+  });
+
+  it('denies when the stored consent version does not exactly match runtime approval', async () => {
+    process.env.REAL_DATA_AI_PROCESSING_ENABLED = 'true';
+    process.env.CARBONLITE_AI_CONSENT_VERSION = 'P0-AI-MATRIX-REAL-DATA-R2';
+    const { service, realDataAuthorization: approval } = subject(realDataAuthorization({
+      consentVersion: 'P0-AI-MATRIX-REAL-DATA-R1',
+    }));
+
+    await expect(service.assertProviderRequestAllowed(
+      'org-a',
+      AI_PROVIDER_OPENAI,
+      AI_SCOPE_DOCUMENT_EXTRACTION,
+      'REAL_CUSTOMER_DATA',
+    )).rejects.toMatchObject({
+      response: expect.objectContaining({ code: 'AI_RUNTIME_CONSENT_VERSION_MISMATCH' }),
+    });
+    expect(approval.assertEffectiveRealDataApproval).not.toHaveBeenCalled();
+  });
+
+  it('permits real-data AI only when the strict flag and consent version both match', async () => {
+    process.env.REAL_DATA_AI_PROCESSING_ENABLED = 'true';
+    process.env.CARBONLITE_AI_CONSENT_VERSION = 'P0-AI-MATRIX-REAL-DATA-R2';
+    const authorization = realDataAuthorization();
+    const { service, realDataAuthorization: approval } = subject(authorization);
+
+    await expect(service.assertProviderRequestAllowed(
+      'org-a',
+      AI_PROVIDER_OPENAI,
+      AI_SCOPE_DOCUMENT_EXTRACTION,
+      'REAL_CUSTOMER_DATA',
+    )).resolves.toBe(authorization);
+    expect(approval.assertEffectiveRealDataApproval).toHaveBeenCalledWith('org-a', 2);
+  });
+
+  it('still denies a withdrawn authorization after the runtime gates pass', async () => {
+    process.env.REAL_DATA_AI_PROCESSING_ENABLED = 'true';
+    process.env.CARBONLITE_AI_CONSENT_VERSION = 'P0-AI-MATRIX-REAL-DATA-R2';
+    const { service, realDataAuthorization: approval } = subject(realDataAuthorization({
+      status: 'WITHDRAWN',
+      withdrawnAt: new Date('2026-11-15T23:00:00.000Z'),
+    }));
+
+    await expect(service.assertProviderRequestAllowed(
+      'org-a',
+      AI_PROVIDER_OPENAI,
+      AI_SCOPE_DOCUMENT_EXTRACTION,
+      'REAL_CUSTOMER_DATA',
+    )).rejects.toBeInstanceOf(ForbiddenException);
+    expect(approval.assertEffectiveRealDataApproval).not.toHaveBeenCalled();
+  });
+
+  it('propagates a stale real-data approval revision denial after runtime gates pass', async () => {
+    process.env.REAL_DATA_AI_PROCESSING_ENABLED = 'true';
+    process.env.CARBONLITE_AI_CONSENT_VERSION = 'P0-AI-MATRIX-REAL-DATA-R2';
+    const { service, realDataAuthorization: approval } = subject(realDataAuthorization());
+    approval.assertEffectiveRealDataApproval.mockRejectedValueOnce(
+      new ForbiddenException({
+        statusCode: 403,
+        code: 'REAL_DATA_APPROVAL_REVISION_MISMATCH',
+        message: 'Real-data authorization revision does not match.',
+        error: 'Forbidden',
+      }),
+    );
+
+    await expect(service.assertProviderRequestAllowed(
+      'org-a',
+      AI_PROVIDER_OPENAI,
+      AI_SCOPE_DOCUMENT_EXTRACTION,
+      'REAL_CUSTOMER_DATA',
+    )).rejects.toMatchObject({
+      response: expect.objectContaining({ code: 'REAL_DATA_APPROVAL_REVISION_MISMATCH' }),
+    });
+  });
+
+  it('reports real-data AI disabled to customers when runtime gates do not match', async () => {
+    process.env.REAL_DATA_AI_PROCESSING_ENABLED = 'true';
+    process.env.CARBONLITE_AI_CONSENT_VERSION = 'another-consent-version';
+    const { service } = subject(realDataAuthorization());
+
+    await expect(service.getCustomerStatus('org-a')).resolves.toMatchObject({
+      enabled: false,
+      status: 'ENABLED',
+      authorizedDataMode: 'REAL_CUSTOMER_DATA',
+      realDataApprovalRevision: 2,
+    });
   });
 });
 

@@ -51,6 +51,9 @@ export class AiAuthorizationService {
       new Date(),
       AI_PROVIDER_OPENAI,
       AI_SCOPE_DOCUMENT_EXTRACTION,
+    ) && (
+      authorization?.authorizedDataMode !== AiAuthorizedDataMode.REAL_CUSTOMER_DATA ||
+      this.realDataRuntimeGateSatisfied(authorization.consentVersion)
     );
     return {
       enabled,
@@ -243,6 +246,9 @@ export class AiAuthorizationService {
     processingScope = AI_SCOPE_DOCUMENT_EXTRACTION,
     ingestionDataMode: DeclaredIngestionDataMode = INGESTION_MODE_SYNTHETIC,
   ) {
+    const runtimeConsentVersion = ingestionDataMode === INGESTION_MODE_REAL
+      ? this.assertRealDataRuntimeGate()
+      : null;
     const authorization = await this.findAuthorization(organizationId);
     const now = new Date();
     if (!this.isValidAuthorization(authorization, now, provider, processingScope)) {
@@ -256,6 +262,9 @@ export class AiAuthorizationService {
       ) {
         this.deny('AI_REAL_DATA_CONSENT_REQUIRED');
       }
+      if (authorization.consentVersion !== runtimeConsentVersion) {
+        this.deny('AI_RUNTIME_CONSENT_VERSION_MISMATCH');
+      }
       await this.realDataAuthorization.assertEffectiveRealDataApproval(
         organizationId,
         authorization.realDataApprovalRevision,
@@ -263,6 +272,24 @@ export class AiAuthorizationService {
     }
 
     return authorization;
+  }
+
+  private assertRealDataRuntimeGate() {
+    if (process.env.REAL_DATA_AI_PROCESSING_ENABLED !== 'true') {
+      this.deny('AI_REAL_DATA_PROCESSING_DISABLED');
+    }
+    const consentVersion = process.env.CARBONLITE_AI_CONSENT_VERSION;
+    if (!consentVersion?.trim()) {
+      this.deny('AI_RUNTIME_CONSENT_VERSION_REQUIRED');
+    }
+    return consentVersion;
+  }
+
+  private realDataRuntimeGateSatisfied(storedConsentVersion: string) {
+    const runtimeConsentVersion = process.env.CARBONLITE_AI_CONSENT_VERSION;
+    return process.env.REAL_DATA_AI_PROCESSING_ENABLED === 'true' &&
+      Boolean(runtimeConsentVersion?.trim()) &&
+      storedConsentVersion === runtimeConsentVersion;
   }
 
   private deny(code = 'AI_AUTHORIZATION_REQUIRED'): never {

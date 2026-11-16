@@ -7,6 +7,14 @@ jest.mock('../openai/openai.client', () => ({
   openai: { responses: { create: jest.fn() } },
 }));
 
+const originalRealDataAiFlag = process.env.REAL_DATA_AI_PROCESSING_ENABLED;
+const originalConsentVersion = process.env.CARBONLITE_AI_CONSENT_VERSION;
+
+function restoreEnvironment(name: string, value: string | undefined) {
+  if (value === undefined) delete process.env[name];
+  else process.env[name] = value;
+}
+
 function subject(
   assertProviderRequestAllowed: jest.Mock,
   overrides: Partial<{
@@ -62,6 +70,10 @@ function subject(
 
 describe('DocumentExtractionService AI authorization boundary', () => {
   beforeEach(() => jest.clearAllMocks());
+  afterEach(() => {
+    restoreEnvironment('REAL_DATA_AI_PROCESSING_ENABLED', originalRealDataAiFlag);
+    restoreEnvironment('CARBONLITE_AI_CONSENT_VERSION', originalConsentVersion);
+  });
 
   it('denies a synthetic PDF before leases, status changes, tracking, or provider calls when AI is not authorized', async () => {
     const authorization = jest
@@ -136,7 +148,68 @@ describe('DocumentExtractionService AI authorization boundary', () => {
     expect(prisma.document.update).not.toHaveBeenCalled();
   });
 
+  it('denies a real-data PDF when the global runtime gate is missing before every extraction side effect', async () => {
+    delete process.env.REAL_DATA_AI_PROCESSING_ENABLED;
+    process.env.CARBONLITE_AI_CONSENT_VERSION = 'P0-AI-MATRIX-REAL-DATA-R2';
+    const approval = {
+      assertEffectiveRealDataApproval: jest.fn().mockResolvedValue({ approvalRevision: 2 }),
+    };
+    const aiAuthorization = new AiAuthorizationService(
+      {
+        organizationAiAuthorization: {
+          findUnique: jest.fn().mockResolvedValue({
+            organizationId: 'org-a',
+            status: 'ENABLED',
+            consentVersion: 'P0-AI-MATRIX-REAL-DATA-R2',
+            provider: 'OPENAI',
+            processingScope: 'DOCUMENT_EXTRACTION',
+            evidenceReference: 'evidence://real-data-consent-r2',
+            authorizedRepresentativeReference: 'representative-r2',
+            verifiedById: 'platform-admin-a',
+            verifiedAt: new Date('2026-11-15T23:00:00.000Z'),
+            effectiveAt: new Date('2026-11-15T23:00:00.000Z'),
+            expiresAt: null,
+            withdrawnAt: null,
+            authorizedDataMode: 'REAL_CUSTOMER_DATA',
+            realDataApprovalRevision: 2,
+            organization: { isActive: true, customerStatus: 'ACTIVE' },
+          }),
+        },
+      } as never,
+      { log: jest.fn() } as never,
+      approval as never,
+    );
+    const authorization = jest.fn(
+      aiAuthorization.assertProviderRequestAllowed.bind(aiAuthorization),
+    );
+    const {
+      service,
+      prisma,
+      storage,
+      quotas,
+      auditLog,
+      activityTracking,
+      document,
+    } = subject(authorization, { ingestionDataMode: 'REAL_CUSTOMER_DATA' });
+
+    await expect(service.extract('org-a', 'doc-1')).rejects.toMatchObject({
+      response: expect.objectContaining({ code: 'AI_REAL_DATA_PROCESSING_DISABLED' }),
+    });
+    expect(authorization).toHaveBeenCalledTimes(1);
+    expect(approval.assertEffectiveRealDataApproval).not.toHaveBeenCalled();
+    expect(openai.responses.create).not.toHaveBeenCalled();
+    expect(quotas.beginExtraction).not.toHaveBeenCalled();
+    expect(quotas.finishExtraction).not.toHaveBeenCalled();
+    expect(storage.read).not.toHaveBeenCalled();
+    expect(prisma.document.update).not.toHaveBeenCalled();
+    expect(activityTracking.track).not.toHaveBeenCalled();
+    expect(auditLog.log).not.toHaveBeenCalled();
+    expect(document.status).toBe('UPLOADED');
+  });
+
   it('denies revision-1 real-data AI consent when the effective real-data approval is revision 2 before extraction side effects', async () => {
+    process.env.REAL_DATA_AI_PROCESSING_ENABLED = 'true';
+    process.env.CARBONLITE_AI_CONSENT_VERSION = 'real-data-consent-r1';
     const realDataAuthorization = {
       assertEffectiveRealDataApproval: jest.fn(
         async (_organizationId: string, expectedRevision: number) => {
