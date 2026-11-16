@@ -342,6 +342,7 @@ export class CustomerProvisioningService {
     command: SuspendCustomerOrganizationDto,
   ) {
     this.assertAuthorized(actor, command.organizationId);
+    const suspensionReason = command.suspensionReason.trim();
     if (
       command.confirmSuspend !== true ||
       command.confirmationOrganizationId !== command.organizationId
@@ -399,7 +400,10 @@ export class CustomerProvisioningService {
           entityId: organization.id,
           description: 'Suspended customer organization access without deleting data.',
           oldValue: { customerStatus: organization.customerStatus },
-          newValue: { customerStatus: suspended.customerStatus },
+          newValue: {
+            customerStatus: suspended.customerStatus,
+            suspensionReason,
+          },
         },
       });
 

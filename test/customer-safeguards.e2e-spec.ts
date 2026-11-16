@@ -16,9 +16,23 @@ describe('External customer safeguards (e2e)', () => {
   const run = uniqueTestId('customer-safeguards');
   const password = 'Fictional-Test-Only!2026';
   const globalFactorId = `${run}-global-factor`;
+  const realDataDecisionIds: string[] = [];
+  const evidenceHmacKey = Buffer.alloc(32, 19).toString('base64');
+  let previousEvidenceVersion: string | undefined;
+  let previousEvidenceKeyring: string | undefined;
 
   beforeAll(async () => {
     process.env.PUBLIC_REGISTRATION_ENABLED = 'true';
+    previousEvidenceVersion =
+      process.env.REAL_DATA_EVIDENCE_HMAC_ACTIVE_VERSION;
+    previousEvidenceKeyring = process.env.REAL_DATA_EVIDENCE_HMAC_KEYRING;
+    process.env.REAL_DATA_EVIDENCE_HMAC_ACTIVE_VERSION = 'customer-safeguards-e2e-v1';
+    process.env.REAL_DATA_EVIDENCE_HMAC_KEYRING = JSON.stringify([
+      {
+        version: 'customer-safeguards-e2e-v1',
+        key: `base64:${evidenceHmacKey}`,
+      },
+    ]);
     const e2e = await createE2eApp();
     app = e2e.app;
     prisma = e2e.prisma;
@@ -26,8 +40,23 @@ describe('External customer safeguards (e2e)', () => {
 
   afterAll(async () => {
     await prisma.conversionFactor.deleteMany({ where: { id: globalFactorId } });
+    await prisma.realDataAuthorizationEvidence.deleteMany({
+      where: { authorizationDecisionId: { in: realDataDecisionIds } },
+    });
     await cleanupTestData(prisma, run);
     await app.close();
+    if (previousEvidenceVersion === undefined) {
+      delete process.env.REAL_DATA_EVIDENCE_HMAC_ACTIVE_VERSION;
+    } else {
+      process.env.REAL_DATA_EVIDENCE_HMAC_ACTIVE_VERSION =
+        previousEvidenceVersion;
+    }
+    if (previousEvidenceKeyring === undefined) {
+      delete process.env.REAL_DATA_EVIDENCE_HMAC_KEYRING;
+    } else {
+      process.env.REAL_DATA_EVIDENCE_HMAC_KEYRING =
+        previousEvidenceKeyring;
+    }
   });
 
   it('keeps preflight platform-only, read-only, and free of secrets', async () => {
@@ -202,8 +231,26 @@ describe('External customer safeguards (e2e)', () => {
         verifiedById: platform.user.id,
         verifiedAt: new Date(),
         effectiveAt: new Date(Date.now() - 1_000),
+        authorizedDataMode: 'REAL_CUSTOMER_DATA',
+        realDataApprovalRevision: 1,
       },
     });
+    const realDataAuthorization =
+      await prisma.organizationRealDataAuthorization.create({
+        data: {
+          organizationId: organization.id,
+          status: 'REAL_DATA_APPROVED',
+          approvalRevision: 1,
+          policyVersion: 'CARBONLITE_ALLOWED_DATA_POLICY_V0_2',
+          agreementEvidenceReference: `${run}-agreement`,
+          allowedDataScopeReference: `${run}-scope`,
+          privacySecurityReadinessReference: `${run}-readiness`,
+          approvedById: platform.user.id,
+          approvedAt: new Date(Date.now() - 1_000),
+          effectiveAt: new Date(Date.now() - 1_000),
+        },
+      });
+    realDataDecisionIds.push(realDataAuthorization.decisionId);
     const unrelatedBefore = await prisma.organization.findUniqueOrThrow({
       where: { id: unrelated.user.organizationId },
     });
@@ -249,8 +296,21 @@ describe('External customer safeguards (e2e)', () => {
       organizationId: organization.id,
       confirmationOrganizationId: organization.id,
       confirmationOrganizationSlug: organization.slug,
+      suspensionReason: '  P0 synthetic suspension rehearsal  ',
       confirmSuspend: true,
     };
+
+    for (const invalidReason of [undefined, '   ', 'x'.repeat(501)]) {
+      const invalidCommand = { ...command, suspensionReason: invalidReason };
+      await request(app.getHttpServer())
+        .post('/api/admin/customer-provisioning/suspend')
+        .set(authHeader(platformToken))
+        .send(invalidCommand)
+        .expect(400);
+    }
+    await expect(
+      prisma.organization.findUniqueOrThrow({ where: { id: organization.id } }),
+    ).resolves.toMatchObject({ customerStatus: 'ACTIVE' });
 
     await request(app.getHttpServer())
       .post('/api/admin/customer-provisioning/suspend')
@@ -301,7 +361,21 @@ describe('External customer safeguards (e2e)', () => {
     })).resolves.toMatchObject({ enabled: true, maxConcurrentExtractions: 1 });
     await expect(prisma.organizationAiAuthorization.findUnique({
       where: { organizationId: organization.id },
-    })).resolves.toMatchObject({ status: 'ENABLED', provider: 'OPENAI' });
+    })).resolves.toMatchObject({
+      status: 'WITHDRAWN',
+      provider: 'OPENAI',
+      authorizedDataMode: 'REAL_CUSTOMER_DATA',
+      realDataApprovalRevision: 1,
+      withdrawalReference:
+        'REAL_DATA_AUTHORIZATION_WITHDRAWN:ORGANIZATION_SUSPENDED',
+    });
+    await expect(prisma.organizationRealDataAuthorization.findUnique({
+      where: { organizationId: organization.id },
+    })).resolves.toMatchObject({
+      status: 'WITHDRAWN',
+      approvalRevision: 1,
+      withdrawalReason: 'ORGANIZATION_SUSPENDED',
+    });
     await expect(prisma.organizationQuotaUsage.count({
       where: { organizationId: organization.id },
     })).resolves.toBe(0);
@@ -310,6 +384,18 @@ describe('External customer safeguards (e2e)', () => {
     })).resolves.toBe(0);
     await expect(prisma.conversionFactor.findUniqueOrThrow({ where: { id: globalFactorId } })).resolves.toEqual(globalFactorBefore);
     await expect(prisma.organization.findUniqueOrThrow({ where: { id: unrelated.user.organizationId } })).resolves.toEqual(unrelatedBefore);
+    const suspensionAudit = await prisma.auditLog.findFirstOrThrow({
+      where: {
+        organizationId: organization.id,
+        action: 'CUSTOMER_ORGANIZATION_SUSPENDED',
+      },
+    });
+    expect(suspensionAudit.newValue).toEqual(
+      expect.objectContaining({
+        customerStatus: 'SUSPENDED',
+        suspensionReason: 'P0 synthetic suspension rehearsal',
+      }),
+    );
     await expect(prisma.auditLog.count({
       where: {
         organizationId: organization.id,
