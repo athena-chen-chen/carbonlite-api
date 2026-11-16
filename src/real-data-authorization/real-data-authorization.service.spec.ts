@@ -47,6 +47,7 @@ function setup() {
     organizationAiAuthorization: aiAuthorization,
     realDataAuthorizationEvidence: {
       create: jest.fn().mockImplementation(({ data }) => Promise.resolve({ id: 'evidence-a', ...data })),
+      findMany: jest.fn().mockResolvedValue([]),
       updateMany: jest.fn().mockResolvedValue({ count: 1 }),
     },
     organization: {
@@ -242,18 +243,89 @@ describe('RealDataAuthorizationService', () => {
     expect(tx.realDataAuthorizationEvidence.updateMany).not.toHaveBeenCalled();
   });
 
-  it('marks historical evidence by immutable decision ID after key rotation', async () => {
+  it('marks all historical decision lineages by version-specific organization digest', async () => {
     const { service, tx, authorization } = setup();
-    authorization.findUnique.mockResolvedValueOnce({ decisionId: 'historical-decision' });
+    authorization.findUnique.mockResolvedValueOnce({ decisionId: 'current-decision' });
+    const v1Key = Buffer.alloc(32, 7).toString('base64');
+    const v2Key = Buffer.alloc(32, 8).toString('base64');
+    process.env.REAL_DATA_EVIDENCE_HMAC_ACTIVE_VERSION = 'test-v2';
+    process.env.REAL_DATA_EVIDENCE_HMAC_KEYRING = JSON.stringify([
+      { version: 'test-v1', key: `base64:${v1Key}` },
+      { version: 'test-v2', key: `base64:${v2Key}` },
+    ]);
+    tx.realDataAuthorizationEvidence.findMany
+      .mockResolvedValueOnce([
+        { hmacKeyVersion: 'test-v1' },
+        { hmacKeyVersion: 'test-v2' },
+      ])
+      .mockResolvedValueOnce([
+        { authorizationDecisionId: 'revision-1-decision' },
+        { authorizationDecisionId: 'revision-2-decision' },
+      ]);
+    tx.realDataAuthorizationEvidence.updateMany.mockResolvedValueOnce({ count: 4 });
+    const erasedAt = new Date('2026-11-13T20:00:00Z');
+    await expect(service.markWorkspaceErased(tx, 'org-a', erasedAt)).resolves.toEqual({ count: 4 });
+    expect(tx.realDataAuthorizationEvidence.findMany).toHaveBeenNthCalledWith(2, {
+      where: {
+        OR: [
+          { hmacKeyVersion: 'test-v1', organizationIdHash: expect.stringMatching(/^[a-f0-9]{64}$/) },
+          { hmacKeyVersion: 'test-v2', organizationIdHash: expect.stringMatching(/^[a-f0-9]{64}$/) },
+        ],
+      },
+      select: { authorizationDecisionId: true },
+      distinct: ['authorizationDecisionId'],
+    });
+    expect(tx.realDataAuthorizationEvidence.updateMany).toHaveBeenCalledWith({
+      where: {
+        authorizationDecisionId: {
+          in: ['revision-1-decision', 'revision-2-decision'],
+        },
+        workspaceErasedAt: null,
+      },
+      data: { workspaceErasedAt: erasedAt },
+    });
+  });
+
+  it('finds v1-only history after v2 becomes active without rewriting hashes', async () => {
+    const { service, tx, authorization } = setup();
+    authorization.findUnique.mockResolvedValueOnce({ decisionId: 'current-decision' });
+    process.env.REAL_DATA_EVIDENCE_HMAC_ACTIVE_VERSION = 'test-v2';
+    process.env.REAL_DATA_EVIDENCE_HMAC_KEYRING = JSON.stringify([
+      { version: 'test-v1', key: `base64:${Buffer.alloc(32, 7).toString('base64')}` },
+      { version: 'test-v2', key: `base64:${Buffer.alloc(32, 8).toString('base64')}` },
+    ]);
+    tx.realDataAuthorizationEvidence.findMany
+      .mockResolvedValueOnce([{ hmacKeyVersion: 'test-v1' }])
+      .mockResolvedValueOnce([{ authorizationDecisionId: 'v1-only-decision' }]);
+
+    await service.markWorkspaceErased(tx, 'org-a', new Date('2026-11-13T20:00:00Z'));
+
+    expect(tx.realDataAuthorizationEvidence.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          authorizationDecisionId: { in: ['v1-only-decision'] },
+        }),
+      }),
+    );
+    expect(tx.realDataAuthorizationEvidence.updateMany.mock.calls[0][0].data)
+      .toEqual({ workspaceErasedAt: new Date('2026-11-13T20:00:00Z') });
+  });
+
+  it('fails closed when a persisted historical key version is unavailable', async () => {
+    const { service, tx, authorization } = setup();
+    authorization.findUnique.mockResolvedValueOnce({ decisionId: 'current-decision' });
     process.env.REAL_DATA_EVIDENCE_HMAC_ACTIVE_VERSION = 'test-v2';
     process.env.REAL_DATA_EVIDENCE_HMAC_KEYRING = JSON.stringify([
       { version: 'test-v2', key: `base64:${Buffer.alloc(32, 8).toString('base64')}` },
     ]);
-    const erasedAt = new Date('2026-11-13T20:00:00Z');
-    await expect(service.markWorkspaceErased(tx, 'org-a', erasedAt)).resolves.toEqual({ count: 1 });
-    expect(tx.realDataAuthorizationEvidence.updateMany).toHaveBeenCalledWith({
-      where: { authorizationDecisionId: 'historical-decision' },
-      data: { workspaceErasedAt: erasedAt },
-    });
+    tx.realDataAuthorizationEvidence.findMany.mockResolvedValueOnce([
+      { hmacKeyVersion: 'test-v1' },
+      { hmacKeyVersion: 'test-v2' },
+    ]);
+
+    await expect(
+      service.markWorkspaceErased(tx, 'org-a', new Date('2026-11-13T20:00:00Z')),
+    ).rejects.toBeInstanceOf(ServiceUnavailableException);
+    expect(tx.realDataAuthorizationEvidence.updateMany).not.toHaveBeenCalled();
   });
 });

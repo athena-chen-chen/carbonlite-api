@@ -170,12 +170,19 @@ describe('WorkspaceErasureService', () => {
   });
 
   it('quarantines only target storage keys and deletes the target organization, preserving global factors', async () => {
-    const { service, prisma, storage, tx, recovery } = setup();
+    const { service, prisma, storage, tx, recovery, realDataAuthorization } = setup();
     await expect(service.erase(platformAdmin, command)).resolves.toMatchObject({
       status: 'ERASED', quarantinedPhysicalFiles: 2,
     });
     expect(recovery.quarantinePreparedIntent).toHaveBeenCalledTimes(2);
     expect(storage.delete).not.toHaveBeenCalled();
+    expect(realDataAuthorization.markWorkspaceErased).toHaveBeenCalledWith(
+      tx,
+      'org-a',
+      expect.any(Date),
+    );
+    expect(realDataAuthorization.markWorkspaceErased.mock.invocationCallOrder[0])
+      .toBeLessThan(tx.organization.delete.mock.invocationCallOrder[0]);
     expect(tx.organization.delete).toHaveBeenCalledWith({ where: { id: 'org-a' } });
     expect(prisma.factor.deleteMany).not.toHaveBeenCalled();
     expect(prisma.factorVersion.deleteMany).not.toHaveBeenCalled();

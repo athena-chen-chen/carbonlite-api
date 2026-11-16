@@ -39,6 +39,21 @@ describe('RealDataEvidenceHmacKeyring', () => {
     expect(() => keyring.verify('v1', 'org-a', '0'.repeat(64))).toThrow(
       ServiceUnavailableException,
     );
+    expect(() => keyring.signerForVersion('v1')).toThrow(
+      ServiceUnavailableException,
+    );
+  });
+
+  it('enumerates version-specific signers without exposing key material', () => {
+    const keyring = new RealDataEvidenceHmacKeyring(configuredEnvironment());
+    const signers = keyring.retainedSigners();
+
+    expect(signers.map(signer => signer.hmacKeyVersion)).toEqual(['v1', 'v2']);
+    expect(signers[0].digest('org-a')).toBe(
+      keyring.signerForVersion('v1').digest('org-a'),
+    );
+    expect(JSON.stringify(signers)).not.toContain(encodedKey(1));
+    expect(JSON.stringify(signers)).not.toContain(encodedKey(2));
   });
 
   it.each([

@@ -331,12 +331,40 @@ export class RealDataAuthorizationService {
   ) {
     const authorization = await tx.organizationRealDataAuthorization.findUnique({
       where: { organizationId },
-      select: { decisionId: true },
+      select: { organizationId: true },
     });
     if (!authorization) return { count: 0 };
 
+    // Fail closed before matching the target if any evidence-ledger version can
+    // no longer be resolved. The active signer is never substituted for a
+    // missing historical signer.
+    const persistedVersions = await tx.realDataAuthorizationEvidence.findMany({
+      select: { hmacKeyVersion: true },
+      distinct: ['hmacKeyVersion'],
+    });
+    for (const { hmacKeyVersion } of persistedVersions) {
+      this.evidenceKeyring.signerForVersion(hmacKeyVersion);
+    }
+
+    const identities = this.evidenceKeyring.retainedSigners().map(signer => ({
+      hmacKeyVersion: signer.hmacKeyVersion,
+      organizationIdHash: signer.digest(organizationId),
+    }));
+    const decisions = identities.length === 0
+      ? []
+      : await tx.realDataAuthorizationEvidence.findMany({
+          where: { OR: identities },
+          select: { authorizationDecisionId: true },
+          distinct: ['authorizationDecisionId'],
+        });
+    const decisionIds = [...new Set(decisions.map(row => row.authorizationDecisionId))];
+    if (decisionIds.length === 0) return { count: 0 };
+
     return tx.realDataAuthorizationEvidence.updateMany({
-      where: { authorizationDecisionId: authorization.decisionId },
+      where: {
+        authorizationDecisionId: { in: decisionIds },
+        workspaceErasedAt: null,
+      },
       data: { workspaceErasedAt: erasedAt },
     });
   }

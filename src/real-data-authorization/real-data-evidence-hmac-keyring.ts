@@ -23,25 +23,27 @@ export class RealDataEvidenceHmacKeyring {
 
   activeSigner(): EvidenceSigner {
     const { activeVersion, keys } = this.readConfiguration();
-    const key = keys.get(activeVersion);
-    if (!key) throw this.configurationUnavailable();
-    return {
-      hmacKeyVersion: activeVersion,
-      digest: (value: string) => this.digest(key, value),
-    };
+    return this.createSigner(activeVersion, keys.get(activeVersion));
+  }
+
+  retainedSigners(): EvidenceSigner[] {
+    const { keys } = this.readConfiguration();
+    return [...keys.entries()].map(([version, key]) =>
+      this.createSigner(version, key),
+    );
+  }
+
+  signerForVersion(hmacKeyVersion: string): EvidenceSigner {
+    const { keys } = this.readConfiguration();
+    const key = keys.get(hmacKeyVersion);
+    if (!key) throw this.historicalKeyUnavailable();
+    return this.createSigner(hmacKeyVersion, key);
   }
 
   verify(hmacKeyVersion: string, value: string, expectedHash: string): boolean {
     const { keys } = this.readConfiguration();
     const key = keys.get(hmacKeyVersion);
-    if (!key) {
-      throw new ServiceUnavailableException(
-        codedServiceUnavailable(
-          'REAL_DATA_EVIDENCE_HISTORICAL_KEY_UNAVAILABLE',
-          'Historical real-data authorization evidence cannot currently be verified.',
-        ),
-      );
-    }
+    if (!key) throw this.historicalKeyUnavailable();
     if (!/^[a-f0-9]{64}$/.test(expectedHash)) return false;
     const actual = Buffer.from(this.digest(key, value), 'hex');
     const expected = Buffer.from(expectedHash, 'hex');
@@ -110,6 +112,23 @@ export class RealDataEvidenceHmacKeyring {
 
   private digest(key: Buffer, value: string) {
     return createHmac('sha256', key).update(value, 'utf8').digest('hex');
+  }
+
+  private createSigner(hmacKeyVersion: string, key: Buffer | undefined): EvidenceSigner {
+    if (!key) throw this.configurationUnavailable();
+    return {
+      hmacKeyVersion,
+      digest: (value: string) => this.digest(key, value),
+    };
+  }
+
+  private historicalKeyUnavailable() {
+    return new ServiceUnavailableException(
+      codedServiceUnavailable(
+        'REAL_DATA_EVIDENCE_HISTORICAL_KEY_UNAVAILABLE',
+        'Historical real-data authorization evidence cannot currently be verified.',
+      ),
+    );
   }
 
   private configurationUnavailable() {
