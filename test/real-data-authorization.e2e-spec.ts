@@ -6,13 +6,16 @@ import { PrismaService } from '../src/prisma/prisma.service';
 import { createE2eApp } from './helpers/e2e-app';
 import { authHeader, cleanupTestData, createTestUser, uniqueTestId } from './helpers/factories';
 import { assertSafeTestDatabaseTarget } from './helpers/database-safety';
+import { RealDataEvidenceHmacKeyring } from '../src/real-data-authorization/real-data-evidence-hmac-keyring';
 
 describe('organization real-data authorization gate', () => {
   let app: INestApplication;
   let prisma: PrismaService;
   let previousEvidenceVersion: string | undefined;
   let previousEvidenceKeyring: string | undefined;
+  let previousAdditionalEvidenceKeys: string | undefined;
   const evidenceKey = Buffer.alloc(32, 9).toString('base64');
+  const additiveEvidenceKey = Buffer.alloc(32, 10).toString('base64');
   const run = uniqueTestId('real-data-gate');
   const evidenceDecisionIds: string[] = [];
 
@@ -20,10 +23,13 @@ describe('organization real-data authorization gate', () => {
     assertSafeTestDatabaseTarget();
     previousEvidenceVersion = process.env.REAL_DATA_EVIDENCE_HMAC_ACTIVE_VERSION;
     previousEvidenceKeyring = process.env.REAL_DATA_EVIDENCE_HMAC_KEYRING;
+    previousAdditionalEvidenceKeys =
+      process.env.REAL_DATA_EVIDENCE_HMAC_ADDITIONAL_KEYS;
     process.env.REAL_DATA_EVIDENCE_HMAC_ACTIVE_VERSION = 'e2e-v1';
     process.env.REAL_DATA_EVIDENCE_HMAC_KEYRING = JSON.stringify([
       { version: 'e2e-v1', key: `base64:${evidenceKey}` },
     ]);
+    delete process.env.REAL_DATA_EVIDENCE_HMAC_ADDITIONAL_KEYS;
     const setup = await createE2eApp();
     app = setup.app;
     prisma = setup.prisma;
@@ -41,6 +47,12 @@ describe('organization real-data authorization gate', () => {
     else process.env.REAL_DATA_EVIDENCE_HMAC_ACTIVE_VERSION = previousEvidenceVersion;
     if (previousEvidenceKeyring === undefined) delete process.env.REAL_DATA_EVIDENCE_HMAC_KEYRING;
     else process.env.REAL_DATA_EVIDENCE_HMAC_KEYRING = previousEvidenceKeyring;
+    if (previousAdditionalEvidenceKeys === undefined) {
+      delete process.env.REAL_DATA_EVIDENCE_HMAC_ADDITIONAL_KEYS;
+    } else {
+      process.env.REAL_DATA_EVIDENCE_HMAC_ADDITIONAL_KEYS =
+        previousAdditionalEvidenceKeys;
+    }
   });
 
   it('is fail-closed, platform-admin controlled, revision-bound, and tenant isolated', async () => {
@@ -211,5 +223,60 @@ describe('organization real-data authorization gate', () => {
     expect(JSON.stringify(evidence)).not.toContain(customer.user.email);
     expect(JSON.stringify(evidence)).not.toContain(evidenceKey);
     expect(JSON.stringify(approved.body)).not.toContain(evidenceKey);
+
+    const immutableV1Evidence = evidence.map(row => ({
+      id: row.id,
+      hmacKeyVersion: row.hmacKeyVersion,
+      organizationIdHash: row.organizationIdHash,
+      decision: row.decision,
+    }));
+    process.env.REAL_DATA_EVIDENCE_HMAC_ACTIVE_VERSION = 'e2e-v2';
+    process.env.REAL_DATA_EVIDENCE_HMAC_ADDITIONAL_KEYS = JSON.stringify({
+      'e2e-v2': `base64:${additiveEvidenceKey}`,
+    });
+
+    const revisionTwo = await request(app.getHttpServer())
+      .put(endpoint)
+      .set(authHeader(platform.accessToken))
+      .send({
+        ...approval,
+        agreementEvidenceReference: 'agreement://opaque-e2e-reference-r2',
+        allowedDataScopeReference: 'allowed-data://policy-v0.2-r2',
+        privacySecurityReadinessReference: 'readiness://opaque-e2e-reference-r2',
+      })
+      .expect(200);
+    evidenceDecisionIds.push(revisionTwo.body.authorization.decisionId);
+    expect(revisionTwo.body.authorization.approvalRevision).toBe(2);
+
+    const [unchangedV1Evidence, revisionTwoEvidence] = await Promise.all([
+      prisma.realDataAuthorizationEvidence.findMany({
+        where: { authorizationDecisionId: approved.body.authorization.decisionId },
+      }),
+      prisma.realDataAuthorizationEvidence.findMany({
+        where: { authorizationDecisionId: revisionTwo.body.authorization.decisionId },
+      }),
+    ]);
+    expect(unchangedV1Evidence.map(row => ({
+      id: row.id,
+      hmacKeyVersion: row.hmacKeyVersion,
+      organizationIdHash: row.organizationIdHash,
+      decision: row.decision,
+    }))).toEqual(immutableV1Evidence);
+    expect(revisionTwoEvidence).toHaveLength(1);
+    expect(revisionTwoEvidence[0].hmacKeyVersion).toBe('e2e-v2');
+
+    const mergedKeyring = new RealDataEvidenceHmacKeyring();
+    expect(mergedKeyring.activeSigner().hmacKeyVersion).toBe('e2e-v2');
+    expect(evidence.every(row => mergedKeyring.verify(
+      row.hmacKeyVersion,
+      organization.id,
+      row.organizationIdHash,
+    ))).toBe(true);
+    expect(mergedKeyring.verify(
+      revisionTwoEvidence[0].hmacKeyVersion,
+      organization.id,
+      revisionTwoEvidence[0].organizationIdHash,
+    )).toBe(true);
+    expect(JSON.stringify(revisionTwoEvidence)).not.toContain(additiveEvidenceKey);
   });
 });

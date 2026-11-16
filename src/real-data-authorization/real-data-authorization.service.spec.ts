@@ -4,7 +4,7 @@ import {
   OrganizationCustomerStatus,
   RealDataAuthorizationStatus,
 } from '@prisma/client';
-import { ForbiddenException, ServiceUnavailableException } from '@nestjs/common';
+import { ForbiddenException, Logger, ServiceUnavailableException } from '@nestjs/common';
 import { RealDataAuthorizationService } from './real-data-authorization.service';
 
 const hmacKey = Buffer.alloc(32, 7).toString('base64');
@@ -83,11 +83,39 @@ describe('RealDataAuthorizationService', () => {
     process.env.REAL_DATA_EVIDENCE_HMAC_KEYRING = JSON.stringify([
       { version: 'test-v1', key: `base64:${hmacKey}` },
     ]);
+    delete process.env.REAL_DATA_EVIDENCE_HMAC_ADDITIONAL_KEYS;
   });
 
   afterEach(() => {
     delete process.env.REAL_DATA_EVIDENCE_HMAC_ACTIVE_VERSION;
     delete process.env.REAL_DATA_EVIDENCE_HMAC_KEYRING;
+    delete process.env.REAL_DATA_EVIDENCE_HMAC_ADDITIONAL_KEYS;
+    jest.restoreAllMocks();
+  });
+
+  it('validates HMAC configuration at service startup and logs only safe metadata', () => {
+    process.env.REAL_DATA_EVIDENCE_HMAC_ACTIVE_VERSION = 'test-v2';
+    process.env.REAL_DATA_EVIDENCE_HMAC_ADDITIONAL_KEYS = JSON.stringify({
+      'test-v2': `base64:${Buffer.alloc(32, 8).toString('base64')}`,
+    });
+    const log = jest.spyOn(Logger.prototype, 'log').mockImplementation();
+
+    setup();
+
+    expect(log).toHaveBeenCalledWith(
+      'Evidence HMAC loaded: active=test-v2 versions=[test-v1,test-v2] count=2 legacy=YES additive=YES',
+    );
+    expect(JSON.stringify(log.mock.calls)).not.toContain(hmacKey);
+    expect(JSON.stringify(log.mock.calls)).not.toContain(
+      Buffer.alloc(32, 8).toString('base64'),
+    );
+  });
+
+  it('fails service startup closed when no HMAC configuration exists', () => {
+    delete process.env.REAL_DATA_EVIDENCE_HMAC_ACTIVE_VERSION;
+    delete process.env.REAL_DATA_EVIDENCE_HMAC_KEYRING;
+
+    expect(() => setup()).toThrow(ServiceUnavailableException);
   });
 
   it('resolves a missing authorization to synthetic-only', async () => {

@@ -3,6 +3,7 @@ import { ServiceUnavailableException } from '@nestjs/common';
 import {
   codedServiceUnavailable,
   REAL_DATA_EVIDENCE_HMAC_ACTIVE_VERSION_ENV,
+  REAL_DATA_EVIDENCE_HMAC_ADDITIONAL_KEYS_ENV,
   REAL_DATA_EVIDENCE_HMAC_KEYRING_ENV,
 } from './real-data-authorization.constants';
 
@@ -11,6 +12,14 @@ type Environment = Record<string, string | undefined>;
 export type EvidenceSigner = {
   hmacKeyVersion: string;
   digest(value: string): string;
+};
+
+export type EvidenceHmacConfigurationSummary = {
+  activeVersion: string;
+  versions: string[];
+  loadedKeyCount: number;
+  legacySourcePresent: boolean;
+  additiveSourcePresent: boolean;
 };
 
 const VERSION_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
@@ -33,6 +42,17 @@ export class RealDataEvidenceHmacKeyring {
     );
   }
 
+  configurationSummary(): EvidenceHmacConfigurationSummary {
+    const configuration = this.readConfiguration();
+    return {
+      activeVersion: configuration.activeVersion,
+      versions: [...configuration.keys.keys()].sort(),
+      loadedKeyCount: configuration.keys.size,
+      legacySourcePresent: configuration.legacySourcePresent,
+      additiveSourcePresent: configuration.additiveSourcePresent,
+    };
+  }
+
   signerForVersion(hmacKeyVersion: string): EvidenceSigner {
     const { keys } = this.readConfiguration();
     const key = keys.get(hmacKeyVersion);
@@ -51,35 +71,87 @@ export class RealDataEvidenceHmacKeyring {
   }
 
   private readConfiguration() {
-    const activeVersion = this.environment[
-      REAL_DATA_EVIDENCE_HMAC_ACTIVE_VERSION_ENV
-    ]?.trim();
-    const serializedKeyring = this.environment[
-      REAL_DATA_EVIDENCE_HMAC_KEYRING_ENV
-    ];
-    if (!activeVersion || !VERSION_PATTERN.test(activeVersion) || !serializedKeyring) {
+    const activeVersion = this.normalizeVersion(
+      this.environment[REAL_DATA_EVIDENCE_HMAC_ACTIVE_VERSION_ENV],
+    );
+    const serializedLegacyKeyring =
+      this.environment[REAL_DATA_EVIDENCE_HMAC_KEYRING_ENV];
+    const serializedAdditionalKeys =
+      this.environment[REAL_DATA_EVIDENCE_HMAC_ADDITIONAL_KEYS_ENV];
+    const legacySourcePresent = serializedLegacyKeyring !== undefined;
+    const additiveSourcePresent = serializedAdditionalKeys !== undefined;
+    const keys = new Map<string, Buffer>();
+    if (legacySourcePresent) {
+      this.addLegacyKeys(keys, serializedLegacyKeyring);
+    }
+    if (additiveSourcePresent) {
+      this.addAdditionalKeys(keys, serializedAdditionalKeys);
+    }
+    if (keys.size === 0 || !keys.has(activeVersion)) {
       throw this.configurationUnavailable();
     }
+    return {
+      activeVersion,
+      keys,
+      legacySourcePresent,
+      additiveSourcePresent,
+    };
+  }
 
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(serializedKeyring);
-    } catch {
-      throw this.configurationUnavailable();
-    }
+  private addLegacyKeys(keys: Map<string, Buffer>, serialized: string) {
+    const parsed = this.parseJson(serialized);
     if (!Array.isArray(parsed) || parsed.length === 0) {
       throw this.configurationUnavailable();
     }
-
-    const keys = new Map<string, Buffer>();
     for (const value of parsed) {
-      if (!this.isStrictEntry(value) || keys.has(value.version)) {
-        throw this.configurationUnavailable();
-      }
-      keys.set(value.version, this.decodeKey(value.key));
+      if (!this.isStrictEntry(value)) throw this.configurationUnavailable();
+      this.addKey(keys, this.normalizeVersion(value.version), value.key);
     }
-    if (!keys.has(activeVersion)) throw this.configurationUnavailable();
-    return { activeVersion, keys };
+  }
+
+  private addAdditionalKeys(keys: Map<string, Buffer>, serialized: string) {
+    const parsed = this.parseJson(serialized);
+    if (
+      !parsed
+      || typeof parsed !== 'object'
+      || Array.isArray(parsed)
+      || Object.keys(parsed).length === 0
+      || this.hasDuplicateJsonObjectKeys(serialized)
+    ) {
+      throw this.configurationUnavailable();
+    }
+    for (const [rawVersion, value] of Object.entries(parsed)) {
+      if (typeof value !== 'string') throw this.configurationUnavailable();
+      this.addKey(keys, this.normalizeVersion(rawVersion), value);
+    }
+  }
+
+  private parseJson(serialized: string): unknown {
+    if (!serialized.trim()) throw this.configurationUnavailable();
+    try {
+      return JSON.parse(serialized);
+    } catch {
+      throw this.configurationUnavailable();
+    }
+  }
+
+  private hasDuplicateJsonObjectKeys(serialized: string) {
+    const rawKeys = [...serialized.matchAll(/"((?:\\.|[^"\\])*)"\s*:/g)]
+      .map(match => JSON.parse(`"${match[1]}"`) as string);
+    return new Set(rawKeys).size !== rawKeys.length;
+  }
+
+  private addKey(keys: Map<string, Buffer>, version: string, serializedKey: string) {
+    if (keys.has(version)) throw this.configurationUnavailable();
+    keys.set(version, this.decodeKey(serializedKey));
+  }
+
+  private normalizeVersion(value: string | undefined) {
+    const normalized = value?.trim();
+    if (!normalized || !VERSION_PATTERN.test(normalized)) {
+      throw this.configurationUnavailable();
+    }
+    return normalized;
   }
 
   private isStrictEntry(value: unknown): value is { version: string; key: string } {
@@ -90,7 +162,6 @@ export class RealDataEvidenceHmacKeyring {
       && fields[0] === 'key'
       && fields[1] === 'version'
       && typeof entry.version === 'string'
-      && VERSION_PATTERN.test(entry.version)
       && typeof entry.key === 'string';
   }
 

@@ -4,6 +4,7 @@ import {
   ConflictException,
   ForbiddenException,
   Injectable,
+  Logger,
   NotFoundException,
   ServiceUnavailableException,
 } from '@nestjs/common';
@@ -34,12 +35,18 @@ import { RealDataEvidenceHmacKeyring } from './real-data-evidence-hmac-keyring';
 
 @Injectable()
 export class RealDataAuthorizationService {
+  private readonly logger = new Logger(RealDataAuthorizationService.name);
   private readonly evidenceKeyring = new RealDataEvidenceHmacKeyring();
 
   constructor(
     private readonly prisma: PrismaService,
     private readonly auditLog: AuditLogService,
-  ) {}
+  ) {
+    const summary = this.evidenceKeyring.configurationSummary();
+    this.logger.log(
+      `Evidence HMAC loaded: active=${summary.activeVersion} versions=[${summary.versions.join(',')}] count=${summary.loadedKeyCount} legacy=${summary.legacySourcePresent ? 'YES' : 'NO'} additive=${summary.additiveSourcePresent ? 'YES' : 'NO'}`,
+    );
+  }
 
   async getCustomerStatus(organizationId: string) {
     try {
