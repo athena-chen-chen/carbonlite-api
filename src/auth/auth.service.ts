@@ -11,7 +11,7 @@ import {
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import bcrypt from 'bcryptjs';
-import { createHash, randomBytes, timingSafeEqual } from 'crypto';
+import { timingSafeEqual } from 'crypto';
 import {
   MembershipRole,
   Organization,
@@ -36,6 +36,10 @@ import {
 } from '../sample-data/golden-sample-data.service';
 import { assertPublicRegistrationEnabled } from '../common/security/security-policy';
 import { SYNTHETIC_ONLY_PILOT_NOTICE } from '../common/policies/synthetic-only-pilot';
+import {
+  createPasswordSetupCredential,
+  hashPasswordSetupCredential,
+} from './password-setup-credential';
 
 export type AuthenticatedUser = {
   allowDemoFactorsForCalculations?: boolean;
@@ -64,7 +68,6 @@ type SafeUserSource = Prisma.UserGetPayload<{
 const PILOT_REVIEWER_ACCOUNT_TYPE = 'PILOT_REVIEWER';
 const CUSTOMER_ACCOUNT_TYPE = 'CUSTOMER';
 const DEFAULT_PILOT_WORKSPACE_NAME = GOLDEN_SAMPLE_WORKSPACE_NAME;
-const DEFAULT_INVITE_TTL_HOURS = 48;
 const EMAIL_VALIDATION_MESSAGE =
   'Please enter a valid email address, for example name@example.com.';
 const INVALID_LOGIN_MESSAGE = 'The email or password is incorrect.';
@@ -243,11 +246,10 @@ export class AuthService {
     }
 
     const inviteFrontendUrl = this.resolveInviteFrontendUrl();
-    const inviteToken = randomBytes(32).toString('base64url');
-    const inviteTokenHash = this.hashInviteToken(inviteToken);
-    const inviteExpiresAt = new Date(
-      Date.now() + DEFAULT_INVITE_TTL_HOURS * 60 * 60 * 1000,
-    );
+    const inviteCredential = createPasswordSetupCredential();
+    const inviteToken = inviteCredential.token;
+    const inviteTokenHash = inviteCredential.tokenHash;
+    const inviteExpiresAt = inviteCredential.expiresAt;
     const { firstName, lastName } = this.splitName(fullName);
 
     const result = await this.prisma.$transaction(async (tx) => {
@@ -436,11 +438,10 @@ export class AuthService {
       );
     }
 
-    const inviteToken = randomBytes(32).toString('base64url');
-    const inviteTokenHash = this.hashInviteToken(inviteToken);
-    const inviteExpiresAt = new Date(
-      Date.now() + DEFAULT_INVITE_TTL_HOURS * 60 * 60 * 1000,
-    );
+    const inviteCredential = createPasswordSetupCredential();
+    const inviteToken = inviteCredential.token;
+    const inviteTokenHash = inviteCredential.tokenHash;
+    const inviteExpiresAt = inviteCredential.expiresAt;
 
     const updatedUser = await this.prisma.user.update({
       where: { id: existingUser.id },
@@ -506,7 +507,7 @@ export class AuthService {
       throw new UnauthorizedException(EXPIRED_INVITE_MESSAGE);
     }
 
-    const tokenHash = this.hashInviteToken(token);
+    const tokenHash = hashPasswordSetupCredential(token);
     const now = new Date();
 
     const user = await this.prisma.user.findFirst({
@@ -762,10 +763,6 @@ export class AuthService {
     } catch {
       return /\blocalhost\b|127\.0\.0\.1|\[::1\]/i.test(value);
     }
-  }
-
-  private hashInviteToken(token: string) {
-    return createHash('sha256').update(token).digest('hex');
   }
 
   private extractBearerToken(authorizationHeader?: string) {

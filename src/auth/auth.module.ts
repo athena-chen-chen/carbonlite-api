@@ -11,6 +11,7 @@ import { JwtStrategy } from './jwt.strategy';
 import { JwtAuthGuard } from './jwt-auth.guard';
 import { RolesGuard } from './guards/roles.guard';
 import { GoldenSampleDataService } from '../sample-data/golden-sample-data.service';
+import { PlatformAdminBootstrapService } from './platform-admin-bootstrap.service';
 
 @Module({
   imports: [
@@ -33,7 +34,13 @@ import { GoldenSampleDataService } from '../sample-data/golden-sample-data.servi
     JwtAuthGuard,
     RolesGuard,
     GoldenSampleDataService,
+    PlatformAdminBootstrapService,
   ],
-  exports: [AuthService, JwtAuthGuard, RolesGuard],
+  exports: [
+    AuthService,
+    JwtAuthGuard,
+    RolesGuard,
+    PlatformAdminBootstrapService,
+  ],
 })
 export class AuthModule {}
