@@ -40,6 +40,11 @@ jobs:
       FRONTEND_URL: http://127.0.0.1:4173
       JWT_SECRET: carbonlite-nightly-ci-only
       NODE_ENV: test
+      # Disposable PostgreSQL fixtures only; application defaults remain fail-closed.
+      PUBLIC_REGISTRATION_ENABLED: 'true'
+      REAL_DATA_EVIDENCE_HMAC_ACTIVE_VERSION: ci-v1
+      # Public deterministic test material: CARBONLITE_DISPOSABLE_CI_ONLY_KEY_V1.
+      REAL_DATA_EVIDENCE_HMAC_ADDITIONAL_KEYS: '{"ci-v1":"base64:Q0FSQk9OTElURV9ESVNQT1NBQkxFX0NJX09OTFlfS0VZX1Yx"}'
       # Deterministic tests mock the provider; this only permits module initialization.
       OPENAI_API_KEY: ci-mocked-not-a-real-key
 
