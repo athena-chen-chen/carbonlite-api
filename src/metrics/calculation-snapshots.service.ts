@@ -15,6 +15,11 @@ export class CalculationSnapshotsService {
   async prepareCreate(client: Prisma.TransactionClient | PrismaService, input: any, actorUserId?: string) {
     const row = { ...input, id: input.id ?? randomUUID(), createdAt: input.createdAt ?? new Date(), updatedAt: new Date() };
     for (const key of derivedKeys) delete row[key];
+    // Prisma null sentinels describe database writes, not domain metadata.
+    // Some import callers already supply them; normalize before domain evaluation.
+    if (row.activityMetadata == null || row.activityMetadata === Prisma.DbNull || row.activityMetadata === Prisma.JsonNull) {
+      row.activityMetadata = null;
+    }
     const airTravel = canonicalizeAirTravelActivity(row);
     if (airTravel.derivedRoute) {
       row.quantity = airTravel.quantity;
@@ -26,7 +31,8 @@ export class CalculationSnapshotsService {
     delete row.hotelActivityBasis;
     const airTravelRoute = row.airTravelRoute;
     delete row.airTravelRoute;
-    return { ...row, ...await this.fields(client, { ...row, hotelActivityBasis, airTravelRoute }, actorUserId, 1) };
+    const fields = await this.fields(client, { ...row, hotelActivityBasis, airTravelRoute }, actorUserId, 1);
+    return { ...row, ...fields, activityMetadata: row.activityMetadata ?? Prisma.DbNull };
   }
 
   async fields(client: Prisma.TransactionClient | PrismaService, row: any, actorUserId: string | undefined, version: number) {

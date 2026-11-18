@@ -12,6 +12,27 @@ function setup(activityType = 'DIESEL', factorValue = 2.68, unit = 'L', allowDem
 function input(activityType = 'DIESEL', quantity = 100, unit = 'L') {
   return { organizationId: 'org', activityType, quantity: new Prisma.Decimal(quantity), unit, recordDate: new Date('2026-10-14'), jurisdictionCountry: 'Canada', jurisdictionRegion: 'Alberta', sourceType: 'MANUAL', document: null };
 }
+it.each([undefined, null, Prisma.DbNull, Prisma.JsonNull])('prepares absent Air Travel metadata %p as a domain null before persistence', async activityMetadata => {
+  const { service, client, quality } = setup('AIR_TRAVEL', .115, 'km');
+  const evaluate = jest.spyOn(quality, 'evaluate');
+  const row = await service.prepareCreate(client, { ...input('AIR_TRAVEL', 10, 'km'), activityMetadata }, 'actor');
+  expect(evaluate).toHaveBeenCalledWith(expect.objectContaining({
+    records: [expect.objectContaining({ activityMetadata: null })],
+  }));
+  expect(row.activityMetadata).toBe(Prisma.DbNull);
+  expect(Number(row.quantity)).toBe(10);
+  expect(row.unit).toBe('km');
+});
+it('does not accept malformed Air Travel metadata as absent metadata', async () => {
+  const { service, client } = setup();
+  await expect(service.prepareCreate(client, {
+    ...input('AIR_TRAVEL', 10, 'km'), activityMetadata: {},
+  })).rejects.toThrow('Unsupported Air Travel activity metadata schema.');
+});
+it.each(['BUSINESS_TRAVEL', 'FREIGHT'])('still rejects unsupported activity %s', async activityType => {
+  const { service, client } = setup();
+  await expect(service.prepareCreate(client, input(activityType))).rejects.toThrow('This legacy activity type is not supported for new calculations.');
+});
 it('captures server-owned input, actor, factor and result and ignores forged client results', async () => {
   const { service } = setup('ELECTRICITY', .53, 'kWh');
   const row = await service.prepareCreate((service as any).prisma, { ...input('ELECTRICITY', 980, 'kWh'), matchedFactorValue: 999, calculatedEmissionsKgCO2e: 999 }, 'actor');

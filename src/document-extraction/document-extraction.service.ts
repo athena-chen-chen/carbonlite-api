@@ -1223,7 +1223,10 @@ If it contains a utility bill, prefer ELECTRICITY or NATURAL_GAS.
             if (!staged) continue;
             // Omitted optional context keeps the staged value. An explicit empty value remains a correction.
             const original = activities[normalizedActivities.indexOf(activity)] ?? {};
-            const supplied = (keys: string[]) => keys.some(key => Object.prototype.hasOwnProperty.call(original, key));
+            // Validation may materialize omitted DTO fields as own undefined properties.
+            // Null/empty values still represent an explicit clearing correction.
+            const supplied = (keys: string[]) => keys.some(key =>
+              Object.prototype.hasOwnProperty.call(original, key) && original[key] !== undefined);
             activity.jurisdictionCountry = supplied(['jurisdictionCountry','country','Country']) ? activity.jurisdictionCountry : staged.jurisdictionCountry;
             activity.jurisdictionRegion = supplied(['jurisdictionRegion','province','region','Province']) ? activity.jurisdictionRegion : staged.jurisdictionRegion;
             activity.facilityName = supplied(['facilityName','facility','site','location']) ? activity.facilityName : staged.facilityName;

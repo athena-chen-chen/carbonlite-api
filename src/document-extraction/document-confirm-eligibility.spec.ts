@@ -1,6 +1,8 @@
 import { CalculationQualityService } from '../metrics/calculation-quality.service';
 import { CalculationSnapshotsService } from '../metrics/calculation-snapshots.service';
 import { DocumentExtractionService } from './document-extraction.service';
+import { ValidationPipe } from '@nestjs/common';
+import { ConfirmExtractionDto } from './dto/confirm-extraction.dto';
 jest.mock('../openai/openai.client', () => ({ isOpenAiConfigured: jest.fn().mockReturnValue(true), openai: { responses: { create: jest.fn() } } }));
 
 const ready = { matchingStatus: 'MATCHED', calculationStatus: 'CALCULATED', reportTreatment: 'INCLUDED', calculatedEmissionsKgCO2e: 26.8 };
@@ -22,6 +24,38 @@ function setup(results: Array<Record<string, unknown>>) {
 }
 
 describe('document confirmation uses server-prepared eligibility', () => {
+  it.each([
+    ['omitted', {}, { jurisdictionCountry: 'Canada', jurisdictionRegion: 'Ontario', facilityName: 'Toronto Client Visit' }],
+    ['undefined', { jurisdictionCountry: undefined, jurisdictionRegion: undefined, facilityName: undefined }, { jurisdictionCountry: 'Canada', jurisdictionRegion: 'Ontario', facilityName: 'Toronto Client Visit' }],
+    ['null', { jurisdictionCountry: null, jurisdictionRegion: null, facilityName: null }, { jurisdictionCountry: null, jurisdictionRegion: null, facilityName: null }],
+    ['empty string', { jurisdictionCountry: '', jurisdictionRegion: '', facilityName: '' }, { jurisdictionCountry: null, jurisdictionRegion: null, facilityName: null }],
+    ['explicit value', { jurisdictionCountry: 'United States', jurisdictionRegion: 'Alberta', facilityName: 'Changed facility' }, { jurisdictionCountry: 'United States', jurisdictionRegion: 'Alberta', facilityName: 'Changed facility' }],
+    ['facility alias', { facility: 'Alias correction' }, { jurisdictionCountry: 'Canada', jurisdictionRegion: 'Ontario', facilityName: 'Alias correction' }],
+  ])('preserves staged metadata or applies %s corrections after DTO validation', async (_name, correction, expected) => {
+    const { service, tx, create, prepareCreate } = setup([ready]);
+    const staged = {
+      id: 'staged-row', organizationId: 'org', sourceDocumentId: 'doc',
+      ...input, recordDate: new Date(input.recordDate), createdAt: new Date(),
+      jurisdictionCountry: 'Canada', jurisdictionRegion: 'Ontario', facilityName: 'Toronto Client Visit',
+      status: 'READY', ...ready,
+    };
+    tx.spreadsheetImportReviewRow.findMany.mockResolvedValue([staged] as never);
+    const stagedUpdate = jest.fn(async ({ data }) => ({ ...staged, ...data }));
+    Object.assign(tx.spreadsheetImportReviewRow, { update: stagedUpdate });
+    const fields = jest.fn().mockResolvedValue(ready);
+    Object.assign((service as any).snapshots, { fields });
+    const dto = await new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }).transform(
+      { documentId: 'doc', activities: [{ ...input, ...correction }] },
+      { type: 'body', metatype: ConfirmExtractionDto },
+    );
+
+    expect((await service.confirmImport('org', 'doc', dto.activities)).count).toBe(1);
+    expect(stagedUpdate).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining(expected) }));
+    expect(fields).toHaveBeenCalledWith(tx, expect.objectContaining(expected), undefined, 1);
+    expect(prepareCreate).toHaveBeenCalledWith(tx, expect.objectContaining(expected), undefined);
+    expect(create).toHaveBeenCalledWith({ data: expect.objectContaining(expected) });
+  });
+
   it.each(['MISSING_FACTOR', 'INVALID_UNIT', 'UNIT_MISMATCH', 'MISSING_JURISDICTION', 'NEEDS_REVIEW', 'REQUIRES_REVIEW', 'EXCLUDED'])('blocks canonical %s despite spoofed client statuses', async calculationStatus => {
     const { service, create, update } = setup([{ matchingStatus: calculationStatus, calculationStatus, reportTreatment: 'REQUIRES_REVIEW', calculatedEmissionsKgCO2e: null }]);
     const result = await service.confirmImport('org', 'doc', [{ ...input, ...ready, calculatedEmissionsKgCO2e: 999999, matchedFactorId: 'forged' }]);

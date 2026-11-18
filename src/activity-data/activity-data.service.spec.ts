@@ -1,4 +1,6 @@
 import { Prisma } from '@prisma/client';
+import { ValidationPipe } from '@nestjs/common';
+import { CreateActivityDataDto } from './dto/create-activity-data.dto';
 import { ActivityDataService } from './activity-data.service';
 import { CalculationQualityService } from '../metrics/calculation-quality.service';
 import { CalculationSnapshotsService } from '../metrics/calculation-snapshots.service';
@@ -101,6 +103,31 @@ describe('ActivityDataService canonical calculation persistence', () => {
 
   afterAll(() => {
     process.env = originalEnvironment;
+  });
+
+  it.each([undefined, null])('creates Air Travel with absent metadata %p through real snapshot preparation', async activityMetadata => {
+    const snapshots = new CalculationSnapshotsService(prisma as never, {} as never);
+    const fields = jest.spyOn(snapshots, 'fields').mockResolvedValue({
+      calculationStatus: 'MISSING_FACTOR', reportTreatment: 'REQUIRES_REVIEW',
+      calculatedEmissionsKgCO2e: null,
+    });
+    // Keep the actual create -> prepareCreate chain; only factor evaluation is isolated.
+    Object.assign(service, { snapshots });
+    prisma.activityData.create.mockImplementation(({ data }) => Promise.resolve({ id: 'air-1', ...data }));
+
+    const dto = await new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }).transform({
+      ...basePayload, activityType: 'AIR_TRAVEL', quantity: 10, unit: 'km', activityMetadata,
+    }, { type: 'body', metatype: CreateActivityDataDto });
+    const row = await service.create('org-1', dto);
+    expect(fields).toHaveBeenCalledWith(prisma, expect.objectContaining({
+      activityType: 'AIR_TRAVEL', activityMetadata: null,
+    }), undefined, 1);
+    expect(prisma.activityData.create).toHaveBeenCalledWith({ data: expect.objectContaining({
+      activityType: 'AIR_TRAVEL', activityMetadata: Prisma.DbNull,
+      calculationStatus: 'MISSING_FACTOR', calculatedEmissionsKgCO2e: null,
+    }) });
+    expect(row.id).toBe(prisma.activityData.create.mock.calls[0][0].data.id);
+    expect(prisma.activityData.create).toHaveBeenCalledTimes(1);
   });
 
   it('persists canonical calculation fields on create and returns them', async () => {
