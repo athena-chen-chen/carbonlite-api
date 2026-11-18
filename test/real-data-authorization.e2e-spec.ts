@@ -407,10 +407,18 @@ describe('organization real-data authorization gate', () => {
       expect((await ctx.extract()).status).toBe(500);
       expect(reached).toBe(1); expect(injected.reached()).toBe(1);
       expect(await extractionEvidence(ctx.documentId)).toEqual(before);
-      expect(await prisma.document.findUniqueOrThrow({ where: { id: ctx.documentId } })).toEqual(originalDocument);
+      const after = await prisma.document.findUniqueOrThrow({ where: { id: ctx.documentId } });
+      expect(after).toEqual({ ...originalDocument, status: 'PROCESSING', updatedAt: after.updatedAt });
+      expect(await prisma.auditLog.count({ where: { entityId: ctx.documentId, action: 'EXTRACT_DOCUMENT_STARTED' } })).toBe(1);
       expect(await prisma.auditLog.count({ where: { entityId: ctx.documentId, action: 'EXTRACT_DOCUMENT_FAILED' } })).toBe(0);
       expect(await sourceBytes(ctx.documentId)).toEqual(bytes);
     } finally { failure.mockRestore(); injected.restore(); }
+    // Required failure evidence also owns lease retirement. When that write
+    // fails, the lease remains active; explicit retry waits for normal expiry.
+    const lease = await prisma.aIJob.findFirstOrThrow({ where: { documentId: ctx.documentId } });
+    expect(lease.status).toBe('RUNNING'); expect(lease.leaseExpiresAt).not.toBeNull();
+    expect((await ctx.extract()).status).toBe(409);
+    await prisma.aIJob.update({ where: { id: lease.id }, data: { leaseExpiresAt: new Date(Date.now() - 1000) } });
     expect((await ctx.extract()).status).toBe(201);
   });
 
@@ -622,7 +630,8 @@ describe('organization real-data authorization gate', () => {
       expect(jobs).toHaveLength(1); expect(jobs[0]).toMatchObject({ status: 'FAILED', leaseExpiresAt: null });
       expect(await prisma.auditLog.count({ where: { entityId: ctx.documentId, action: 'EXTRACT_DOCUMENT_STARTED' } })).toBe(1);
       expect(await prisma.documentExtraction.count({ where: { documentId: ctx.documentId } })).toBe(0);
-      expect(await prisma.document.findUnique({ where: { id: ctx.documentId } })).toMatchObject({ status: 'UPLOADED' });
+      expect(await prisma.document.findUnique({ where: { id: ctx.documentId } })).toMatchObject({ status: 'EXTRACTION_FAILED' });
+      expect(await prisma.auditLog.count({ where: { entityId: ctx.documentId, action: 'EXTRACT_DOCUMENT_FAILED' } })).toBe(1);
       expect(provider).not.toHaveBeenCalled();
     } finally { spy.mockRestore(); }
   });
@@ -1041,4 +1050,193 @@ describe('organization real-data authorization gate', () => {
       else process.env.CARBONLITE_AI_CONSENT_VERSION = previousConsentVersion;
     }
   });
+  function deferred() {
+    let resolve!: () => void;
+    const promise = new Promise<void>(done => { resolve = done; });
+    return { promise, resolve };
+  }
+  async function pausedRead(ctx: Awaited<ReturnType<typeof retainedSource>>) {
+    const storage = app.get<DocumentStorage>(DOCUMENT_STORAGE), read = storage.read.bind(storage);
+    const doc = await prisma.document.findUniqueOrThrow({ where: { id: ctx.documentId } });
+    const entered = deferred(), release = deferred();
+    const spy = jest.spyOn(storage, 'read').mockImplementation(async key => {
+      const bytes = await read(key);
+      if (key === documentStorageKey(doc.fileUrl)) { entered.resolve(); await release.promise; }
+      return bytes;
+    });
+    const pending = ctx.extract();
+    await entered.promise;
+    return { pending, release: release.resolve, restore: () => spy.mockRestore() };
+  }
+  async function expectFenced(ctx: Awaited<ReturnType<typeof retainedSource>>) {
+    expect(await prisma.documentExtraction.count({ where: { documentId: ctx.documentId } })).toBe(0);
+    expect(await prisma.auditLog.count({ where: { entityId: ctx.documentId, action: 'EXTRACT_DOCUMENT' } })).toBe(0);
+    expect(await prisma.aIJob.count({ where: { documentId: ctx.documentId, status: 'COMPLETED' } })).toBe(0);
+    expect(await prisma.aIJob.count({ where: { documentId: ctx.documentId, status: 'RUNNING' } })).toBe(0);
+  }
+  async function providerSource(label: string) {
+    const ctx = await retainedSource(label);
+    const platform = await createPlatformAdmin(label + ' AI admin');
+    await app.get(AiAuthorizationService).recordDecision(ctx.organization.id, platform.user.id, {
+      status: 'ENABLED', consentVersion: 'real-data-ai-v1', provider: 'OPENAI', processingScope: 'DOCUMENT_EXTRACTION',
+      authorizedDataMode: 'REAL_CUSTOMER_DATA', realDataApprovalRevision: 1,
+      evidenceReference: 'synthetic://phase-c', authorizedRepresentativeReference: 'synthetic-operator', effectiveAt: new Date(Date.now() - 60000).toISOString(),
+    });
+    const upload = await request(app.getHttpServer()).post('/api/documents/upload').set(authHeader(ctx.customer.accessToken))
+      .set('X-CarbonLite-Data-Mode', 'REAL_CUSTOMER_DATA').field('type', 'PDF')
+      .attach('file', Buffer.from('%PDF-1.4\n% Synthetic Phase C fixture\n%%EOF\n'), { filename: `${uniqueTestId(run)}.pdf`, contentType: 'application/pdf' }).expect(201);
+    const documentId = upload.body.id;
+    return { ...ctx, documentId, extract: () => request(app.getHttpServer()).post('/api/document-extraction/extract').set(authHeader(ctx.customer.accessToken)).send({ documentId }).then(r => r) };
+  }
+  async function withProviderConfiguration(work: () => Promise<void>) {
+    const flag = process.env.REAL_DATA_AI_PROCESSING_ENABLED, consent = process.env.CARBONLITE_AI_CONSENT_VERSION;
+    process.env.REAL_DATA_AI_PROCESSING_ENABLED = 'true'; process.env.CARBONLITE_AI_CONSENT_VERSION = 'real-data-ai-v1';
+    provider.mockReset(); provider.mockResolvedValue({ output_text: JSON.stringify({ activities: [] }) });
+    try { await work(); } finally {
+      if (flag === undefined) delete process.env.REAL_DATA_AI_PROCESSING_ENABLED; else process.env.REAL_DATA_AI_PROCESSING_ENABLED = flag;
+      if (consent === undefined) delete process.env.CARBONLITE_AI_CONSENT_VERSION; else process.env.CARBONLITE_AI_CONSENT_VERSION = consent;
+      provider.mockReset();
+    }
+  }
+
+  it.each(['json', 'xlsx'] as const)('Phase C withdrawal during %s storage completes before storage release and fences results', async format => {
+    const ctx = await retainedSource('Phase C storage ' + format, format), bytes = await sourceBytes(ctx.documentId);
+    const usage = await prisma.organizationQuotaUsage.findMany({ where: { organizationId: ctx.organization.id } });
+    provider.mockClear(); const pause = await pausedRead(ctx);
+    try {
+      expect((await ctx.withdraw()).status).toBe(201); // Must complete while I/O is still paused.
+      pause.release(); const response = await pause.pending;
+      expect(response.status).toBe(403); expect(response.body.code).toBe('REAL_DATA_NOT_AUTHORIZED');
+      await expectFenced(ctx); expect(provider).not.toHaveBeenCalled();
+      expect(await prisma.organizationQuotaUsage.findMany({ where: { organizationId: ctx.organization.id } })).toEqual(usage);
+    } finally { pause.release(); await pause.pending; pause.restore(); }
+    expect(await sourceBytes(ctx.documentId)).toEqual(bytes);
+  });
+
+  it('Phase C withdrawal before provider dispatch makes zero provider calls', async () => withProviderConfiguration(async () => {
+    const ctx = await providerSource('Phase C dispatch loses'), pause = await pausedRead(ctx);
+    try {
+      expect((await ctx.withdraw()).status).toBe(201); pause.release();
+      expect((await pause.pending).status).toBe(403); expect(provider).not.toHaveBeenCalled(); await expectFenced(ctx);
+      expect(await prisma.auditLog.count({ where: { entityId: ctx.documentId, action: 'EXTRACT_PROVIDER_DISPATCH_ADMITTED' } })).toBe(0);
+    } finally { pause.release(); await pause.pending; pause.restore(); }
+  }));
+
+  it('Phase C admitted provider attempt is not replayed and withdrawn results cannot commit', async () => withProviderConfiguration(async () => {
+    const ctx = await providerSource('Phase C dispatch wins'), entered = deferred(), release = deferred();
+    let signal: AbortSignal | undefined;
+    provider.mockImplementation(async (_input, options) => { signal = options.signal; entered.resolve(); await release.promise; return { output_text: JSON.stringify({ activities: [] }) }; });
+    const pending = ctx.extract(); await entered.promise;
+    try {
+      const job = await prisma.aIJob.findFirstOrThrow({ where: { documentId: ctx.documentId } });
+      expect(job.inputJson).toMatchObject({ phase: 'DISPATCH_ADMITTED' });
+      expect(await prisma.auditLog.count({ where: { entityId: ctx.documentId, action: 'EXTRACT_PROVIDER_DISPATCH_ADMITTED' } })).toBe(1);
+      await expect(prisma.$transaction(tx => admissions().dispatch(tx, ctx.organization.id, ctx.documentId, job.id))).rejects.toMatchObject({ status: 403 });
+      expect((await ctx.withdraw()).status).toBe(201); expect(signal?.aborted).toBe(true);
+      release.resolve(); expect((await pending).status).toBe(403); expect(provider).toHaveBeenCalledTimes(1); await expectFenced(ctx);
+    } finally { release.resolve(); await pending; }
+  }));
+
+  it.each(['expiry', 'reapproval', 'lease', 'replacement'] as const)('Phase C final fence rejects %s during work', async kind => {
+    const ctx = await retainedSource('Phase C stale ' + kind), pause = await pausedRead(ctx);
+    try {
+      if (kind === 'expiry') await prisma.organizationRealDataAuthorization.update({ where: { organizationId: ctx.organization.id }, data: { expiresAt: new Date(Date.now() - 1000) } });
+      if (kind === 'lease') await prisma.aIJob.updateMany({ where: { documentId: ctx.documentId }, data: { leaseExpiresAt: new Date(Date.now() - 1000) } });
+      if (kind === 'replacement') await prisma.document.update({ where: { id: ctx.documentId }, data: { fileName: 'replaced-source.json' } });
+      if (kind === 'reapproval') {
+        expect((await ctx.withdraw()).status).toBe(201);
+        const previous = await prisma.organizationRealDataAuthorization.findUniqueOrThrow({ where: { organizationId: ctx.organization.id } });
+        const platform = await createPlatformAdmin('Phase C reapproval admin');
+        const approval = await request(app.getHttpServer()).put(`/api/admin/organizations/${ctx.organization.id}/real-data-authorization`).set(authHeader(platform.accessToken)).send({
+          organizationId: ctx.organization.id, confirmationOrganizationId: ctx.organization.id, confirmationOrganizationSlug: ctx.organization.slug, confirmRealDataApproval: true,
+          policyVersion: 'CARBONLITE_ALLOWED_DATA_POLICY_V0_2', agreementEvidenceReference: 'synthetic://phase-c-r2', allowedDataScopeReference: 'synthetic://scope',
+          privacySecurityReadinessReference: 'synthetic://phase-c-readiness',
+          effectiveAt: new Date(Date.now() - 1000).toISOString(),
+        });
+        expect(approval.status).toBe(200); expect(approval.body.authorization.approvalRevision).toBe(2);
+        expect(approval.body.authorization.decisionId).not.toBe(previous.decisionId); evidenceDecisionIds.push(approval.body.authorization.decisionId);
+      }
+      pause.release(); expect((await pause.pending).status).toBe(kind === 'lease' ? 409 : 403); await expectFenced(ctx);
+      if (kind === 'lease') {
+        expect((await ctx.extract()).status).toBe(201); // Explicit new attempt, no automatic replay.
+        expect(await prisma.aIJob.count({ where: { documentId: ctx.documentId, status: 'COMPLETED' } })).toBe(1);
+      }
+    } finally { pause.release(); await pause.pending; pause.restore(); }
+  });
+
+  it('Phase C withdrawal after result upsert rolls back result, success evidence, status, and completion together', async () => {
+    const ctx = await retainedSource('Phase C final loses'), entered = deferred(), release = deferred();
+    const audit = app.get(AuditLogService), log = audit.log.bind(audit);
+    const spy = jest.spyOn(audit, 'log').mockImplementation(async (input, tx) => {
+      const result = await log(input, tx);
+      if (input.action === 'EXTRACT_DOCUMENT' && input.entityId === ctx.documentId) { entered.resolve(); await release.promise; }
+      return result;
+    });
+    const pending = ctx.extract(); await entered.promise;
+    try {
+      expect(await prisma.documentExtraction.count({ where: { documentId: ctx.documentId } })).toBe(0);
+      expect((await ctx.withdraw()).status).toBe(201); release.resolve(); expect((await pending).status).toBe(403); await expectFenced(ctx);
+    } finally { release.resolve(); await pending; spy.mockRestore(); }
+  });
+
+  it('Phase C concurrent supported deletion wins while storage work holds no document transaction', async () => {
+    const ctx = await retainedSource('Phase C deletion'), pause = await pausedRead(ctx);
+    try {
+      await request(app.getHttpServer()).delete(`/api/documents/${ctx.documentId}`).set(authHeader(ctx.customer.accessToken)).expect(200);
+      pause.release(); expect((await pause.pending).status).toBe(404); await expectFenced(ctx);
+      expect(await prisma.document.count({ where: { id: ctx.documentId } })).toBe(0);
+    } finally { pause.release(); await pause.pending; pause.restore(); }
+  });
+
+  it('Phase C provider error retires exactly one dispatch and explicit retry creates a new attempt', async () => withProviderConfiguration(async () => {
+    const ctx = await providerSource('Phase C provider failure');
+    provider.mockRejectedValueOnce(new Error('Synthetic provider transport outcome unknown'));
+    expect((await ctx.extract()).status).toBe(500); expect(provider).toHaveBeenCalledTimes(1); await expectFenced(ctx);
+    expect(await prisma.auditLog.count({ where: { entityId: ctx.documentId, action: 'EXTRACT_DOCUMENT_FAILED' } })).toBe(1);
+    expect((await ctx.extract()).status).toBe(201); expect(provider).toHaveBeenCalledTimes(2);
+    expect(await prisma.aIJob.count({ where: { documentId: ctx.documentId } })).toBe(2);
+    expect(await prisma.aIJob.count({ where: { documentId: ctx.documentId, status: 'COMPLETED' } })).toBe(1);
+  }));
+
+  it('Phase C AI withdrawal after dispatch cancels best-effort and fences provider results independently', async () => withProviderConfiguration(async () => {
+    const ctx = await providerSource('Phase C AI withdrawal'), entered = deferred(), release = deferred();
+    const platform = await createPlatformAdmin('Phase C AI withdrawal admin');
+    provider.mockImplementation(async () => { entered.resolve(); await release.promise; return { output_text: JSON.stringify({ activities: [] }) }; });
+    const pending = ctx.extract(); await entered.promise;
+    try {
+      await app.get(AiAuthorizationService).withdraw(ctx.organization.id, platform.user.id, 'SYNTHETIC_PHASE_C');
+      release.resolve(); const response = await pending;
+      expect(response.status).toBe(403); expect(response.body.code).toBe('AI_AUTHORIZATION_REQUIRED');
+      expect(provider).toHaveBeenCalledTimes(1); await expectFenced(ctx);
+      expect((await prisma.organizationRealDataAuthorization.findUniqueOrThrow({ where: { organizationId: ctx.organization.id } })).status).toBe('REAL_DATA_APPROVED');
+    } finally { release.resolve(); await pending; }
+  }));
+
+  it('Phase C stale finalization and failure cleanup cannot overwrite a newer successful attempt', async () => {
+    const ctx = await retainedSource('Phase C stale cleanup');
+    const old = await admitForInspection(ctx.organization.id, ctx.documentId);
+    await prisma.aIJob.update({ where: { id: old.operation.id }, data: { leaseExpiresAt: new Date(Date.now() - 1000) } });
+    expect((await ctx.extract()).status).toBe(201);
+    const before = await ctx.state();
+    await expect(prisma.$transaction(tx => admissions().finalize(tx, ctx.organization.id, ctx.documentId, old.operation.id, async () => { throw new Error('Must not run stale work'); }))).rejects.toMatchObject({ status: 409 });
+    await prisma.$transaction(tx => admissions().fail(tx, ctx.organization.id, ctx.documentId, old.operation.id, async () => { throw new Error('Must not run stale cleanup'); }));
+    expect(await ctx.state()).toEqual(before);
+  });
+
+  it('Phase C dispatch audit failure rolls back admission and makes zero provider calls', async () => withProviderConfiguration(async () => {
+    const ctx = await providerSource('Phase C dispatch audit rollback');
+    const audit = app.get(AuditLogService), log = audit.log.bind(audit);
+    const spy = jest.spyOn(audit, 'log').mockImplementation(async (input, tx) => {
+      if (input.entityId === ctx.documentId && input.action === 'EXTRACT_PROVIDER_DISPATCH_ADMITTED') throw new Error('Synthetic required dispatch audit failure');
+      return log(input, tx);
+    });
+    try {
+      expect((await ctx.extract()).status).toBe(500); expect(provider).not.toHaveBeenCalled(); await expectFenced(ctx);
+      const job = await prisma.aIJob.findFirstOrThrow({ where: { documentId: ctx.documentId } });
+      expect(job.inputJson).toMatchObject({ phase: 'ADMITTED' }); expect(job.status).toBe('FAILED');
+      expect(await prisma.auditLog.count({ where: { entityId: ctx.documentId, action: 'EXTRACT_PROVIDER_DISPATCH_ADMITTED' } })).toBe(0);
+    } finally { spy.mockRestore(); }
+    expect((await ctx.extract()).status).toBe(201); expect(provider).toHaveBeenCalledTimes(1);
+  }));
+
 });

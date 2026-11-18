@@ -51,6 +51,7 @@ function subject(record: unknown) {
   };
   const auditLog = { log: jest.fn() };
   const realDataAuthorization = {
+    lockProcessingApproval: jest.fn().mockResolvedValue(undefined),
     assertEffectiveRealDataApproval: jest.fn().mockResolvedValue({ approvalRevision: 1 }),
   };
   return {

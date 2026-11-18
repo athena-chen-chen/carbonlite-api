@@ -1,3 +1,4 @@
+import { cancelExtractionAttempts } from '../document-extraction/extraction-cancellation';
 import { randomUUID } from 'crypto';
 import {
   BadRequestException,
@@ -185,12 +186,14 @@ export class RealDataAuthorizationService {
     dto: WithdrawRealDataAuthorizationDto,
   ) {
     this.assertExactTarget(organizationId, dto);
-    return this.prisma.$transaction(tx => this.withdrawWithinTransaction(
+    const result = await this.prisma.$transaction(tx => this.withdrawWithinTransaction(
       tx,
       organizationId,
       actorId,
       dto.withdrawalReason.trim(),
     ));
+    cancelExtractionAttempts(organizationId, true);
+    return result;
   }
 
   async withdrawWithinTransaction(

@@ -51,7 +51,7 @@ it('F16 omits provider credentials, raw message/stack and document content from 
     undefined,
   );
   expect(prisma.document.updateMany).toHaveBeenCalledWith({
-    where: { id: 'doc-1', organizationId: 'org-1', status: 'PROCESSING' },
+    where: { id: 'doc-1', organizationId: 'org-1' },
     data: { status: 'EXTRACTION_FAILED' },
   });
   expect(audit.log).toHaveBeenCalledWith(expect.objectContaining({

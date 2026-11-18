@@ -1,3 +1,4 @@
+import { cancelExtractionAttempts } from '../document-extraction/extraction-cancellation';
 import {
   BadRequestException,
   ConflictException,
@@ -114,6 +115,9 @@ export class AiAuthorizationService {
     }
 
     return this.prisma.$transaction(async (tx) => {
+      // Same ordering point as extraction dispatch/finalization. Never acquire
+      // document/job locks while holding this authorization fence.
+      await this.realDataAuthorization.lockProcessingApproval(tx, organizationId, false);
       const previous = await tx.organizationAiAuthorization.findUnique({
         where: { organizationId },
       });
@@ -195,7 +199,10 @@ export class AiAuthorizationService {
     verifiedById: string,
     withdrawalReference: string,
   ) {
-    return this.prisma.$transaction(async (tx) => {
+    const result = await this.prisma.$transaction(async (tx) => {
+      // Same ordering point as extraction dispatch/finalization. Never acquire
+      // document/job locks while holding this authorization fence.
+      await this.realDataAuthorization.lockProcessingApproval(tx, organizationId, false);
       const previous = await tx.organizationAiAuthorization.findUnique({
         where: { organizationId },
       });
@@ -238,6 +245,8 @@ export class AiAuthorizationService {
 
       return authorization;
     });
+    cancelExtractionAttempts(organizationId, false);
+    return result;
   }
 
   async assertProviderRequestAllowed(

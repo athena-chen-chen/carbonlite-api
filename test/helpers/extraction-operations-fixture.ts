@@ -7,5 +7,8 @@ export function extractionOperationsFixture(document: Record<string, unknown>) {
       operation: { id: 'synthetic-unit-operation' }, quotaEnforced: false, release: jest.fn(),
     }),
     lockAndValidate: jest.fn().mockResolvedValue({}),
+    dispatch: jest.fn().mockResolvedValue(undefined),
+    finalize: jest.fn(async (tx, _organizationId, _documentId, _operationId, work) => work(tx)),
+    fail: jest.fn(async (tx, _organizationId, _documentId, _operationId, work) => work(tx, true)),
   };
 }

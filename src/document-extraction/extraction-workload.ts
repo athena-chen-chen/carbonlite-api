@@ -33,8 +33,11 @@ export class ExtractionWorkload {
 }
 export const extractionWorkload = new ExtractionWorkload();
 
-export async function withExtractionDeadline<T>(work: (signal: AbortSignal) => Promise<T>): Promise<T> {
+export async function withExtractionDeadline<T>(work: (signal: AbortSignal) => Promise<T>, cancellation?: AbortSignal): Promise<T> {
   const controller = new AbortController();
+  const abort = () => controller.abort();
+  cancellation?.addEventListener('abort', abort, { once: true });
+  if (cancellation?.aborted) controller.abort();
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     return await Promise.race([
@@ -47,5 +50,5 @@ export async function withExtractionDeadline<T>(work: (signal: AbortSignal) => P
         }, EXTRACTION_TIMEOUT_MS);
       }),
     ]);
-  } finally { clearTimeout(timer); }
+  } finally { clearTimeout(timer); cancellation?.removeEventListener('abort', abort); }
 }
