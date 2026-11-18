@@ -7,6 +7,7 @@ function subject(document = {
   fileUrl: 'spreadsheet-import://synthetic-batch',
 }) {
   const tx = {
+    $queryRaw: jest.fn().mockResolvedValue([{ id: document.id }]),
     document: {
       findUnique: jest.fn().mockResolvedValue(document),
       delete: jest.fn().mockResolvedValue(document),

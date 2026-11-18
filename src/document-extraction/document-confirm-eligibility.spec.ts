@@ -133,11 +133,15 @@ it('does not read import state until the tenant-owned document lock is acquired'
   let release!: (value: Array<{ id: string }>) => void;
   tx.$queryRaw.mockImplementation(() => new Promise(done => { release = done; }));
   const pending = service.confirmImport('org', 'doc', []);
+  await Promise.resolve();
   expect(tx.$queryRaw).toHaveBeenCalledTimes(1);
   const [sql, ...parameters] = tx.$queryRaw.mock.calls[0] as unknown as [TemplateStringsArray, ...string[]];
   expect(sql.join('?')).toMatch(/WHERE "id" = \? AND "organizationId" = \?[\s\S]*FOR UPDATE/);
   expect(parameters).toEqual(['doc', 'org']);
-  expect(tx.document.findFirst).not.toHaveBeenCalled();
+  // Only the authoritative data-mode classification may be read before the lock.
+  // Staging, extraction rows and canonical identity reads still wait for it.
+  expect(tx.document.findFirst).toHaveBeenCalledTimes(1);
+  expect(tx.document.findFirst).toHaveBeenCalledWith({ where: { id: 'doc', organizationId: expect.any(String) }, select: { ingestionDataMode: true } });
   expect(tx.spreadsheetImportReviewRow.findMany).not.toHaveBeenCalled();
   expect(tx.activityData.findMany).not.toHaveBeenCalled();
   release([{ id: 'doc' }]);
@@ -149,9 +153,21 @@ it('returns not found without reading or mutating import state if the owned lock
   const { service, tx, create, update, track } = setup([]);
   tx.$queryRaw.mockResolvedValue([]);
   await expect(service.confirmImport('other-org', 'doc', [])).rejects.toThrow('Document not found');
-  expect(tx.document.findFirst).not.toHaveBeenCalled();
+  // Only the authoritative data-mode classification may be read before the lock.
+  // Staging, extraction rows and canonical identity reads still wait for it.
+  expect(tx.document.findFirst).toHaveBeenCalledTimes(1);
+  expect(tx.document.findFirst).toHaveBeenCalledWith({ where: { id: 'doc', organizationId: expect.any(String) }, select: { ingestionDataMode: true } });
   expect(tx.spreadsheetImportReviewRow.findMany).not.toHaveBeenCalled();
   expect(tx.activityData.findMany).not.toHaveBeenCalled();
+  expect(create).not.toHaveBeenCalled();
+  expect(update).not.toHaveBeenCalled();
+  expect(track).not.toHaveBeenCalled();
+});
+
+it('still rejects nonpositive quantities on imported-identity retries before any staging mutation', async () => {
+  const { service, tx, create, update, track } = setup([]);
+  tx.activityData.findMany.mockResolvedValue([{ ...input, sourceSheetName: null, recordDate: new Date(input.recordDate) }] as never);
+  await expect(service.confirmImport('org', 'doc', [{ ...input, quantity: 0 }])).rejects.toThrow('quantity must be a positive number.');
   expect(create).not.toHaveBeenCalled();
   expect(update).not.toHaveBeenCalled();
   expect(track).not.toHaveBeenCalled();

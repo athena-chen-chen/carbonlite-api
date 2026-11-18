@@ -106,6 +106,7 @@ export class RealDataAuthorizationService {
     }
 
     return this.prisma.$transaction(async tx => {
+      await this.lockProcessingApproval(tx, organizationId, false);
       await this.assertApprovalPrerequisites(tx, organizationId, dto.confirmationOrganizationSlug);
       const previous = await tx.organizationRealDataAuthorization.findUnique({ where: { organizationId } });
       const normalized = {
@@ -198,6 +199,7 @@ export class RealDataAuthorizationService {
     actorId: string,
     withdrawalReason: string,
   ) {
+    await this.lockProcessingApproval(tx, organizationId, false);
     const previous = await tx.organizationRealDataAuthorization.findUnique({ where: { organizationId } });
     if (!previous) throw new NotFoundException('Real-data authorization record not found.');
     if (previous.status === RealDataAuthorizationStatus.WITHDRAWN) {
@@ -304,10 +306,19 @@ export class RealDataAuthorizationService {
     return normalized as DeclaredIngestionDataMode;
   }
 
-  async assertEffectiveRealDataApproval(organizationId: string, expectedRevision?: number) {
+  // Dedicated namespace: quota/deletion organization locks are never acquired by
+  // withdrawal. Processing holds this shared lock through its protected commit;
+  // approval/withdrawal take the exclusive counterpart before changing a revision.
+  async lockProcessingApproval(tx: Prisma.TransactionClient, organizationId: string, shared: boolean) {
+    const key = `real-data-processing:${organizationId}`;
+    if (shared) await tx.$queryRaw`SELECT 1 AS locked FROM pg_advisory_xact_lock_shared(hashtextextended(${key}, 0))`;
+    else await tx.$queryRaw`SELECT 1 AS locked FROM pg_advisory_xact_lock(hashtextextended(${key}, 0))`;
+  }
+
+  async assertEffectiveRealDataApproval(organizationId: string, expectedRevision?: number, client: Pick<Prisma.TransactionClient, 'organizationRealDataAuthorization'> = this.prisma) {
     let authorization;
     try {
-      authorization = await this.prisma.organizationRealDataAuthorization.findUnique({
+      authorization = await client.organizationRealDataAuthorization.findUnique({
         where: { organizationId },
         include: { organization: { select: { isActive: true, customerStatus: true } } },
       });

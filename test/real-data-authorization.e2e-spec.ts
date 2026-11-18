@@ -1,3 +1,5 @@
+import * as XLSX from 'xlsx';
+import { RealDataAuthorizationService } from '../src/real-data-authorization/real-data-authorization.service';
 import { INestApplication } from '@nestjs/common';
 import { AiAuthorizedDataMode } from '@prisma/client';
 import request from 'supertest';
@@ -158,6 +160,143 @@ describe('organization real-data authorization gate', () => {
       process.env.REAL_DATA_EVIDENCE_HMAC_ADDITIONAL_KEYS =
         previousAdditionalEvidenceKeys;
     }
+  });
+
+  async function retainedSource(label: string, format: 'json' | 'xlsx' = 'json', approved = true) {
+    const customer = await createActiveCustomer(label);
+    const platform = await createPlatformAdmin(`${label} admin`);
+    const organization = await prisma.organization.findUniqueOrThrow({ where: { id: customer.user.organizationId } });
+    const endpoint = `/api/admin/organizations/${organization.id}/real-data-authorization`;
+    const confirmation = { organizationId: organization.id, confirmationOrganizationId: organization.id, confirmationOrganizationSlug: organization.slug };
+    if (approved) {
+      const approval = await request(app.getHttpServer()).put(endpoint).set(authHeader(platform.accessToken)).send({
+        ...confirmation, confirmRealDataApproval: true, policyVersion: 'CARBONLITE_ALLOWED_DATA_POLICY_V0_2',
+        agreementEvidenceReference: 'agreement://synthetic-security-test', allowedDataScopeReference: 'scope://synthetic-security-test',
+        privacySecurityReadinessReference: 'readiness://synthetic-security-test', effectiveAt: new Date(Date.now() - 60000).toISOString(),
+      }).expect(200);
+      evidenceDecisionIds.push(approval.body.authorization.decisionId);
+    }
+    const rows = [{ activityType: 'DIESEL', quantity: 1, unit: 'L', recordDate: '2026-03-07', jurisdictionCountry: 'Canada', sourceRow: 2 }];
+    const book = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(book, XLSX.utils.json_to_sheet(rows), 'Main');
+    const bytes = format === 'json' ? Buffer.from(JSON.stringify(rows)) : XLSX.write(book, { type: 'buffer', bookType: 'xlsx' });
+    const upload = await request(app.getHttpServer()).post('/api/documents/upload').set(authHeader(customer.accessToken))
+      .set('X-CarbonLite-Data-Mode', approved ? 'REAL_CUSTOMER_DATA' : 'SYNTHETIC_TEST')
+      .field('type', 'SPREADSHEET').attach('file', bytes, { filename: `${uniqueTestId(run)}.${format}`,
+        contentType: format === 'json' ? 'application/json' : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }).expect(201);
+    const documentId = upload.body.id;
+    // Model a retained historical real-data document with no current approval.
+    if (!approved) await prisma.document.update({ where: { id: documentId }, data: { ingestionDataMode: 'REAL_CUSTOMER_DATA' } });
+    const extract = () => request(app.getHttpServer()).post('/api/document-extraction/extract').set(authHeader(customer.accessToken))
+      .set('X-CarbonLite-Data-Mode', 'SYNTHETIC_TEST').send({ documentId }).then(r => r);
+    const confirm = () => request(app.getHttpServer()).post('/api/document-extraction/confirm').set(authHeader(customer.accessToken))
+      .set('X-CarbonLite-Data-Mode', 'SYNTHETIC_TEST').send({ documentId, activities: rows }).then(r => r);
+    const withdraw = () => request(app.getHttpServer()).post(`${endpoint}/withdraw`).set(authHeader(platform.accessToken))
+      .send({ ...confirmation, confirmWithdrawal: true, withdrawalReason: 'SYNTHETIC_SECURITY_TEST' }).then(r => r);
+    const state = async () => ({
+      processing: await processingSideEffects(organization.id),
+      canonical: await prisma.activityData.findMany({ where: { organizationId: organization.id }, orderBy: { id: 'asc' } }),
+      audit: await prisma.auditLog.findMany({ where: { organizationId: organization.id }, orderBy: { id: 'asc' } }),
+      events: await prisma.userActivityEvent.findMany({ where: { organizationId: organization.id }, orderBy: { id: 'asc' } }),
+    });
+    return { organization, documentId, extract, confirm, withdraw, state };
+  }
+
+  it.each(['json', 'xlsx'] as const)('denies retained real-data %s extraction after withdrawal without any processing side effect', async format => {
+    const ctx = await retainedSource(`withdrawn ${format}`, format);
+    expect((await ctx.withdraw()).status).toBe(201);
+    const before = await ctx.state(); provider.mockClear();
+    const denied = await ctx.extract(); expect(denied.status).toBe(403); expect(denied.body.code).toBe('REAL_DATA_NOT_AUTHORIZED');
+    expect(await ctx.state()).toEqual(before); expect(provider).not.toHaveBeenCalled();
+  });
+
+  it('denies confirmation of retained extraction after withdrawal without mutations', async () => {
+    const ctx = await retainedSource('confirmation withdrawal');
+    expect((await ctx.extract()).status).toBe(201);
+    expect((await ctx.withdraw()).status).toBe(201);
+    const before = await ctx.state(); provider.mockClear();
+    const denied = await ctx.confirm(); expect(denied.status).toBe(403); expect(denied.body.code).toBe('REAL_DATA_NOT_AUTHORIZED');
+    expect(await ctx.state()).toEqual(before); expect(provider).not.toHaveBeenCalled();
+  });
+
+  it.each(['missing', 'expired'] as const)('denies %s approval for both retained-document operations', async mode => {
+    const ctx = await retainedSource(mode, 'json', mode !== 'missing');
+    if (mode === 'expired') await prisma.organizationRealDataAuthorization.update({ where: { organizationId: ctx.organization.id }, data: { expiresAt: new Date(Date.now() - 1000) } });
+    const before = await ctx.state(); provider.mockClear();
+    for (const operation of [ctx.extract, ctx.confirm]) {
+      const denied = await operation(); expect(denied.status).toBe(403); expect(denied.body.code).toBe('REAL_DATA_NOT_AUTHORIZED');
+      expect(await ctx.state()).toEqual(before);
+    }
+    expect(provider).not.toHaveBeenCalled();
+  });
+
+  it.each(['json', 'xlsx'] as const)('processes authorized real-data local %s without AI authorization', async format => {
+    const ctx = await retainedSource(`allowed ${format}`, format); provider.mockClear();
+    expect((await ctx.extract()).status).toBe(201);
+    expect((await ctx.confirm()).body.count).toBe(1);
+    expect(await prisma.organizationAiAuthorization.count({ where: { organizationId: ctx.organization.id } })).toBe(0);
+    expect(provider).not.toHaveBeenCalled();
+  });
+
+  it('keeps synthetic local processing available without real-data or AI approval', async () => {
+    const ctx = await retainedSource('synthetic', 'json', false);
+    await prisma.document.update({ where: { id: ctx.documentId }, data: { ingestionDataMode: 'SYNTHETIC_TEST' } });
+    provider.mockClear(); expect((await ctx.extract()).status).toBe(201); expect((await ctx.confirm()).body.count).toBe(1);
+    expect(await prisma.organizationRealDataAuthorization.count({ where: { organizationId: ctx.organization.id } })).toBe(0);
+    expect(provider).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['processing-first', 'extract'], ['withdrawal-first', 'extract'],
+    ['processing-first', 'confirm'], ['withdrawal-first', 'confirm'],
+  ] as const)('serializes real processing against withdrawal: %s %s', async (ordering, operation) => {
+    const ctx = await retainedSource(`${ordering} ${operation}`);
+    if (operation === 'confirm') expect((await ctx.extract()).status).toBe(201);
+    const processDocument = operation === 'confirm' ? ctx.confirm : ctx.extract;
+    const deadline = async <T>(promise: Promise<T>): Promise<T> => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try { return await Promise.race([promise, new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error('Authorization race barrier timed out')), 10000);
+      })]); } finally { clearTimeout(timer); }
+    };
+    let release!: () => void, entered!: () => void, waiting!: () => void;
+    const gate = new Promise<void>(done => { release = done; });
+    const held = new Promise<void>(done => { entered = done; });
+    const second = new Promise<void>(done => { waiting = done; });
+    const service = app.get(RealDataAuthorizationService);
+    const original = service.lockProcessingApproval.bind(service);
+    let holderPid = 0, waiterPid = 0;
+    const spy = jest.spyOn(service, 'lockProcessingApproval').mockImplementation(async (tx, org, shared) => {
+      const [backend] = await tx.$queryRaw<Array<{ pid: number }>>`SELECT pg_backend_pid() AS pid`;
+      const isFirst = shared === (ordering === 'processing-first');
+      if (isFirst) {
+        await original(tx, org, shared); holderPid = backend.pid; entered(); await gate;
+      } else {
+        waiterPid = backend.pid; waiting(); await original(tx, org, shared);
+      }
+    });
+    const pending: Promise<any>[] = [];
+    try {
+      pending.push(ordering === 'processing-first' ? processDocument() : ctx.withdraw());
+      await deadline(Promise.race([held, pending[0].then(r => { throw new Error('First request ended before lock barrier: ' + r.status); })]));
+      pending.push(ordering === 'processing-first' ? ctx.withdraw() : processDocument());
+      await deadline(second);
+      const expires = Date.now() + 4000; let blocked = false;
+      while (Date.now() < expires) {
+        const [state] = await prisma.$queryRaw<Array<{ blocked: boolean }>>`SELECT ${holderPid}::int = ANY(pg_blocking_pids(${waiterPid}::int)) AS blocked`;
+        if (state.blocked) { blocked = true; break; }
+        await new Promise<void>(done => setImmediate(done));
+      }
+      expect(blocked).toBe(true); release();
+      const responses = await Promise.all(pending);
+      expect(responses.map(r => r.status)).toEqual(ordering === 'processing-first' ? [201, 201] : [201, 403]);
+      if (ordering === 'withdrawal-first') {
+        expect(responses[1].body.code).toBe('REAL_DATA_NOT_AUTHORIZED');
+        expect(await prisma.aIJob.count({ where: { organizationId: ctx.organization.id } })).toBe(operation === 'extract' ? 0 : 1);
+        expect(await prisma.documentExtraction.count({ where: { documentId: ctx.documentId } })).toBe(operation === 'extract' ? 0 : 1);
+        expect(await prisma.activityData.count({ where: { organizationId: ctx.organization.id } })).toBe(0);
+      }
+      expect((await ctx.extract()).status).toBe(403);
+    } finally { release(); await Promise.allSettled(pending); spy.mockRestore(); }
   });
 
   it('preapproval REAL_CUSTOMER_DATA denial has zero processing side effects', async () => {

@@ -38,6 +38,7 @@ function subject(
     ...overrides,
   };
   const prisma: any = {
+    $queryRaw: jest.fn().mockResolvedValue([{ active: 1 }]),
     document: {
       findFirst: jest.fn().mockResolvedValue(document),
       update: jest.fn().mockResolvedValue(document),
@@ -65,6 +66,9 @@ function subject(
     storage as never,
     quotas as never,
     { assertProviderRequestAllowed } as never,
+    // These tests isolate the AI boundary with an effective independent real-data approval.
+    { lockProcessingApproval: jest.fn().mockResolvedValue(undefined),
+      assertEffectiveRealDataApproval: jest.fn().mockResolvedValue({ approvalRevision: 2 }) } as never,
   );
   return { service, prisma, storage, quotas, auditLog, activityTracking, document };
 }

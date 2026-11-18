@@ -43,6 +43,7 @@ function setup() {
     update: jest.fn(),
   };
   const tx: any = {
+    $queryRaw: jest.fn().mockResolvedValue([{ locked: 1 }]),
     organizationRealDataAuthorization: authorization,
     organizationAiAuthorization: aiAuthorization,
     realDataAuthorizationEvidence: {

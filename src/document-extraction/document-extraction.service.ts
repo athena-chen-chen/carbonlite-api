@@ -1,3 +1,4 @@
+import { RealDataAuthorizationService } from '../real-data-authorization/real-data-authorization.service';
 import { writeSafeError } from '../common/logging/safe-log';
 import { assertDocumentSize, assertReviewRowLimit, validateDocumentContent, validateDocumentType } from '../documents/document-resource-policy';
 import { extractionWorkload, withExtractionDeadline, EXTRACTION_TIMEOUT_MS, MAX_PROVIDER_OUTPUT_CHARACTERS, MAX_PROVIDER_OUTPUT_TOKENS } from './extraction-workload';
@@ -162,6 +163,7 @@ export class DocumentExtractionService {
     @Inject(OrganizationQuotasService)
     private readonly quotas: OrganizationQuotasService | undefined = undefined,
     @Optional() private readonly aiAuthorization?: AiAuthorizationService,
+    @Optional() private readonly realDataAuthorization?: RealDataAuthorizationService,
   ) {}
 
   async extract(
@@ -178,6 +180,44 @@ export class DocumentExtractionService {
       throw new NotFoundException('Document not found');
     }
 
+    if (document.ingestionDataMode === IngestionDataMode.REAL_CUSTOMER_DATA) {
+      // All protected writes use this transaction. A timeout cannot leave writes
+      // committing after the authorization lock has been released. Admission is
+      // checked after the lock: withdrawal-first denies without even a lease;
+      // processing-first completes before withdrawal can commit.
+      const outcome = await this.prisma.$transaction(async tx => {
+        await this.assertRealDocumentApproval(tx, organizationId);
+        try { return { result: await this.extractApproved(document, userId, userEmail, tx) }; }
+        catch (error) { return { error }; }
+      }, {
+        maxWait: 10000,
+        // Includes provider deadline plus persistence/cleanup. Expiry is checked
+        // at admission; a previously admitted operation finishes before withdrawal.
+        timeout: EXTRACTION_TIMEOUT_MS + 60000,
+        isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted,
+      });
+      if ('error' in outcome) throw outcome.error;
+      return outcome.result;
+    }
+    return this.extractApproved(document, userId, userEmail);
+  }
+
+  private async assertRealDocumentApproval(tx: Prisma.TransactionClient, organizationId: string) {
+    if (!this.realDataAuthorization) throw new ServiceUnavailableException({
+      statusCode: 503, code: 'REAL_DATA_AUTHORIZATION_UNAVAILABLE',
+      message: 'Real-data authorization could not be verified.',
+    });
+    await this.realDataAuthorization.lockProcessingApproval(tx, organizationId, true);
+    await this.realDataAuthorization.assertEffectiveRealDataApproval(organizationId, undefined, tx);
+  }
+
+  private async extractApproved(
+    document: Awaited<ReturnType<PrismaService['document']['findFirstOrThrow']>>,
+    userId?: string,
+    userEmail?: string,
+    processingTx?: Prisma.TransactionClient,
+  ) {
+    const { organizationId, id: documentId } = document;
     this.validateSupportedFile(document);
     if (this.requiresProviderExtraction(document.fileName)) {
       await this.assertProviderExtractionAllowed(document);
@@ -191,7 +231,7 @@ export class DocumentExtractionService {
     });
     try {
       const result = await extractionWorkload.run(`${organizationId}:${documentId}`, () =>
-        this.extractWithinLimits(document, userId, userEmail), !lease);
+        this.extractWithinLimits(document, userId, userEmail, processingTx), !lease);
       await this.quotaEnforcement.finishExtraction(organizationId, lease?.id, 'COMPLETED');
       return result;
     } catch (error) {
@@ -239,10 +279,11 @@ export class DocumentExtractionService {
     },
     userId?: string,
     userEmail?: string,
+    processingTx?: Prisma.TransactionClient,
   ) {
     const { id: documentId, organizationId } = document;
 
-    await this.prisma.document.update({
+    await (processingTx ?? this.prisma).document.update({
       where: { id: documentId },
       data: { status: 'PROCESSING' },
     });
@@ -256,7 +297,7 @@ export class DocumentExtractionService {
         statusBefore: document.status,
         fileType: document.type,
       },
-    });
+    }, processingTx);
     addAppBreadcrumb('Document extraction started', {
       feature: 'document-extraction',
       operation:
@@ -294,7 +335,7 @@ export class DocumentExtractionService {
         this.logger.warn(
           `[DocumentExtraction] file missing documentId=${documentId} storageKey=${document.fileUrl}`,
         );
-        await this.prisma.document.update({
+        await (processingTx ?? this.prisma).document.update({
           where: { id: documentId },
           data: { status: 'FILE_MISSING' },
         });
@@ -306,7 +347,7 @@ export class DocumentExtractionService {
           metadata: {
             reason: 'FILE_MISSING',
           },
-        });
+        }, processingTx);
         addAppBreadcrumb('Uploaded file missing during extraction', {
           feature: 'document-extraction',
           operation: 'file-missing',
@@ -329,7 +370,7 @@ export class DocumentExtractionService {
       assertDocumentSize(fileBuffer.length);
       validateDocumentContent(document.fileName, fileBuffer);
       if (/\.xlsx?$/i.test(document.fileName)) {
-        return await this.extractStructuredActivityRecords({ organizationId, userId, documentId, fileName: document.fileName, fileBuffer }, parseSpreadsheetActivityRows(fileBuffer), 'EXCEL');
+        return await this.extractStructuredActivityRecords({ organizationId, userId, documentId, fileName: document.fileName, fileBuffer }, parseSpreadsheetActivityRows(fileBuffer), 'EXCEL', processingTx);
       }
       const mimeType = this.resolveOpenAiMimeType(document, fileBuffer);
       const base64 = fileBuffer.toString('base64');
@@ -343,7 +384,7 @@ export class DocumentExtractionService {
           documentId,
           fileName: document.fileName,
           fileBuffer,
-        });
+        }, processingTx);
       }
 
       if (document.fileName.toLowerCase().endsWith('.csv')) {
@@ -353,6 +394,8 @@ export class DocumentExtractionService {
       // Recheck immediately before the provider request so a withdrawal that
       // occurs while a previously authorized extraction is queued still wins.
       await this.assertProviderExtractionAllowed(document);
+      // A timed-out processing transaction must not start a delayed provider call.
+      if (processingTx) await processingTx.$queryRaw`SELECT 1 AS active`;
 
       const inputModality = this.getOpenAiInputModality(mimeType);
       const userContent = this.buildExtractionUserContent({
@@ -570,7 +613,7 @@ export class DocumentExtractionService {
         extractedAt: new Date().toISOString(),
       };
 
-      await this.prisma.$transaction(async tx => {
+      await this.persistExtraction(processingTx, async tx => {
         await tx.document.update({ where: { id: documentId }, data: { status } });
         await this.saveExtractionResult({
           organizationId,
@@ -617,7 +660,7 @@ export class DocumentExtractionService {
           possibleMissingRows,
           reason: extractedRowCount > 0 ? undefined : 'NO_DATA_FOUND',
         },
-      });
+      }, processingTx);
 
       return extractionResponse;
     } catch (error) {
@@ -629,7 +672,7 @@ export class DocumentExtractionService {
         this.logger.warn(
           `[DocumentExtraction] file missing during read documentId=${documentId} storageKey=${document.fileUrl}`,
         );
-        await this.prisma.document.update({
+        await (processingTx ?? this.prisma).document.update({
           where: { id: documentId },
           data: { status: 'FILE_MISSING' },
         });
@@ -641,7 +684,7 @@ export class DocumentExtractionService {
           metadata: {
             reason: 'FILE_MISSING',
           },
-        });
+        }, processingTx);
         addAppBreadcrumb('Uploaded file missing during extraction', {
           feature: 'document-extraction',
           operation: 'file-missing',
@@ -661,7 +704,7 @@ export class DocumentExtractionService {
       }
 
       if (error instanceof HttpException) {
-        await this.prisma.document.update({
+        await (processingTx ?? this.prisma).document.update({
           where: { id: documentId },
           data: { status: 'EXTRACTION_FAILED' },
         });
@@ -673,7 +716,7 @@ export class DocumentExtractionService {
           metadata: {
             reason: error.getStatus() === 504 ? 'TIMEOUT' : 'BAD_REQUEST',
           },
-        });
+        }, processingTx);
         throw error;
       }
 
@@ -698,7 +741,7 @@ export class DocumentExtractionService {
           documentStatus: document.status,
         },
       });
-      await this.prisma.document.update({
+      await (processingTx ?? this.prisma).document.update({
         where: { id: documentId },
         data: { status: 'EXTRACTION_FAILED' },
       });
@@ -711,7 +754,7 @@ export class DocumentExtractionService {
         metadata: {
           reason: 'UNEXPECTED_ERROR',
         },
-      });
+      }, processingTx);
 
       const friendlyError = new InternalServerErrorException(
         'Extraction failed. Please try again or upload the file again.',
@@ -889,17 +932,18 @@ If it contains a utility bill, prefer ELECTRICITY or NATURAL_GAS.
     documentId: string;
     fileName: string;
     fileBuffer: Buffer;
-  }) {
+  }, processingTx?: Prisma.TransactionClient) {
     const records = parseJsonActivityPayload({
       jsonContent: input.fileBuffer.toString('utf-8'),
     });
-    return this.extractStructuredActivityRecords(input, records, 'JSON');
+    return this.extractStructuredActivityRecords(input, records, 'JSON', processingTx);
   }
 
   private async extractStructuredActivityRecords(
     input: { organizationId: string; userId?: string; documentId: string; fileName: string; fileBuffer: Buffer },
     records: Record<string, unknown>[],
     sourceFormat: 'JSON' | 'EXCEL',
+    processingTx?: Prisma.TransactionClient,
   ) {
     assertReviewRowLimit(records.length);
     const parsedActivities = records.map((record) => {
@@ -930,7 +974,7 @@ If it contains a utility bill, prefer ELECTRICITY or NATURAL_GAS.
       extractedAt: new Date().toISOString(),
     };
 
-    await this.prisma.$transaction(async tx => {
+    await this.persistExtraction(processingTx, async tx => {
       await tx.document.update({ where: { id: input.documentId }, data: { status } });
       await this.saveExtractionResult({
         organizationId: input.organizationId,
@@ -978,7 +1022,7 @@ If it contains a utility bill, prefer ELECTRICITY or NATURAL_GAS.
         reason: extractedRowCount > 0 ? undefined : 'NO_DATA_FOUND',
         sourceFormat,
       },
-    });
+    }, processingTx);
 
     return extractionResponse;
   }
@@ -1181,6 +1225,11 @@ If it contains a utility bill, prefer ELECTRICITY or NATURAL_GAS.
       await timeAsync(() =>
         this.prisma.$transaction(async (tx) => {
           const validation = await timeAsync(async () => {
+            const classification = await tx.document.findFirst({ where: { id: documentId, organizationId }, select: { ingestionDataMode: true } });
+            if (!classification) throw new NotFoundException('Document not found');
+            if (classification.ingestionDataMode === IngestionDataMode.REAL_CUSTOMER_DATA) {
+              await this.assertRealDocumentApproval(tx, organizationId);
+            }
             // Serialize confirms for this tenant-owned source across processes.
             // Acquire before reading staging or imported identities and hold
             // through all inserts/state updates until this transaction ends.
@@ -1217,29 +1266,6 @@ If it contains a utility bill, prefer ELECTRICITY or NATURAL_GAS.
           const confirmationActivities = normalizedActivities.length ? normalizedActivities : spreadsheetReviewRows
             .map(row => this.buildImportActivityFromReviewRow(row))
             .filter((row): row is NormalizedImportActivity => Boolean(row));
-          for (const activity of confirmationActivities) {
-            if (activity.quantity <= 0) throw new BadRequestException('Quantity must be a positive number.');
-            const staged = spreadsheetReviewRows.find(row => String(row.sourceRow ?? '') === String(activity.sourceRow ?? '') && (!activity.sourceSheetName || row.sourceSheetName === activity.sourceSheetName));
-            if (!staged) continue;
-            // Omitted optional context keeps the staged value. An explicit empty value remains a correction.
-            const original = activities[normalizedActivities.indexOf(activity)] ?? {};
-            // Validation may materialize omitted DTO fields as own undefined properties.
-            // Null/empty values still represent an explicit clearing correction.
-            const supplied = (keys: string[]) => keys.some(key =>
-              Object.prototype.hasOwnProperty.call(original, key) && original[key] !== undefined);
-            activity.jurisdictionCountry = supplied(['jurisdictionCountry','country','Country']) ? activity.jurisdictionCountry : staged.jurisdictionCountry;
-            activity.jurisdictionRegion = supplied(['jurisdictionRegion','province','region','Province']) ? activity.jurisdictionRegion : staged.jurisdictionRegion;
-            activity.facilityName = supplied(['facilityName','facility','site','location']) ? activity.facilityName : staged.facilityName;
-            const fields = await this.snapshots.fields(tx, { ...activity, id: staged.id, organizationId, quantity: new Prisma.Decimal(activity.quantity), recordDate: new Date(activity.recordDate), createdAt: staged.createdAt, document: null }, userId, 1);
-            const editable = { activityType: activity.activityType, quantity: new Prisma.Decimal(activity.quantity), unit: activity.unit, activityMetadata: activity.activityMetadata ? activity.activityMetadata as unknown as Prisma.InputJsonValue : Prisma.JsonNull, recordDate: new Date(activity.recordDate), jurisdictionCountry: activity.jurisdictionCountry, jurisdictionRegion: activity.jurisdictionRegion, facilityName: activity.facilityName };
-            const { calculationSnapshot, calculationVersion, calculatedAt, ...stagedFields } = fields;
-            const updated = await tx.spreadsheetImportReviewRow.update({ where: { id: staged.id, organizationId }, data: { ...editable, ...stagedFields, status: fields.calculationStatus === 'CALCULATED' ? 'READY' : fields.calculationStatus === 'TRACKED_ONLY' ? 'TRACKED_ONLY' : 'NEEDS_REVIEW', issues: [] } });
-            Object.assign(staged, updated);
-          }
-          const activitiesForImport = this.mergeImportActivities(
-            confirmationActivities,
-            spreadsheetReviewRows.filter(row => confirmationActivities.some(activity => String(row.sourceRow ?? '') === String(activity.sourceRow ?? '') && (!activity.sourceSheetName || row.sourceSheetName === activity.sourceSheetName))),
-          );
           const existingActivities = await tx.activityData.findMany({
             where: {
               organizationId,
@@ -1287,6 +1313,31 @@ If it contains a utility bill, prefer ELECTRICITY or NATURAL_GAS.
               ));
           };
 
+          for (const activity of confirmationActivities) {
+            if (activity.quantity <= 0) throw new BadRequestException('Quantity must be a positive number.');
+            if (wasImported(activity)) continue;
+            const staged = spreadsheetReviewRows.find(row => String(row.sourceRow ?? '') === String(activity.sourceRow ?? '') && (!activity.sourceSheetName || row.sourceSheetName === activity.sourceSheetName));
+            if (!staged) continue;
+            // Omitted optional context keeps the staged value. An explicit empty value remains a correction.
+            const original = activities[normalizedActivities.indexOf(activity)] ?? {};
+            // Validation may materialize omitted DTO fields as own undefined properties.
+            // Null/empty values still represent an explicit clearing correction.
+            const supplied = (keys: string[]) => keys.some(key =>
+              Object.prototype.hasOwnProperty.call(original, key) && original[key] !== undefined);
+            activity.jurisdictionCountry = supplied(['jurisdictionCountry','country','Country']) ? activity.jurisdictionCountry : staged.jurisdictionCountry;
+            activity.jurisdictionRegion = supplied(['jurisdictionRegion','province','region','Province']) ? activity.jurisdictionRegion : staged.jurisdictionRegion;
+            activity.facilityName = supplied(['facilityName','facility','site','location']) ? activity.facilityName : staged.facilityName;
+            const fields = await this.snapshots.fields(tx, { ...activity, id: staged.id, organizationId, quantity: new Prisma.Decimal(activity.quantity), recordDate: new Date(activity.recordDate), createdAt: staged.createdAt, document: null }, userId, 1);
+            const editable = { activityType: activity.activityType, quantity: new Prisma.Decimal(activity.quantity), unit: activity.unit, activityMetadata: activity.activityMetadata ? activity.activityMetadata as unknown as Prisma.InputJsonValue : Prisma.JsonNull, recordDate: new Date(activity.recordDate), jurisdictionCountry: activity.jurisdictionCountry, jurisdictionRegion: activity.jurisdictionRegion, facilityName: activity.facilityName };
+            const { calculationSnapshot, calculationVersion, calculatedAt, ...stagedFields } = fields;
+            const updated = await tx.spreadsheetImportReviewRow.update({ where: { id: staged.id, organizationId }, data: { ...editable, ...stagedFields, status: fields.calculationStatus === 'CALCULATED' ? 'READY' : fields.calculationStatus === 'TRACKED_ONLY' ? 'TRACKED_ONLY' : 'NEEDS_REVIEW', issues: [] } });
+            Object.assign(staged, updated);
+          }
+          if (confirmationActivities.length > 0 && confirmationActivities.every(wasImported)) return ids;
+          const activitiesForImport = this.mergeImportActivities(
+            confirmationActivities,
+            spreadsheetReviewRows.filter(row => confirmationActivities.some(activity => String(row.sourceRow ?? '') === String(activity.sourceRow ?? '') && (!activity.sourceSheetName || row.sourceSheetName === activity.sourceSheetName))),
+          );
           for (const normalized of activitiesForImport) {
             if (wasImported(normalized)) continue;
             const prepared = await this.snapshots.prepareCreate(tx, {
@@ -1497,21 +1548,27 @@ If it contains a utility bill, prefer ELECTRICITY or NATURAL_GAS.
     });
   }
 
+  private persistExtraction<T>(tx: Prisma.TransactionClient | undefined, work: (client: Prisma.TransactionClient) => Promise<T>) {
+    return tx ? work(tx) : this.prisma.$transaction(work);
+  }
+
   private async trackExtractionEvent(input: {
     organizationId: string;
     userId?: string;
     documentId: string;
     eventName: string;
     metadata?: Record<string, unknown>;
-  }) {
-    await trackOptionalActivity(this.activityTracking, {
+  }, tx?: Prisma.TransactionClient) {
+    const event = {
       organizationId: input.organizationId,
       userId: input.userId,
       eventName: input.eventName,
       entityType: 'Document',
       entityId: input.documentId,
       metadata: input.metadata,
-    });
+    };
+    if (tx) await this.activityTracking.track(event, tx);
+    else await trackOptionalActivity(this.activityTracking, event);
   }
 
   private logImportPerformance(
