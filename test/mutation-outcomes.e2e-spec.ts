@@ -1,3 +1,4 @@
+import { DOCUMENT_STORAGE, DocumentStorage, documentStorageKey } from '../src/documents/document-storage';
 import { assertSafeTestDatabaseTarget } from './helpers/database-safety';
 import { INestApplication, Logger, ValidationPipe } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
@@ -195,7 +196,25 @@ describe('F09 truthful mutation outcomes (real PostgreSQL rollback)', () => {
     await api().delete(`/api/documents/${saved.id}`).set(auth).expect(500); reached();
     expect(await prisma.document.findUnique({ where: { id: saved.id } })).not.toBeNull();
     expect(await prisma.activityData.findUnique({ where: { id: row.id } })).toMatchObject({ documentId: saved.id, sourceDocumentId: saved.id });
-    await access(join(process.cwd(), saved.fileUrl));
+    const storage = app.get<DocumentStorage>(DOCUMENT_STORAGE);
+    const prepared = await prisma.documentDeletionIntent.findFirstOrThrow({ where: { documentId: saved.id } });
+    expect(prepared.status).toBe('PREPARED');
+    expect(await storage.exists(documentStorageKey(saved.fileUrl))).toBe(false);
+    expect(await storage.quarantineExists(prepared.quarantineKey)).toBe(true);
+    expect(await prisma.auditLog.count({ where: { entityId: prepared.id, action: 'DELETE_DOCUMENT' } })).toBe(0);
+    jest.restoreAllMocks();
+    const retry = await api().delete(`/api/documents/${saved.id}`).set(auth).expect(200);
+    expect(retry.body).toMatchObject({ deletionIntentId: prepared.id, storageLifecycle: 'PENDING_PURGE', preservedActivityRecords: 1 });
+    expect(await prisma.document.findUnique({ where: { id: saved.id } })).toBeNull();
+    expect(await prisma.activityData.findUnique({ where: { id: row.id } }))
+      .toMatchObject({ documentId: null, sourceDocumentId: saved.id });
+    expect(await storage.quarantineExists(prepared.quarantineKey)).toBe(true);
+    expect(await prisma.documentDeletionIntent.findUniqueOrThrow({ where: { id: prepared.id } }))
+      .toMatchObject({ status: 'PENDING_PURGE', databaseDeletedAt: expect.any(Date) });
+    const deletionAudit = await prisma.auditLog.findMany({ where: { entityId: prepared.id, action: 'DELETE_DOCUMENT' } });
+    expect(deletionAudit).toHaveLength(1);
+    expect(deletionAudit[0]).toMatchObject({ entityType: 'DocumentDeletionIntent', userId,
+      newValue: { documentId: saved.id, deletionIntentId: prepared.id, deletedActivityRecords: 0, preservedActivityRecords: 1 } });
   });
   it('rolls back a workspace boundary update if its required evidence cannot be persisted', async () => {
     const before = await prisma.organization.findUniqueOrThrow({ where: { id: organizationId } });

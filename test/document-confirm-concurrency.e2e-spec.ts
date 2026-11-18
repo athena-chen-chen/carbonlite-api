@@ -1,3 +1,4 @@
+import { DOCUMENT_STORAGE, DocumentStorage, documentStorageKey } from '../src/documents/document-storage';
 import { assertSafeTestDatabaseTarget } from './helpers/database-safety';
 import { INestApplication } from '@nestjs/common';
 import request from 'supertest';
@@ -67,9 +68,11 @@ describe('database-serialized document confirmation (e2e)', () => {
           rows: rows.map((row, index) => ({ ...row, rowId: `row-${index}`, status: 'READY', issues: [] })) }).expect(201);
       documentId = saved.body.sourceDocument.id;
     } else {
-      const document = await prisma.document.create({ data: { organizationId: user.user.organizationId,
-        fileName: `${testRunId}.xlsx`, fileUrl: '/test-only/not-an-upload', status: 'REVIEW_REQUIRED' } });
-      documentId = document.id;
+      const uploaded = await request(app.getHttpServer()).post('/api/documents/upload').set(auth)
+        .field('type', 'SPREADSHEET').attach('file', Buffer.from(`activityType,recordDate,quantity,unit,sourceReference\nDIESEL,2026-03-07,1,L,${uniqueTestId(testRunId)}\n`),
+          { filename: `${testRunId}.csv`, contentType: 'text/csv' }).expect(201);
+      documentId = uploaded.body.id;
+      await prisma.document.update({ where: { id: documentId }, data: { status: 'REVIEW_REQUIRED' } });
       await prisma.documentExtraction.create({ data: { organizationId: user.user.organizationId, documentId,
         status: 'REVIEW_REQUIRED', extractedJson: { activities: rows }, extractedRows: rows,
         sourceRowCount: rows.length, extractedRowCount: rows.length } });
@@ -247,8 +250,15 @@ describe('database-serialized document confirmation (e2e)', () => {
     const ctx = await source(false, eligible);
     expect(totalCreated((await overlap(ctx, ctx.rows)).results)).toBe(3);
     const before = await ctx.records();
-    await request(app.getHttpServer()).delete(`/api/documents/${ctx.documentId}`).set(ctx.auth).expect(200)
-      .expect({ deletedDocument: true, deletedActivityRecords: 0 });
+    const storage = app.get<DocumentStorage>(DOCUMENT_STORAGE);
+    const document = await prisma.document.findUniqueOrThrow({ where: { id: ctx.documentId } });
+    expect(await storage.exists(documentStorageKey(document.fileUrl))).toBe(true);
+    const deleted = await request(app.getHttpServer()).delete(`/api/documents/${ctx.documentId}`).set(ctx.auth).expect(200);
+    expect(deleted.body).toMatchObject({ deletedDocument: true, deletedActivityRecords: 0,
+      preservedActivityRecords: 3, storageLifecycle: 'PENDING_PURGE', sourceEvidence: 'QUARANTINED' });
+    const intent = await prisma.documentDeletionIntent.findUniqueOrThrow({ where: { id: deleted.body.deletionIntentId } });
+    expect(await storage.exists(documentStorageKey(document.fileUrl))).toBe(false);
+    expect(await storage.quarantineExists(intent.quarantineKey)).toBe(true);
     expect(await prisma.document.findUnique({ where: { id: ctx.documentId } })).toBeNull();
     expect(await ctx.records()).toEqual(before.map(row => ({ ...row, documentId: null })));
     const summary = await request(app.getHttpServer()).get('/api/metrics/calculation-summary').set(ctx.auth)

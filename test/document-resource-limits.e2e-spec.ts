@@ -158,15 +158,44 @@ describe('F08 direct upload and extraction resource boundaries', () => {
     ]);
     const mime = extension === 'json' ? 'application/json' : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
     const saved = await upload(buffer, `retry.${extension}`, mime).expect(201);
-    jest.spyOn(prisma, '$transaction').mockRejectedValueOnce(new Error('Synthetic structured persistence failure'));
+    const transaction = prisma.$transaction.bind(prisma);
+    let persistenceReached = 0;
+    // Leave quota/lease initialization intact. Fail only after the intended
+    // extraction upsert has executed inside its real rollback transaction.
+    const persistenceFailure = jest.spyOn(prisma, '$transaction').mockImplementation(((work: any, options: any) => {
+      if (typeof work !== 'function') return transaction(work, options);
+      return transaction(async tx => work(new Proxy(tx, {
+        get(target, key) {
+          if (key !== 'documentExtraction') return Reflect.get(target, key);
+          return new Proxy(target.documentExtraction, {
+            get(delegate, operation) {
+              if (operation !== 'upsert') return Reflect.get(delegate, operation);
+              return async (args: any) => {
+                const result = await delegate.upsert(args);
+                if (args.where.documentId === saved.body.id) {
+                  persistenceReached++;
+                  throw new Error('Synthetic structured persistence failure');
+                }
+                return result;
+              };
+            },
+          });
+        },
+      })), options);
+    }) as any);
     expect((await extract(saved.body.id)).status).toBe(500);
     expect(await prisma.document.findUnique({ where: { id: saved.body.id } })).toMatchObject({ status: 'EXTRACTION_FAILED' });
+    expect(persistenceReached).toBe(1);
+    persistenceFailure.mockRestore();
+    expect(await prisma.document.count({ where: { id: saved.body.id } })).toBe(1);
     expect(await prisma.documentExtraction.count({ where: { documentId: saved.body.id } })).toBe(0);
     expect(await prisma.activityData.count({ where: { sourceDocumentId: saved.body.id } })).toBe(0);
     await access(join(process.cwd(), saved.body.fileUrl));
     const retried = await extract(saved.body.id);
     expect(retried.status).toBe(201);
     expect(retried.body.parsedActivities).toHaveLength(1);
+    expect(await prisma.documentExtraction.count({ where: { documentId: saved.body.id } })).toBe(1);
+    expect(await prisma.activityData.count({ where: { sourceDocumentId: saved.body.id } })).toBe(0);
     expect(provider).not.toHaveBeenCalled();
   });
   it('prevents overlapping same-document provider work without corrupting the winning operation', async () => {
