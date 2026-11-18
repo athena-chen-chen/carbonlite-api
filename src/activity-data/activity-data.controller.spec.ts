@@ -1,4 +1,4 @@
-import { ArgumentMetadata, BadRequestException, ValidationPipe } from '@nestjs/common';
+import { ArgumentMetadata, BadRequestException, ForbiddenException, ValidationPipe } from '@nestjs/common';
 import { ActivityDataController } from './activity-data.controller';
 import { AdminActivityRecordsController } from './admin-activity-records.controller';
 import { ActivityDataService } from './activity-data.service';
@@ -242,6 +242,25 @@ describe('ActivityDataController canonical calculation fields', () => {
       'org-1',
       undefined,
       'user-1',
+    );
+    expect(activityDataService.create).not.toHaveBeenCalled();
+  });
+
+  it('propagates real-data denial before creating ActivityData', async () => {
+    const denied = new ForbiddenException({
+      statusCode: 403,
+      code: 'REAL_DATA_NOT_AUTHORIZED',
+      message: 'This organization is not authorized to submit real customer data.',
+    });
+    realDataAuthorization.resolveIngestionMode.mockRejectedValueOnce(denied);
+
+    await expect(controller.create(
+      { ...authenticatedUser, accountType: 'CUSTOMER', membershipRole: 'OWNER' },
+      canonicalPayload as any,
+      'REAL_CUSTOMER_DATA',
+    )).rejects.toBe(denied);
+    expect(realDataAuthorization.resolveIngestionMode).toHaveBeenCalledWith(
+      'org-1', 'REAL_CUSTOMER_DATA', 'user-1',
     );
     expect(activityDataService.create).not.toHaveBeenCalled();
   });

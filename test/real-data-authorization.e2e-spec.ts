@@ -7,6 +7,7 @@ import { createE2eApp } from './helpers/e2e-app';
 import { authHeader, cleanupTestData, createTestUser, uniqueTestId } from './helpers/factories';
 import { assertSafeTestDatabaseTarget } from './helpers/database-safety';
 import { RealDataEvidenceHmacKeyring } from '../src/real-data-authorization/real-data-evidence-hmac-keyring';
+import { openai } from '../src/openai/openai.client';
 
 describe('organization real-data authorization gate', () => {
   let app: INestApplication;
@@ -18,6 +19,110 @@ describe('organization real-data authorization gate', () => {
   const additiveEvidenceKey = Buffer.alloc(32, 10).toString('base64');
   const run = uniqueTestId('real-data-gate');
   const evidenceDecisionIds: string[] = [];
+  const provider = openai.responses.create as jest.Mock;
+
+  async function createActiveCustomer(label: string) {
+    const customer = await createTestUser(app, {
+      organizationName: `${run} ${label}`,
+      email: `${uniqueTestId(run)}@carbonlite-e2e.test`,
+      factorProfile: 'reviewed',
+    });
+    await prisma.organization.update({
+      where: { id: customer.user.organizationId },
+      data: { customerStatus: 'ACTIVE', provisionedAt: new Date() },
+    });
+    await prisma.user.update({
+      where: { id: customer.user.id },
+      data: { accountType: 'CUSTOMER', isActive: true },
+    });
+    await prisma.membership.upsert({
+      where: {
+        userId_organizationId: {
+          organizationId: customer.user.organizationId,
+          userId: customer.user.id,
+        },
+      },
+      create: {
+        organizationId: customer.user.organizationId,
+        userId: customer.user.id,
+        role: 'OWNER',
+      },
+      update: { role: 'OWNER' },
+    });
+    await prisma.organizationQuota.create({
+      data: {
+        organizationId: customer.user.organizationId,
+        enabled: true,
+        periodDays: 28,
+        uploadLimit: 20,
+        dailyUploadLimit: 3,
+        maxFileSizeBytes: 10_485_760,
+        maxConcurrentExtractions: 1,
+        maxImportRows: 500,
+      },
+    });
+    return customer;
+  }
+
+  async function createPlatformAdmin(label: string) {
+    const platform = await createTestUser(app, {
+      organizationName: `${run} ${label}`,
+      email: `${uniqueTestId(run)}@carbonlite-e2e.test`,
+    });
+    await prisma.user.update({
+      where: { id: platform.user.id },
+      data: { role: 'ADMIN', accountType: 'INTERNAL' },
+    });
+    return platform;
+  }
+
+  async function processingSideEffects(organizationId: string) {
+    const [
+      activityData,
+      evidence,
+      aiAuthorizations,
+      aiJobs,
+      extractionResults,
+      documents,
+      authorizationState,
+      aiAuthorizationState,
+      aiJobState,
+      documentState,
+      extractionState,
+      extractionStarts,
+      evidenceState,
+    ] = await Promise.all([
+      prisma.activityData.count({ where: { organizationId } }),
+      prisma.realDataAuthorizationEvidence.count(),
+      prisma.organizationAiAuthorization.count({ where: { organizationId } }),
+      prisma.aIJob.count({ where: { organizationId } }),
+      prisma.documentExtraction.count({ where: { organizationId } }),
+      prisma.document.count({ where: { organizationId } }),
+      prisma.organizationRealDataAuthorization.findUnique({ where: { organizationId } }),
+      prisma.organizationAiAuthorization.findUnique({ where: { organizationId } }),
+      // AIJob also holds extraction lease state (leaseExpiresAt).
+      prisma.aIJob.findMany({ where: { organizationId }, orderBy: { id: 'asc' } }),
+      prisma.document.findMany({ where: { organizationId }, orderBy: { id: 'asc' } }),
+      prisma.documentExtraction.findMany({ where: { organizationId }, orderBy: { id: 'asc' } }),
+      prisma.auditLog.count({ where: { organizationId, action: 'DOCUMENT_EXTRACT_STARTED' } }),
+      prisma.realDataAuthorizationEvidence.findMany({ orderBy: { id: 'asc' } }),
+    ]);
+    return {
+      activityData,
+      evidence,
+      aiAuthorizations,
+      aiJobs,
+      extractionResults,
+      documents,
+      authorizationState,
+      aiAuthorizationState,
+      aiJobState,
+      documentState,
+      extractionState,
+      extractionStarts,
+      evidenceState,
+    };
+  }
 
   beforeAll(async () => {
     assertSafeTestDatabaseTarget();
@@ -53,6 +158,128 @@ describe('organization real-data authorization gate', () => {
       process.env.REAL_DATA_EVIDENCE_HMAC_ADDITIONAL_KEYS =
         previousAdditionalEvidenceKeys;
     }
+  });
+
+  it('preapproval REAL_CUSTOMER_DATA denial has zero processing side effects', async () => {
+    const customer = await createActiveCustomer('preapproval denial');
+    const organizationId = customer.user.organizationId;
+    provider.mockClear();
+    const before = await processingSideEffects(organizationId);
+
+    await request(app.getHttpServer())
+      .post('/api/activity-data')
+      .set(authHeader(customer.accessToken))
+      .set('X-CarbonLite-Data-Mode', 'REAL_CUSTOMER_DATA')
+      .send({
+        activityType: 'DIESEL',
+        quantity: 1,
+        unit: 'L',
+        recordDate: '2026-11-13',
+        sourceType: 'MANUAL',
+      })
+      .expect(403)
+      .expect(({ body }) => expect(body.code).toBe('REAL_DATA_NOT_AUTHORIZED'));
+
+    expect(await processingSideEffects(organizationId)).toEqual(before);
+    expect(provider).not.toHaveBeenCalled();
+  });
+
+  it('post-withdraw REAL_CUSTOMER_DATA denial has zero processing side effects', async () => {
+    const customer = await createActiveCustomer('post-withdraw denial customer');
+    const platform = await createPlatformAdmin('post-withdraw denial platform');
+    const organization = await prisma.organization.findUniqueOrThrow({
+      where: { id: customer.user.organizationId },
+    });
+    const endpoint = `/api/admin/organizations/${organization.id}/real-data-authorization`;
+    const approved = await request(app.getHttpServer())
+      .put(endpoint)
+      .set(authHeader(platform.accessToken))
+      .send({
+        organizationId: organization.id,
+        confirmationOrganizationId: organization.id,
+        confirmationOrganizationSlug: organization.slug,
+        confirmRealDataApproval: true,
+        policyVersion: 'CARBONLITE_ALLOWED_DATA_POLICY_V0_2',
+        agreementEvidenceReference: 'agreement://post-withdraw-denial-e2e',
+        allowedDataScopeReference: 'allowed-data://post-withdraw-denial-e2e',
+        privacySecurityReadinessReference: 'readiness://post-withdraw-denial-e2e',
+        effectiveAt: '2026-11-13T00:00:00.000Z',
+        reviewDueAt: '2027-01-01T00:00:00.000Z',
+      })
+      .expect(200);
+    evidenceDecisionIds.push(approved.body.authorization.decisionId);
+    expect(approved.body.authorization).toMatchObject({
+      status: 'REAL_DATA_APPROVED',
+      approvalRevision: 1,
+    });
+
+    await request(app.getHttpServer())
+      .get('/api/real-data-authorization/status')
+      .set(authHeader(customer.accessToken))
+      .expect(200)
+      .expect(({ body }) => expect(body).toMatchObject({
+        effectiveMode: 'REAL_CUSTOMER_DATA',
+        configuredStatus: 'REAL_DATA_APPROVED',
+      }));
+
+    await request(app.getHttpServer())
+      .post(`${endpoint}/withdraw`)
+      .set(authHeader(platform.accessToken))
+      .send({
+        organizationId: organization.id,
+        confirmationOrganizationId: organization.id,
+        confirmationOrganizationSlug: organization.slug,
+        confirmWithdrawal: true,
+        withdrawalReason: 'POST_WITHDRAW_DENIAL_E2E',
+      })
+      .expect(201)
+      .expect(({ body }) => expect(body.authorization.status).toBe('WITHDRAWN'));
+
+    await request(app.getHttpServer())
+      .get('/api/real-data-authorization/status')
+      .set(authHeader(customer.accessToken))
+      .expect(200)
+      .expect(({ body }) => expect(body).toMatchObject({
+        effectiveMode: 'SYNTHETIC_ONLY',
+        configuredStatus: 'WITHDRAWN',
+      }));
+
+    const evidence = await prisma.realDataAuthorizationEvidence.findMany({
+      where: { authorizationDecisionId: approved.body.authorization.decisionId },
+      orderBy: { createdAt: 'asc' },
+    });
+    expect(evidence).toHaveLength(2);
+    expect(evidence.map(row => row.decision)).toEqual([
+      'REAL_DATA_APPROVED',
+      'WITHDRAWN',
+    ]);
+    const keyring = new RealDataEvidenceHmacKeyring();
+    expect(evidence.every(row => (
+      row.hmacKeyVersion === 'e2e-v1' && keyring.verify(
+        row.hmacKeyVersion,
+        organization.id,
+        row.organizationIdHash,
+      )
+    ))).toBe(true);
+
+    provider.mockClear();
+    const before = await processingSideEffects(organization.id);
+    await request(app.getHttpServer())
+      .post('/api/activity-data')
+      .set(authHeader(customer.accessToken))
+      .set('X-CarbonLite-Data-Mode', 'REAL_CUSTOMER_DATA')
+      .send({
+        activityType: 'DIESEL',
+        quantity: 1,
+        unit: 'L',
+        recordDate: '2026-11-13',
+        sourceType: 'MANUAL',
+      })
+      .expect(403)
+      .expect(({ body }) => expect(body.code).toBe('REAL_DATA_NOT_AUTHORIZED'));
+
+    expect(await processingSideEffects(organization.id)).toEqual(before);
+    expect(provider).not.toHaveBeenCalled();
   });
 
   it('is fail-closed, platform-admin controlled, revision-bound, and tenant isolated', async () => {
