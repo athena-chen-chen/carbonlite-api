@@ -1,3 +1,4 @@
+import { governedFactor, createGovernedFactor } from './helpers/governed-factor';
 import { INestApplication } from '@nestjs/common';
 import request from 'supertest';
 import { PrismaService } from '../src/prisma/prisma.service';
@@ -30,6 +31,9 @@ describe('System and custom conversion factors (e2e)', () => {
       organizationName: `${testRunId} New Org`,
       email: `new-user-${testRunId}@carbonlite-e2e.test`,
     });
+    await createGovernedFactor(prisma, { organizationId: user.user.organizationId, isSystemDefault: true });
+    await createGovernedFactor(prisma, { organizationId: user.user.organizationId, isSystemDefault: true,
+      name: 'E2E-reviewed air travel factor', activityType: 'AIR_TRAVEL', unit: 'km', factorValue: .115 });
     const auth = authHeader(user.accessToken);
 
     const response = await request(app.getHttpServer())
@@ -85,6 +89,7 @@ describe('System and custom conversion factors (e2e)', () => {
       organizationName: `${testRunId} Org B`,
       email: `user-b-${testRunId}@carbonlite-e2e.test`,
     });
+    await createGovernedFactor(prisma, { organizationId: userA.user.organizationId, isSystemDefault: true });
     const authA = authHeader(userA.accessToken);
     const authB = authHeader(userB.accessToken);
 
@@ -92,6 +97,7 @@ describe('System and custom conversion factors (e2e)', () => {
       .post('/api/conversion-factors')
       .set(authB)
       .send({
+        ...governedFactor(),
         name: `${testRunId} Org B custom diesel factor`,
         type: 'EMISSION',
         activityType: 'DIESEL',
@@ -119,6 +125,26 @@ describe('System and custom conversion factors (e2e)', () => {
     ).toBe(true);
   });
 
+  it('keeps reference-only, unverified, and draft factors out of customer listings and detail', async () => {
+    const user = await createTestUser(app, { organizationName: `${testRunId} Governance Org`,
+      email: `governance-${testRunId}@carbonlite-e2e.test` });
+    const organizationId = user.user.organizationId;
+    const eligible = await createGovernedFactor(prisma, { organizationId });
+    const restricted = await Promise.all([
+      createGovernedFactor(prisma, { organizationId, applicability: 'REFERENCE_ONLY' }),
+      createGovernedFactor(prisma, { organizationId, verified: false }),
+      createGovernedFactor(prisma, { organizationId, verificationStatus: 'DRAFT' }),
+    ]);
+    const list = await request(app.getHttpServer()).get('/api/conversion-factors')
+      .set(authHeader(user.accessToken)).expect(200);
+    expect(list.body.items.map((factor: { id: string }) => factor.id)).toContain(eligible.id);
+    for (const factor of restricted) {
+      expect(list.body.items.map((item: { id: string }) => item.id)).not.toContain(factor.id);
+      await request(app.getHttpServer()).get(`/api/conversion-factors/${factor.id}`)
+        .set(authHeader(user.accessToken)).expect(404);
+    }
+  });
+
   it('prefers an organization custom factor over a matching system default', async () => {
     const user = await createTestUser(app, {
       organizationName: `${testRunId} Matching Org`,
@@ -126,10 +152,12 @@ describe('System and custom conversion factors (e2e)', () => {
     });
     const auth = authHeader(user.accessToken);
 
+    await createGovernedFactor(prisma, { organizationId: user.user.organizationId, isSystemDefault: true });
     const customFactor = await request(app.getHttpServer())
       .post('/api/conversion-factors')
       .set(auth)
       .send({
+        ...governedFactor(),
         name: `${testRunId} Preferred custom diesel factor`,
         type: 'EMISSION',
         activityType: 'DIESEL',

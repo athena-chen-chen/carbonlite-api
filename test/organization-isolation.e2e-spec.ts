@@ -1,3 +1,4 @@
+import { governedFactor } from './helpers/governed-factor';
 import { INestApplication } from '@nestjs/common';
 import request from 'supertest';
 import { PrismaService } from '../src/prisma/prisma.service';
@@ -90,6 +91,7 @@ describe('Organization data isolation (e2e)', () => {
       .post('/api/conversion-factors')
       .set(authA)
       .send({
+        ...governedFactor(),
         name: `${testRunId} Org A diesel factor`,
         type: 'EMISSION',
         activityType: 'DIESEL',
@@ -112,6 +114,7 @@ describe('Organization data isolation (e2e)', () => {
       .post('/api/conversion-factors')
       .set(authB)
       .send({
+        ...governedFactor(),
         name: `${testRunId} Org B diesel factor`,
         type: 'EMISSION',
         activityType: 'DIESEL',

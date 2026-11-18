@@ -1,3 +1,4 @@
+import { governedFactor } from './helpers/governed-factor';
 import { INestApplication } from '@nestjs/common';
 import request from 'supertest';
 import { PrismaService } from '../src/prisma/prisma.service';
@@ -27,6 +28,7 @@ describe('Conversion factor traceability fields (e2e)', () => {
 
   function factorPayload(overrides: Record<string, unknown> = {}) {
     return {
+      ...governedFactor(),
       name: `${testRunId} Diesel factor`,
       type: 'EMISSION',
       activityType: 'DIESEL',
