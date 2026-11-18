@@ -1,5 +1,5 @@
 import { generateKeyPairSync, randomUUID } from 'node:crypto';
-import { mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
   LocalRecoveryAuthority,
@@ -130,7 +130,10 @@ async function releasedFixture() {
 }
 
 async function authorityFixture() {
-  const directory = await mkdtemp(join('/tmp/carbonlite-recovery-control/', 'a2-2-test-'));
+  // LocalRecoveryAuthority requires paths beneath this disposable root.
+  const root = '/tmp/carbonlite-recovery-control';
+  await mkdir(root, { recursive: true });
+  const directory = await mkdtemp(join(root, 'a2-2-test-'));
   const path = join(directory, 'active-session.json');
   const authorityKeys = keys();
   const operatorKeys = keys();

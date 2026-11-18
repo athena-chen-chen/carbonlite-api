@@ -265,6 +265,9 @@ describe('AuthService login resilience', () => {
   });
 
   it('creates a read-only pilot reviewer and returns a set-password invite link', async () => {
+    process.env.APP_ENV = 'test';
+    process.env.NODE_ENV = 'test';
+    delete process.env.FRONTEND_URL;
     process.env.APP_URL = 'http://localhost:5173';
     const workspace = {
       id: 'sample-workspace',
