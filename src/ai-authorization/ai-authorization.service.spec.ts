@@ -249,7 +249,7 @@ describe('AiAuthorizationService real-data runtime gate', () => {
     process.env.REAL_DATA_AI_PROCESSING_ENABLED = 'true';
     process.env.CARBONLITE_AI_CONSENT_VERSION = 'P0-AI-MATRIX-REAL-DATA-R2';
     const authorization = realDataAuthorization();
-    const { service, realDataAuthorization: approval } = subject(authorization);
+    const { service, prisma, realDataAuthorization: approval } = subject(authorization);
 
     await expect(service.assertProviderRequestAllowed(
       'org-a',
@@ -257,7 +257,7 @@ describe('AiAuthorizationService real-data runtime gate', () => {
       AI_SCOPE_DOCUMENT_EXTRACTION,
       'REAL_CUSTOMER_DATA',
     )).resolves.toBe(authorization);
-    expect(approval.assertEffectiveRealDataApproval).toHaveBeenCalledWith('org-a', 2);
+    expect(approval.assertEffectiveRealDataApproval).toHaveBeenCalledWith('org-a', 2, prisma);
   });
 
   it('still denies a withdrawn authorization after the runtime gates pass', async () => {

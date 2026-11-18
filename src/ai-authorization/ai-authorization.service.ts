@@ -245,11 +245,12 @@ export class AiAuthorizationService {
     provider = AI_PROVIDER_OPENAI,
     processingScope = AI_SCOPE_DOCUMENT_EXTRACTION,
     ingestionDataMode: DeclaredIngestionDataMode = INGESTION_MODE_SYNTHETIC,
+    client: Pick<Prisma.TransactionClient, 'organizationAiAuthorization' | 'organizationRealDataAuthorization'> = this.prisma,
   ) {
     const runtimeConsentVersion = ingestionDataMode === INGESTION_MODE_REAL
       ? this.assertRealDataRuntimeGate()
       : null;
-    const authorization = await this.findAuthorization(organizationId);
+    const authorization = await this.findAuthorization(organizationId, client);
     const now = new Date();
     if (!this.isValidAuthorization(authorization, now, provider, processingScope)) {
       this.deny();
@@ -268,6 +269,7 @@ export class AiAuthorizationService {
       await this.realDataAuthorization.assertEffectiveRealDataApproval(
         organizationId,
         authorization.realDataApprovalRevision,
+        client,
       );
     }
 
@@ -301,8 +303,8 @@ export class AiAuthorizationService {
     });
   }
 
-  private findAuthorization(organizationId: string) {
-    return this.prisma.organizationAiAuthorization.findUnique({
+  private findAuthorization(organizationId: string, client: Pick<Prisma.TransactionClient, 'organizationAiAuthorization'> = this.prisma) {
+    return client.organizationAiAuthorization.findUnique({
       where: { organizationId },
       include: {
         organization: {

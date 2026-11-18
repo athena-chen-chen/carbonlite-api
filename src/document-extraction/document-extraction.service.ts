@@ -1,7 +1,9 @@
+import { ExtractionOperationsService } from './extraction-operations.service';
+import { extractionProvider } from './extraction-operation';
 import { RealDataAuthorizationService } from '../real-data-authorization/real-data-authorization.service';
 import { writeSafeError } from '../common/logging/safe-log';
 import { assertDocumentSize, assertReviewRowLimit, validateDocumentContent, validateDocumentType } from '../documents/document-resource-policy';
-import { extractionWorkload, withExtractionDeadline, EXTRACTION_TIMEOUT_MS, MAX_PROVIDER_OUTPUT_CHARACTERS, MAX_PROVIDER_OUTPUT_TOKENS } from './extraction-workload';
+import { withExtractionDeadline, EXTRACTION_TIMEOUT_MS, MAX_PROVIDER_OUTPUT_CHARACTERS, MAX_PROVIDER_OUTPUT_TOKENS } from './extraction-workload';
 import { CalculationSnapshotsService } from '../metrics/calculation-snapshots.service';
 import {
   BadRequestException,
@@ -164,6 +166,7 @@ export class DocumentExtractionService {
     private readonly quotas: OrganizationQuotasService | undefined = undefined,
     @Optional() private readonly aiAuthorization?: AiAuthorizationService,
     @Optional() private readonly realDataAuthorization?: RealDataAuthorizationService,
+    @Optional() private readonly operations?: ExtractionOperationsService,
   ) {}
 
   async extract(
@@ -180,33 +183,47 @@ export class DocumentExtractionService {
       throw new NotFoundException('Document not found');
     }
 
+    // Non-mutating preflight preserves existing validation/error precedence.
     if (document.ingestionDataMode === IngestionDataMode.REAL_CUSTOMER_DATA) {
-      // All protected writes use this transaction. A timeout cannot leave writes
-      // committing after the authorization lock has been released. Admission is
-      // checked after the lock: withdrawal-first denies without even a lease;
-      // processing-first completes before withdrawal can commit.
-      let processingStarted = false;
-      try {
-        return await this.prisma.$transaction(async tx => {
-          await this.assertRealDocumentApproval(tx, organizationId);
-          // Required persistence failures must reject the owning transaction.
-          return this.extractApproved(document, userId, userEmail, tx, () => { processingStarted = true; });
-        }, {
-          maxWait: 10000,
-          // Phase A retains the existing admission/withdrawal ordering. Short
-          // transactions and final revision fencing are separate follow-up work.
-          timeout: EXTRACTION_TIMEOUT_MS + 60000,
-          isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted,
-        });
-      } catch (error) {
-        // Admission denials must not create failure state or audit side effects.
-        if (!processingStarted) throw error;
-        const failure = this.extractionFailure(error);
-        await this.recordExtractionFailure(document, userId, failure.error, true);
-        throw failure.error;
-      }
+      if (!this.realDataAuthorization) throw new ServiceUnavailableException('Real-data authorization enforcement is unavailable.');
+      await this.realDataAuthorization.assertEffectiveRealDataApproval(organizationId);
     }
-    return this.extractApproved(document, userId, userEmail);
+    this.validateSupportedFile(document);
+    if (this.requiresProviderExtraction(document.fileName)) {
+      await this.assertProviderExtractionAllowed(document);
+      this.assertProviderConfigured();
+    }
+    if (!this.operations) throw new ServiceUnavailableException('Extraction admission is unavailable.');
+    // Admission owns its short transaction and commits before storage/provider work.
+    const admission = await this.operations.admit(organizationId, documentId, userId);
+    let processingStarted = false;
+    try {
+      if (admission.document.ingestionDataMode === IngestionDataMode.REAL_CUSTOMER_DATA) {
+        // Phase B retains the existing long processing lock. This is not yet
+        // final-result fencing or bounded withdrawal (Phases C/D).
+        return await this.prisma.$transaction(async tx => {
+          await this.operations!.lockAndValidate(tx, organizationId, documentId, admission.operation.id);
+          return this.extractApproved(admission.document, userId, userEmail, tx,
+            () => { processingStarted = true; }, admission);
+        }, { maxWait: 10000, timeout: EXTRACTION_TIMEOUT_MS + 60000, isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted });
+      }
+      await this.prisma.$transaction(tx => this.operations!.lockAndValidate(tx, organizationId, documentId, admission.operation.id));
+      return await this.extractApproved(admission.document, userId, userEmail, undefined,
+        () => { processingStarted = true; }, admission);
+    } catch (error) {
+      if (!processingStarted) {
+        try {
+          await this.quotaEnforcement.finishExtraction(organizationId, admission.operation.id, 'FAILED', 'Extraction admission could not be used.');
+        } catch (cleanupError) {
+          writeSafeError(this.logger, 'extraction-admission-release', cleanupError, { organizationId, documentId });
+        }
+        throw error;
+      }
+      if (admission.document.ingestionDataMode !== IngestionDataMode.REAL_CUSTOMER_DATA) throw error;
+      const failure = this.extractionFailure(error);
+      await this.recordExtractionFailure(admission.document, userId, failure.error, true);
+      throw failure.error;
+    } finally { admission.release(); }
   }
 
   private async assertRealDocumentApproval(tx: Prisma.TransactionClient, organizationId: string) {
@@ -220,28 +237,17 @@ export class DocumentExtractionService {
 
   private async extractApproved(
     document: Awaited<ReturnType<PrismaService['document']['findFirstOrThrow']>>,
-    userId?: string,
-    userEmail?: string,
-    processingTx?: Prisma.TransactionClient,
-    onProcessingStart?: () => void,
+    userId: string | undefined,
+    userEmail: string | undefined,
+    processingTx: Prisma.TransactionClient | undefined,
+    onProcessingStart: (() => void) | undefined,
+    admission: Awaited<ReturnType<ExtractionOperationsService['admit']>>,
   ) {
     const { organizationId, id: documentId } = document;
-    this.validateSupportedFile(document);
-    if (this.requiresProviderExtraction(document.fileName)) {
-      await this.assertProviderExtractionAllowed(document);
-      this.assertProviderConfigured();
-    }
-
-    const lease = await this.quotaEnforcement.beginExtraction({
-      organizationId,
-      documentId,
-      userId,
-    });
+    const lease = admission.operation;
     try {
-      const result = await extractionWorkload.run(`${organizationId}:${documentId}`, () => {
-          onProcessingStart?.();
-          return this.extractWithinLimits(document, userId, userEmail, processingTx);
-        }, !lease);
+      onProcessingStart?.();
+      const result = await this.extractWithinLimits(document, userId, userEmail, processingTx);
       await this.quotaEnforcement.finishExtraction(organizationId, lease?.id, 'COMPLETED');
       return result;
     } catch (error) {
@@ -299,16 +305,6 @@ export class DocumentExtractionService {
       data: { status: 'PROCESSING' },
     });
 
-    await this.trackExtractionEvent({
-      organizationId,
-      userId,
-      documentId,
-      eventName: 'DOCUMENT_EXTRACT_STARTED',
-      metadata: {
-        statusBefore: document.status,
-        fileType: document.type,
-      },
-    }, processingTx);
     addAppBreadcrumb('Document extraction started', {
       feature: 'document-extraction',
       operation:
@@ -736,7 +732,7 @@ export class DocumentExtractionService {
   }
 
   private requiresProviderExtraction(fileName: string) {
-    return !/\.(?:xlsx?|json)$/i.test(fileName);
+    return extractionProvider(fileName) !== null;
   }
 
   private async assertProviderExtractionAllowed(document: {

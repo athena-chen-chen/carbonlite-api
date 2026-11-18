@@ -247,7 +247,12 @@ describe('F09 truthful mutation outcomes (real PostgreSQL rollback)', () => {
   });
   it('returns successful report creation and extraction despite optional event failures', async () => {
     const saved = (await upload('optional-extraction.json').expect(201)).body;
-    jest.spyOn(tracker, 'track').mockRejectedValue(new Error('Synthetic optional event failure'));
+    const track = tracker.track.bind(tracker);
+    jest.spyOn(tracker, 'track').mockImplementation(async (input, tx) => {
+      // Admission start evidence is required; this case fails only post-commit decoration.
+      if (!tx) throw new Error('Synthetic optional event failure');
+      return track(input, tx);
+    });
     const report = (await api().post('/api/reports').set(auth).send({ title: `${run}-optional-report` }).expect(201)).body;
     expect(await prisma.report.findUnique({ where: { id: report.id } })).not.toBeNull();
     await extract(saved.id).expect(201);

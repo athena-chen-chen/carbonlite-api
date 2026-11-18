@@ -1,3 +1,4 @@
+import { ExtractionOperationsService } from './extraction-operations.service';
 import { CalculationModule } from '../metrics/calculation.module';
 import { RealDataAuthorizationModule } from '../real-data-authorization/real-data-authorization.module';
 import { Module } from '@nestjs/common';
@@ -9,6 +10,6 @@ import { AiAuthorizationModule } from '../ai-authorization/ai-authorization.modu
 @Module({
   imports: [PrismaModule, CalculationModule, AiAuthorizationModule, RealDataAuthorizationModule],
   controllers: [DocumentExtractionController],
-  providers: [DocumentExtractionService],
+  providers: [DocumentExtractionService, ExtractionOperationsService],
 })
 export class DocumentExtractionModule {}

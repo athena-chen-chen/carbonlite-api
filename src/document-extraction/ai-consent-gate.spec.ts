@@ -1,3 +1,4 @@
+import { extractionOperationsFixture } from '../../test/helpers/extraction-operations-fixture';
 import { ForbiddenException } from '@nestjs/common';
 import { AiAuthorizationService } from '../ai-authorization/ai-authorization.service';
 import { isOpenAiConfigured, openai } from '../openai/openai.client';
@@ -58,6 +59,7 @@ function subject(
   };
   const auditLog = { log: jest.fn() };
   const activityTracking = { track: jest.fn() };
+  const operations = extractionOperationsFixture(document);
   const service = new DocumentExtractionService(
     prisma,
     auditLog as never,
@@ -69,8 +71,9 @@ function subject(
     // These tests isolate the AI boundary with an effective independent real-data approval.
     { lockProcessingApproval: jest.fn().mockResolvedValue(undefined),
       assertEffectiveRealDataApproval: jest.fn().mockResolvedValue({ approvalRevision: 2 }) } as never,
+    operations as never,
   );
-  return { service, prisma, storage, quotas, auditLog, activityTracking, document };
+  return { service, prisma, storage, quotas, auditLog, activityTracking, document, operations };
 }
 
 describe('DocumentExtractionService AI authorization boundary', () => {
@@ -181,7 +184,7 @@ describe('DocumentExtractionService AI authorization boundary', () => {
     (openai.responses.create as jest.Mock).mockRejectedValueOnce(
       new Error('synthetic provider failure'),
     );
-    const { service, quotas } = subject(authorization, {
+    const { service, quotas, operations } = subject(authorization, {
       ingestionDataMode: 'REAL_CUSTOMER_DATA',
     });
 
@@ -189,7 +192,8 @@ describe('DocumentExtractionService AI authorization boundary', () => {
       'Extraction failed. Please try again or upload the file again.',
     );
     expect(authorization).toHaveBeenCalledTimes(2);
-    expect(quotas.beginExtraction).toHaveBeenCalledTimes(1);
+    expect(operations.admit).toHaveBeenCalledTimes(1);
+    expect(quotas.beginExtraction).not.toHaveBeenCalled();
     expect(openai.responses.create).toHaveBeenCalledTimes(1);
   });
 
@@ -330,6 +334,7 @@ describe('DocumentExtractionService AI authorization boundary', () => {
     expect(realDataAuthorization.assertEffectiveRealDataApproval).toHaveBeenCalledWith(
       'org-a',
       1,
+      expect.objectContaining({ organizationAiAuthorization: expect.any(Object) }),
     );
     expect(openai.responses.create).not.toHaveBeenCalled();
     expect(quotas.beginExtraction).not.toHaveBeenCalled();
@@ -344,7 +349,7 @@ describe('DocumentExtractionService AI authorization boundary', () => {
   it('keeps supported local JSON extraction independent from OpenAI authorization', async () => {
     (isOpenAiConfigured as jest.Mock).mockReturnValue(false);
     const authorization = jest.fn();
-    const { service, quotas, storage } = subject(authorization, {
+    const { service, quotas, storage, operations } = subject(authorization, {
       fileName: 'activities.json',
       mimeType: 'application/json',
       type: 'OTHER',
@@ -361,7 +366,8 @@ describe('DocumentExtractionService AI authorization boundary', () => {
       status: 'REVIEW_REQUIRED',
     });
     expect(authorization).not.toHaveBeenCalled();
-    expect(quotas.beginExtraction).toHaveBeenCalledTimes(1);
+    expect(operations.admit).toHaveBeenCalledTimes(1);
+    expect(quotas.beginExtraction).not.toHaveBeenCalled();
     expect(openai.responses.create).not.toHaveBeenCalled();
   });
 

@@ -342,6 +342,33 @@ export class RealDataAuthorizationService {
     return authorization;
   }
 
+  async assertProcessingIsolation(tx: Prisma.TransactionClient) {
+    const [setting] = await tx.$queryRaw<Array<{ isolation: string }>>`SELECT current_setting('transaction_isolation') AS "isolation"`;
+    // Advisory-lock waits do not refresh a repeatable-read snapshot. Refuse a
+    // caller transaction that could authorize from a pre-withdrawal snapshot.
+    if (setting?.isolation !== 'read committed') {
+      throw new ServiceUnavailableException({ statusCode: 503, code: 'PROCESSING_FENCE_ISOLATION_UNSUPPORTED', message: 'Processing authorization requires a fresh transaction snapshot.' });
+    }
+  }
+
+  async lockAndValidateRevision(
+    tx: Prisma.TransactionClient,
+    organizationId: string,
+    decisionId: string,
+    approvalRevision: number,
+  ) {
+    if (typeof organizationId !== 'string' || !organizationId.trim() || typeof decisionId !== 'string' || !decisionId.trim() || !Number.isSafeInteger(approvalRevision) || approvalRevision < 1) {
+      throw new ForbiddenException(codedForbidden('REAL_DATA_OPERATION_INVALID', 'Real-data operation identity is invalid.'));
+    }
+    await this.assertProcessingIsolation(tx);
+    await this.lockProcessingApproval(tx, organizationId, true);
+    const authorization = await this.assertEffectiveRealDataApproval(organizationId, approvalRevision, tx);
+    if (authorization.decisionId !== decisionId) {
+      throw new ForbiddenException(codedForbidden('REAL_DATA_APPROVAL_DECISION_MISMATCH', 'Real-data authorization decision does not match.'));
+    }
+    return authorization;
+  }
+
   async markWorkspaceErased(
     tx: Prisma.TransactionClient,
     organizationId: string,

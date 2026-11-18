@@ -1,3 +1,4 @@
+import { extractionOperationsFixture } from '../../test/helpers/extraction-operations-fixture';
 import { DocumentExtractionService } from './document-extraction.service';
 import { openai } from '../openai/openai.client';
 
@@ -36,7 +37,7 @@ describe('document facility and optional cost lineage', () => {
     };
     const prisma = { document: { findFirst: jest.fn().mockResolvedValue(document) }, $transaction: jest.fn(async (fn) => fn(tx)) };
     const storage = { exists: jest.fn().mockResolvedValue(true), read: jest.fn().mockResolvedValue(Buffer.from('%PDF-1.4\nfixture\n%%EOF')) };
-    const subject = new DocumentExtractionService(prisma as never, { log: jest.fn() } as never, { track: jest.fn() } as never, { prepareCreate: jest.fn(async (_client, data) => ({ ...data, matchingStatus: 'MATCHED', calculationStatus: 'CALCULATED', reportTreatment: 'INCLUDED' })), fields: jest.fn() } as never, storage as never, { beginExtraction: jest.fn().mockResolvedValue(null), finishExtraction: jest.fn() } as never);
+    const subject = new DocumentExtractionService(prisma as never, { log: jest.fn() } as never, { track: jest.fn() } as never, { prepareCreate: jest.fn(async (_client, data) => ({ ...data, matchingStatus: 'MATCHED', calculationStatus: 'CALCULATED', reportTreatment: 'INCLUDED' })), fields: jest.fn() } as never, storage as never, { beginExtraction: jest.fn().mockResolvedValue(null), finishExtraction: jest.fn() } as never, undefined, undefined, extractionOperationsFixture(document) as never);
     const result = await subject.confirmImport('org', 'doc', sourceRows);
     expect(result.count).toBe(5);
     expect(created.map(({ activityType, facilityName, costCad }) => [activityType, facilityName, costCad])).toEqual(sourceRows.map((row) => [row.activityType, row.facilityName, null]));
@@ -48,7 +49,7 @@ describe('document facility and optional cost lineage', () => {
     prisma.$transaction.mockImplementation(callback => callback(prisma));
     const storage = { exists: jest.fn().mockResolvedValue(true), read: jest.fn().mockResolvedValue(Buffer.from('%PDF-1.4\nfixture\n%%EOF')) };
     const authorization = { assertProviderRequestAllowed: jest.fn().mockResolvedValue({}) };
-    const subject = new DocumentExtractionService(prisma as never, { log: jest.fn() } as never, { track: jest.fn() } as never, { prepareCreate: jest.fn(async (_client, data) => ({ ...data, matchingStatus: 'MATCHED', calculationStatus: 'CALCULATED', reportTreatment: 'INCLUDED' })), fields: jest.fn() } as never, storage as never, { beginExtraction: jest.fn().mockResolvedValue(null), finishExtraction: jest.fn() } as never, authorization as never);
+    const subject = new DocumentExtractionService(prisma as never, { log: jest.fn() } as never, { track: jest.fn() } as never, { prepareCreate: jest.fn(async (_client, data) => ({ ...data, matchingStatus: 'MATCHED', calculationStatus: 'CALCULATED', reportTreatment: 'INCLUDED' })), fields: jest.fn() } as never, storage as never, { beginExtraction: jest.fn().mockResolvedValue(null), finishExtraction: jest.fn() } as never, authorization as never, undefined, extractionOperationsFixture(document) as never);
     jest.spyOn(subject as any, 'saveExtractionResult').mockResolvedValue(undefined);
     (openai.responses.create as jest.Mock).mockResolvedValue({ output_text: JSON.stringify({ activities: sourceRows }), status: 'completed' });
     const result = await subject.extract('org', 'doc');

@@ -1,3 +1,7 @@
+import { authorizeSyntheticDocumentExtraction } from './helpers/synthetic-ai-authorization';
+import { ActivityTrackingService } from '../src/activity-tracking/activity-tracking.service';
+import { ExtractionOperationsService } from '../src/document-extraction/extraction-operations.service';
+import { Prisma } from '@prisma/client';
 import { AuditLogService } from '../src/audit-log/audit-log.service';
 import { DOCUMENT_STORAGE, DocumentStorage, documentStorageKey } from '../src/documents/document-storage';
 import * as XLSX from 'xlsx';
@@ -109,7 +113,7 @@ describe('organization real-data authorization gate', () => {
       prisma.aIJob.findMany({ where: { organizationId }, orderBy: { id: 'asc' } }),
       prisma.document.findMany({ where: { organizationId }, orderBy: { id: 'asc' } }),
       prisma.documentExtraction.findMany({ where: { organizationId }, orderBy: { id: 'asc' } }),
-      prisma.auditLog.count({ where: { organizationId, action: 'DOCUMENT_EXTRACT_STARTED' } }),
+      prisma.auditLog.count({ where: { organizationId, action: 'EXTRACT_DOCUMENT_STARTED' } }),
       prisma.realDataAuthorizationEvidence.findMany({ orderBy: { id: 'asc' } }),
     ]);
     return {
@@ -201,7 +205,7 @@ describe('organization real-data authorization gate', () => {
       audit: await prisma.auditLog.findMany({ where: { organizationId: organization.id }, orderBy: { id: 'asc' } }),
       events: await prisma.userActivityEvent.findMany({ where: { organizationId: organization.id }, orderBy: { id: 'asc' } }),
     });
-    return { organization, documentId, extract, confirm, withdraw, state };
+    return { organization, documentId, extract, confirm, withdraw, state, customer };
   }
 
   it.each(['json', 'xlsx'] as const)('denies retained real-data %s extraction after withdrawal without any processing side effect', async format => {
@@ -267,9 +271,13 @@ describe('organization real-data authorization gate', () => {
     const second = new Promise<void>(done => { waiting = done; });
     const service = app.get(RealDataAuthorizationService);
     const original = service.lockProcessingApproval.bind(service);
-    let holderPid = 0, waiterPid = 0;
+    let holderPid = 0, waiterPid = 0, sharedCalls = 0;
     const spy = jest.spyOn(service, 'lockProcessingApproval').mockImplementation(async (tx, org, shared) => {
       const [backend] = await tx.$queryRaw<Array<{ pid: number }>>`SELECT pg_backend_pid() AS pid`;
+      if (shared && operation === 'extract') {
+        sharedCalls++;
+        if (ordering === 'processing-first' && sharedCalls === 1) { await original(tx, org, shared); return; }
+      }
       const isFirst = shared === (ordering === 'processing-first');
       if (isFirst) {
         await original(tx, org, shared); holderPid = backend.pid; entered(); await gate;
@@ -422,6 +430,245 @@ describe('organization real-data authorization gate', () => {
     } finally { injected.restore(); }
     expect((await ctx.extract()).status).toBe(201);
     expect(await prisma.documentExtraction.count({ where: { documentId: ctx.documentId } })).toBe(1);
+  });
+
+  const admissions = () => app.get(ExtractionOperationsService);
+  // These cases inspect durable DB admissions without executing work. Release
+  // the process reservation explicitly; the durable lease stays active for validation.
+  const admitForInspection = async (organizationId: string, documentId: string) => {
+    const admission = await admissions().admit(organizationId, documentId);
+    admission.release();
+    return admission;
+  };
+  const validateOperation = (ctx: Awaited<ReturnType<typeof retainedSource>>, operationId: string) =>
+    prisma.$transaction(tx => admissions().lockAndValidate(tx, ctx.organization.id, ctx.documentId, operationId));
+
+  it.each([true, false])('durable admission stores a server-owned decision/revision with quota enabled=%s', async enabled => {
+    const ctx = await retainedSource(`durable quota ${enabled}`);
+    await prisma.organizationQuota.update({ where: { organizationId: ctx.organization.id }, data: { enabled } });
+    const usage = await prisma.organizationQuotaUsage.findMany({ where: { organizationId: ctx.organization.id }, orderBy: { id: 'asc' } });
+    const approval = await prisma.organizationRealDataAuthorization.findUniqueOrThrow({ where: { organizationId: ctx.organization.id } });
+    const admitted = await admitForInspection(ctx.organization.id, ctx.documentId);
+    expect(admitted.quotaEnforced).toBe(enabled);
+    const job = await prisma.aIJob.findUniqueOrThrow({ where: { id: admitted.operation.id } });
+    expect(job).toMatchObject({ organizationId: ctx.organization.id, documentId: ctx.documentId, status: 'RUNNING',
+      inputJson: { version: 1, phase: 'ADMITTED', operationId: job.id, organizationId: ctx.organization.id,
+        documentId: ctx.documentId, ingestionDataMode: 'REAL_CUSTOMER_DATA', realDataDecisionId: approval.decisionId,
+        approvalRevision: approval.approvalRevision, provider: null, processingScope: null, consentVersion: null } });
+    expect(job.leaseExpiresAt!.getTime()).toBeGreaterThan(Date.now());
+    expect(await prisma.auditLog.count({ where: { entityId: ctx.documentId, action: 'EXTRACT_DOCUMENT_STARTED' } })).toBe(1);
+    expect(await prisma.userActivityEvent.count({ where: { entityId: ctx.documentId, eventName: 'DOCUMENT_EXTRACT_STARTED' } })).toBe(1);
+    expect(await prisma.organizationQuotaUsage.findMany({ where: { organizationId: ctx.organization.id }, orderBy: { id: 'asc' } })).toEqual(usage);
+    expect((await validateOperation(ctx, job.id)).metadata.realDataDecisionId).toBe(approval.decisionId);
+  });
+
+  it('durable admission commits operation and required start evidence before storage reads', async () => {
+    const ctx = await retainedSource('committed admission before bytes');
+    const storage = app.get<DocumentStorage>(DOCUMENT_STORAGE), read = storage.read.bind(storage);
+    let observed = false;
+    const spy = jest.spyOn(storage, 'read').mockImplementation(async key => {
+      const jobs = await prisma.aIJob.findMany({ where: { documentId: ctx.documentId, status: 'RUNNING' } });
+      expect(jobs).toHaveLength(1);
+      expect(await prisma.auditLog.count({ where: { entityId: ctx.documentId, action: 'EXTRACT_DOCUMENT_STARTED' } })).toBe(1);
+      expect(await prisma.userActivityEvent.count({ where: { entityId: ctx.documentId, eventName: 'DOCUMENT_EXTRACT_STARTED' } })).toBe(1);
+      observed = true; return read(key);
+    });
+    try { expect((await ctx.extract()).status).toBe(201); expect(observed).toBe(true); }
+    finally { spy.mockRestore(); }
+  });
+
+  it('durable admission denies withdrawal-first without jobs or start evidence', async () => {
+    const ctx = await retainedSource('admission withdrawal first');
+    expect((await ctx.withdraw()).status).toBe(201);
+    const before = await ctx.state();
+    await expect(admitForInspection(ctx.organization.id, ctx.documentId)).rejects.toMatchObject({ status: 403, response: expect.objectContaining({ code: 'REAL_DATA_NOT_AUTHORIZED' }) });
+    expect(await ctx.state()).toEqual(before);
+  });
+
+  it.each(['approvalRevision', 'realDataDecisionId'] as const)('durable operation rejects stale %s', async field => {
+    const ctx = await retainedSource(`stale ${field}`);
+    const admission = await admitForInspection(ctx.organization.id, ctx.documentId);
+    const job = await prisma.aIJob.findUniqueOrThrow({ where: { id: admission.operation.id } });
+    await prisma.aIJob.update({ where: { id: job.id }, data: { inputJson: { ...(job.inputJson as Prisma.JsonObject), [field]: field === 'approvalRevision' ? 999 : 'wrong-decision' } } });
+    const before = await ctx.state();
+    await expect(validateOperation(ctx, job.id)).rejects.toMatchObject({ status: 403, response: expect.objectContaining({ code: field === 'approvalRevision' ? 'REAL_DATA_APPROVAL_REVISION_MISMATCH' : 'REAL_DATA_APPROVAL_DECISION_MISMATCH' }) });
+    expect(await ctx.state()).toEqual(before);
+  });
+
+  it('durable operation cannot cross organization or source boundaries', async () => {
+    const a = await retainedSource('operation tenant A'), b = await retainedSource('operation tenant B');
+    const admission = await admitForInspection(a.organization.id, a.documentId);
+    const before = await b.state();
+    await expect(validateOperation(b, admission.operation.id)).rejects.toMatchObject({ status: 403, response: expect.objectContaining({ code: 'EXTRACTION_OPERATION_INVALID' }) });
+    await expect(admitForInspection(b.organization.id, a.documentId)).rejects.toMatchObject({ status: 404 });
+    expect(await b.state()).toEqual(before);
+  });
+
+  it('durable operation rejects replacement approval even after reapproval', async () => {
+    const ctx = await retainedSource('replacement approval');
+    const old = await admitForInspection(ctx.organization.id, ctx.documentId);
+    const previous = await prisma.organizationRealDataAuthorization.findUniqueOrThrow({ where: { organizationId: ctx.organization.id } });
+    expect((await ctx.withdraw()).status).toBe(201);
+    // Normal supported approval service, with a synthetic platform-admin fixture.
+    const admin = await createPlatformAdmin('replacement approval admin');
+    const reapproved = await request(app.getHttpServer()).put(`/api/admin/organizations/${ctx.organization.id}/real-data-authorization`).set(authHeader(admin.accessToken)).send({
+      organizationId: ctx.organization.id, confirmationOrganizationId: ctx.organization.id, confirmationOrganizationSlug: ctx.organization.slug,
+      confirmRealDataApproval: true, policyVersion: 'CARBONLITE_ALLOWED_DATA_POLICY_V0_2', agreementEvidenceReference: 'agreement://replacement',
+      allowedDataScopeReference: 'scope://replacement', privacySecurityReadinessReference: 'readiness://replacement', effectiveAt: new Date(Date.now() - 1000).toISOString(),
+    }).expect(200);
+    evidenceDecisionIds.push(reapproved.body.authorization.decisionId);
+    expect(reapproved.body.authorization.approvalRevision).toBe(previous.approvalRevision + 1);
+    expect(reapproved.body.authorization.decisionId).not.toBe(previous.decisionId);
+    await expect(validateOperation(ctx, old.operation.id)).rejects.toMatchObject({ status: 403, response: expect.objectContaining({ code: 'REAL_DATA_APPROVAL_REVISION_MISMATCH' }) });
+  });
+
+  it.each([
+    ['null', null], ['empty', {}], ['primitive', 'not-metadata'],
+    ['version', { version: 2 }], ['phase', { phase: 'PROVIDER_ADMITTED' }],
+    ['identity', { operationId: 'copied-operation' }], ['tenant', { organizationId: 'other-tenant' }],
+    ['source', { documentId: 'other-source' }], ['mode', { ingestionDataMode: 'SYNTHETIC_TEST', realDataDecisionId: null, approvalRevision: null }],
+    ['revision', { approvalRevision: null }], ['provider', { provider: 'OPENAI' }],
+  ])('durable operation fails closed for malformed metadata: %s', async (label, change) => {
+    const ctx = await retainedSource(`malformed ${label}`);
+    const admission = await admitForInspection(ctx.organization.id, ctx.documentId);
+    const job = await prisma.aIJob.findUniqueOrThrow({ where: { id: admission.operation.id } });
+    const metadata = change === null || typeof change === 'string' || label === 'empty' ? change : { ...(job.inputJson as Prisma.JsonObject), ...(change as object) };
+    await prisma.aIJob.update({ where: { id: job.id }, data: { inputJson: metadata === null ? Prisma.DbNull : metadata as Prisma.InputJsonValue } });
+    const before = await ctx.state();
+    await expect(validateOperation(ctx, job.id)).rejects.toMatchObject({ status: 403, response: expect.objectContaining({ code: 'EXTRACTION_OPERATION_INVALID' }) });
+    expect(await ctx.state()).toEqual(before);
+  });
+
+  it('durable operation expires and validates with the supplied transaction only', async () => {
+    const ctx = await retainedSource('transaction-only fencing');
+    const admission = await admitForInspection(ctx.organization.id, ctx.documentId);
+    const transaction = prisma.$transaction.bind(prisma);
+    const nested = jest.spyOn(prisma, '$transaction');
+    const rootRead = jest.spyOn(prisma.organizationRealDataAuthorization, 'findUnique');
+    try {
+      await transaction(tx => admissions().lockAndValidate(tx, ctx.organization.id, ctx.documentId, admission.operation.id));
+      expect(nested).not.toHaveBeenCalled(); expect(rootRead).not.toHaveBeenCalled();
+    } finally { nested.mockRestore(); rootRead.mockRestore(); }
+    await prisma.aIJob.update({ where: { id: admission.operation.id }, data: { leaseExpiresAt: new Date(Date.now() - 1000) } });
+    await expect(validateOperation(ctx, admission.operation.id)).rejects.toMatchObject({ status: 409, response: expect.objectContaining({ code: 'EXTRACTION_OPERATION_NOT_ACTIVE' }) });
+  });
+
+  it.each(['audit', 'activity'] as const)('durable admission rolls back required start %s failure and permits retry', async point => {
+    const ctx = await retainedSource(`start rollback ${point}`), before = await ctx.state();
+    const audit = app.get(AuditLogService), log = audit.log.bind(audit);
+    const tracker = app.get(ActivityTrackingService), track = tracker.track.bind(tracker);
+    const spy = point === 'audit'
+      ? jest.spyOn(audit, 'log').mockImplementation(async (input, tx) => { if (input.action === 'EXTRACT_DOCUMENT_STARTED') throw new Error('Synthetic admission audit failure'); return log(input, tx); })
+      : jest.spyOn(tracker, 'track').mockImplementation(async (input, tx) => { if (input.eventName === 'DOCUMENT_EXTRACT_STARTED') throw new Error('Synthetic admission activity failure'); return track(input, tx); });
+    try { await expect(admitForInspection(ctx.organization.id, ctx.documentId)).rejects.toThrow('Synthetic admission'); expect(await ctx.state()).toEqual(before); }
+    finally { spy.mockRestore(); }
+    const admitted = await admitForInspection(ctx.organization.id, ctx.documentId);
+    expect((await validateOperation(ctx, admitted.operation.id)).job.status).toBe('RUNNING');
+  });
+
+  it('durable synthetic admission needs neither real-data nor AI authorization with quotas disabled', async () => {
+    const ctx = await retainedSource('synthetic durable disabled', 'json', false);
+    await prisma.document.update({ where: { id: ctx.documentId }, data: { ingestionDataMode: 'SYNTHETIC_TEST' } });
+    await prisma.organizationQuota.update({ where: { organizationId: ctx.organization.id }, data: { enabled: false } });
+    expect((await ctx.extract()).status).toBe(201);
+    const jobs = await prisma.aIJob.findMany({ where: { documentId: ctx.documentId } });
+    expect(jobs).toHaveLength(1); expect(jobs[0].status).toBe('COMPLETED');
+    expect(jobs[0].inputJson).toMatchObject({ ingestionDataMode: 'SYNTHETIC_TEST', realDataDecisionId: null, approvalRevision: null });
+    expect(await prisma.organizationRealDataAuthorization.count({ where: { organizationId: ctx.organization.id } })).toBe(0);
+    expect(await prisma.organizationAiAuthorization.count({ where: { organizationId: ctx.organization.id } })).toBe(0);
+  });
+
+  it('durable provider admission binds independent AI scope and consent without calling the provider', async () => {
+    const ctx = await retainedSource('provider admission', 'json', false);
+    await authorizeSyntheticDocumentExtraction(app, ctx.customer);
+    const uploaded = await request(app.getHttpServer()).post('/api/documents/upload').set(authHeader(ctx.customer.accessToken))
+      .field('type', 'PDF').attach('file', Buffer.from('%PDF-1.4\n% Synthetic admission fixture\n%%EOF\n'), { filename: `${uniqueTestId(run)}.pdf`, contentType: 'application/pdf' }).expect(201);
+    const providerContext = { ...ctx, documentId: uploaded.body.id };
+    provider.mockClear();
+    const admission = await admitForInspection(ctx.organization.id, providerContext.documentId);
+    expect((await validateOperation(providerContext, admission.operation.id)).metadata).toMatchObject({
+      provider: 'OPENAI', processingScope: 'DOCUMENT_EXTRACTION', consentVersion: 'e2e-synthetic-consent-v1',
+      ingestionDataMode: 'SYNTHETIC_TEST', realDataDecisionId: null, approvalRevision: null,
+    });
+    await prisma.organizationAiAuthorization.update({ where: { organizationId: ctx.organization.id }, data: { consentVersion: 'changed-synthetic-consent' } });
+    await expect(validateOperation(providerContext, admission.operation.id)).rejects.toMatchObject({ status: 403, response: expect.objectContaining({ code: 'EXTRACTION_OPERATION_INVALID' }) });
+    const platform = await createPlatformAdmin('provider withdrawal admin');
+    await app.get(AiAuthorizationService).withdraw(ctx.organization.id, platform.user.id, 'SYNTHETIC_ADMISSION_TEST');
+    await expect(validateOperation(providerContext, admission.operation.id)).rejects.toMatchObject({ status: 403, response: expect.objectContaining({ code: 'AI_AUTHORIZATION_REQUIRED' }) });
+    expect(provider).not.toHaveBeenCalled();
+  });
+
+  it('durable operation validation rejects approval expiry', async () => {
+    const ctx = await retainedSource('admission expiry');
+    const admitted = await admitForInspection(ctx.organization.id, ctx.documentId);
+    await prisma.organizationRealDataAuthorization.update({ where: { organizationId: ctx.organization.id }, data: { expiresAt: new Date(Date.now() - 1000) } });
+    const before = await ctx.state();
+    await expect(validateOperation(ctx, admitted.operation.id)).rejects.toMatchObject({ status: 403, response: expect.objectContaining({ code: 'REAL_DATA_NOT_AUTHORIZED' }) });
+    expect(await ctx.state()).toEqual(before);
+  });
+
+  it('durable admission committed before withdrawal cannot start stale processing afterward', async () => {
+    const ctx = await retainedSource('withdrawal between admission and work');
+    const service = admissions(), admit = service.admit.bind(service);
+    const spy = jest.spyOn(service, 'admit').mockImplementation(async (...args) => {
+      const result = await admit(...args);
+      expect((await ctx.withdraw()).status).toBe(201);
+      return result;
+    });
+    provider.mockClear();
+    try {
+      const response = await ctx.extract(); expect(response.status).toBe(403); expect(response.body.code).toBe('REAL_DATA_NOT_AUTHORIZED');
+      const jobs = await prisma.aIJob.findMany({ where: { documentId: ctx.documentId } });
+      expect(jobs).toHaveLength(1); expect(jobs[0]).toMatchObject({ status: 'FAILED', leaseExpiresAt: null });
+      expect(await prisma.auditLog.count({ where: { entityId: ctx.documentId, action: 'EXTRACT_DOCUMENT_STARTED' } })).toBe(1);
+      expect(await prisma.documentExtraction.count({ where: { documentId: ctx.documentId } })).toBe(0);
+      expect(await prisma.document.findUnique({ where: { id: ctx.documentId } })).toMatchObject({ status: 'UPLOADED' });
+      expect(provider).not.toHaveBeenCalled();
+    } finally { spy.mockRestore(); }
+  });
+
+  it('durable operation identity cannot be supplied through the public extraction DTO', async () => {
+    const ctx = await retainedSource('client identity rejected'); const before = await ctx.state();
+    await request(app.getHttpServer()).post('/api/document-extraction/extract').set(authHeader(ctx.customer.accessToken))
+      .send({ documentId: ctx.documentId, operationId: 'client-operation', metadata: { ingestionDataMode: 'SYNTHETIC_TEST' } }).expect(400);
+    expect(await ctx.state()).toEqual(before);
+  });
+
+  it('durable admission fails boundedly on a held document lock and can retry without side effects', async () => {
+    const ctx = await retainedSource('admission lock wait');
+    let entered!: () => void, release!: () => void;
+    const held = new Promise<void>(done => { entered = done; });
+    const gate = new Promise<void>(done => { release = done; });
+    const holder = prisma.$transaction(async tx => {
+      await tx.$queryRaw`SELECT "id" FROM "Document" WHERE "id" = ${ctx.documentId} FOR UPDATE`;
+      entered(); await gate;
+    });
+    try {
+      await held;
+      const before = await ctx.state();
+      await expect(admitForInspection(ctx.organization.id, ctx.documentId)).rejects.toMatchObject({ status: 409, response: expect.objectContaining({ code: 'EXTRACTION_ADMISSION_BUSY' }) });
+      expect(await ctx.state()).toEqual(before);
+    } finally { release(); await holder; }
+    const admitted = await admitForInspection(ctx.organization.id, ctx.documentId);
+    expect((await validateOperation(ctx, admitted.operation.id)).job.status).toBe('RUNNING');
+  });
+
+  it.each([undefined, null, '', ' ', 123])('durable operation rejects missing or invalid operation ID: %s', async identity => {
+    const ctx = await retainedSource(`missing operation ${String(identity)}`);
+    await admitForInspection(ctx.organization.id, ctx.documentId);
+    const before = await ctx.state();
+    await expect(validateOperation(ctx, identity as unknown as string)).rejects.toMatchObject({ status: 403, response: expect.objectContaining({ code: 'EXTRACTION_OPERATION_INVALID' }) });
+    expect(await ctx.state()).toEqual(before);
+  });
+
+  it.each([Prisma.TransactionIsolationLevel.RepeatableRead, Prisma.TransactionIsolationLevel.Serializable])
+  ('durable operation fencing refuses stale-snapshot transaction isolation: %s', async isolationLevel => {
+    const ctx = await retainedSource(`isolation ${isolationLevel}`);
+    const admission = await admitForInspection(ctx.organization.id, ctx.documentId);
+    const before = await ctx.state();
+    await expect(prisma.$transaction(tx => admissions().lockAndValidate(tx, ctx.organization.id, ctx.documentId, admission.operation.id), { isolationLevel }))
+      .rejects.toMatchObject({ status: 503, response: expect.objectContaining({ code: 'PROCESSING_FENCE_ISOLATION_UNSUPPORTED' }) });
+    expect(await ctx.state()).toEqual(before);
   });
 
   it('preapproval REAL_CUSTOMER_DATA denial has zero processing side effects', async () => {

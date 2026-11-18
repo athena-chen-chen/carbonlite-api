@@ -1,3 +1,4 @@
+import { extractionOperationsFixture } from '../../test/helpers/extraction-operations-fixture';
 import { Logger } from '@nestjs/common';
 import { DocumentExtractionService } from './document-extraction.service';
 import { openai } from '../openai/openai.client';
@@ -31,7 +32,7 @@ it('F16 omits provider credentials, raw message/stack and document content from 
   const quotas = { beginExtraction: jest.fn().mockResolvedValue(null), finishExtraction: jest.fn().mockResolvedValue(undefined) };
   const audit = { log: jest.fn() };
   const tracker = { track: jest.fn() };
-  const service = new DocumentExtractionService(prisma, audit as never, tracker as never, null as never, storage as never, quotas as never, authorization as never);
+  const service = new DocumentExtractionService(prisma, audit as never, tracker as never, null as never, storage as never, quotas as never, authorization as never, undefined, extractionOperationsFixture(document) as never);
   const logs = ['error', 'warn', 'log'].map(method => jest.spyOn(Logger.prototype, method as 'error').mockImplementation(() => undefined));
   await expect(service.extract('org-1', 'doc-1')).rejects.toThrow('Extraction failed. Please try again or upload the file again.');
   const output = JSON.stringify(logs.map(log => log.mock.calls));

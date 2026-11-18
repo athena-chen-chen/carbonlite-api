@@ -222,6 +222,8 @@ describe('F08 direct upload and extraction resource boundaries', () => {
     try {
       await entered.promise;
       expect((await extract(documents.at(-1).id)).status).toBe(429);
+      expect(await prisma.aIJob.count({ where: { documentId: documents.at(-1).id } })).toBe(0);
+      expect(await prisma.auditLog.count({ where: { entityId: documents.at(-1).id, action: 'EXTRACT_DOCUMENT_STARTED' } })).toBe(0);
       expect(provider).toHaveBeenCalledTimes(workload.MAX_CONCURRENT_EXTRACTIONS);
       expect(await prisma.document.findUnique({ where: { id: documents.at(-1).id } })).toMatchObject({ status: 'UPLOADED' });
     } finally { release.resolve(emptyResult); }
