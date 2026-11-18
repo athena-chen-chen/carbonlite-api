@@ -1,3 +1,5 @@
+import { AuditLogService } from '../src/audit-log/audit-log.service';
+import { DOCUMENT_STORAGE, DocumentStorage, documentStorageKey } from '../src/documents/document-storage';
 import * as XLSX from 'xlsx';
 import { RealDataAuthorizationService } from '../src/real-data-authorization/real-data-authorization.service';
 import { INestApplication } from '@nestjs/common';
@@ -5,6 +7,7 @@ import { AiAuthorizedDataMode } from '@prisma/client';
 import request from 'supertest';
 import { AiAuthorizationService } from '../src/ai-authorization/ai-authorization.service';
 import { PrismaService } from '../src/prisma/prisma.service';
+import { PrismaModule } from '../src/prisma/prisma.module';
 import { createE2eApp } from './helpers/e2e-app';
 import { authHeader, cleanupTestData, createTestUser, uniqueTestId } from './helpers/factories';
 import { assertSafeTestDatabaseTarget } from './helpers/database-safety';
@@ -139,7 +142,7 @@ describe('organization real-data authorization gate', () => {
     delete process.env.REAL_DATA_EVIDENCE_HMAC_ADDITIONAL_KEYS;
     const setup = await createE2eApp();
     app = setup.app;
-    prisma = setup.prisma;
+    prisma = app.select(PrismaModule).get(PrismaService, { strict: true });
   });
 
   afterAll(async () => {
@@ -297,6 +300,128 @@ describe('organization real-data authorization gate', () => {
       }
       expect((await ctx.extract()).status).toBe(403);
     } finally { release(); await Promise.allSettled(pending); spy.mockRestore(); }
+  });
+
+  function failAtomicExtraction(documentId: string, point: 'after-upsert' | 'before-audit', times = 1) {
+    let reached = 0;
+    const audit = app.get(AuditLogService);
+    const log = audit.log.bind(audit);
+    const transaction = prisma.$transaction.bind(prisma);
+    const spy = point === 'before-audit'
+      ? jest.spyOn(audit, 'log').mockImplementation(async (input, tx) => {
+        if (input.action === 'EXTRACT_DOCUMENT' && input.entityId === documentId && reached < times) {
+          reached++; throw new Error('Synthetic application audit failure before SQL');
+        }
+        return log(input, tx);
+      })
+      : jest.spyOn(prisma, '$transaction').mockImplementation(((work: any, options: any) => {
+        if (typeof work !== 'function') return transaction(work, options);
+        return transaction(tx => work(new Proxy(tx, { get(target, key) {
+          if (key !== 'documentExtraction') return Reflect.get(target, key);
+          return new Proxy(target.documentExtraction, { get(delegate, operation) {
+            if (operation !== 'upsert') return Reflect.get(delegate, operation);
+            return async (args: any) => {
+              const result = await delegate.upsert(args);
+              if (args.where.documentId === documentId && reached < times) {
+                reached++; throw new Error('Synthetic application failure after extraction upsert');
+              }
+              return result;
+            };
+          } });
+        } })), options);
+      }) as any);
+    return { restore: () => spy.mockRestore(), reached: () => reached };
+  }
+
+  async function extractionEvidence(documentId: string) {
+    return {
+      results: await prisma.documentExtraction.findMany({ where: { documentId }, orderBy: { id: 'asc' } }),
+      successAudits: await prisma.auditLog.findMany({ where: { entityId: documentId, action: 'EXTRACT_DOCUMENT' }, orderBy: { id: 'asc' } }),
+    };
+  }
+  async function sourceBytes(documentId: string) {
+    const doc = await prisma.document.findUniqueOrThrow({ where: { id: documentId } });
+    return app.get<DocumentStorage>(DOCUMENT_STORAGE).read(documentStorageKey(doc.fileUrl));
+  }
+  const atomicCases = (['json', 'xlsx'] as const).flatMap(format =>
+    (['after-upsert', 'before-audit'] as const).flatMap(point =>
+      [false, true].map(previous => ({ format, point, previous }))));
+  it.each(atomicCases)('atomic extraction rollback $format $point previous=$previous', async ({ format, point, previous }) => {
+    const ctx = await retainedSource(`atomic ${format} ${point} ${previous}`, format);
+    if (previous) expect((await ctx.extract()).status).toBe(201);
+    const before = await extractionEvidence(ctx.documentId), bytes = await sourceBytes(ctx.documentId);
+    const usage = await prisma.organizationQuotaUsage.findMany({ where: { organizationId: ctx.organization.id }, orderBy: { id: 'asc' } });
+    provider.mockClear();
+    const injected = failAtomicExtraction(ctx.documentId, point);
+    try {
+      const failed = await ctx.extract(); expect(failed.status).toBe(500);
+      expect(failed.body.message).toBe('Extraction failed. Please try again or upload the file again.');
+      expect(injected.reached()).toBe(1);
+      expect(await extractionEvidence(ctx.documentId)).toEqual(before);
+      expect(await prisma.document.findUnique({ where: { id: ctx.documentId } })).toMatchObject({ status: 'EXTRACTION_FAILED' });
+      const failures = await prisma.auditLog.findMany({ where: { entityId: ctx.documentId, action: 'EXTRACT_DOCUMENT_FAILED' } });
+      expect(failures).toHaveLength(1);
+      expect(failures[0].newValue).toMatchObject({ status: 'EXTRACTION_FAILED' });
+      expect(await prisma.aIJob.findMany({ where: { documentId: ctx.documentId, status: 'RUNNING' } })).toHaveLength(0);
+      const failedLeases = await prisma.aIJob.findMany({ where: { documentId: ctx.documentId, status: 'FAILED' } });
+      expect(failedLeases).toHaveLength(1); expect(failedLeases[0].leaseExpiresAt).toBeNull();
+      expect(await prisma.organizationQuotaUsage.findMany({ where: { organizationId: ctx.organization.id }, orderBy: { id: 'asc' } })).toEqual(usage);
+      expect(provider).not.toHaveBeenCalled();
+      expect(await sourceBytes(ctx.documentId)).toEqual(bytes);
+    } finally { injected.restore(); }
+    expect((await ctx.extract()).status).toBe(201);
+    const after = await extractionEvidence(ctx.documentId);
+    expect(after.results).toHaveLength(1); expect(after.successAudits).toHaveLength(before.successAudits.length + 1);
+  });
+
+  it.each((['json', 'xlsx'] as const).flatMap(format =>
+    (['after-status', 'before-failure-audit'] as const).map(point => ({ format, point }))))
+  ('atomic extraction failure-state rollback $format $point', async ({ format, point }) => {
+    const ctx = await retainedSource(`failure cleanup ${format} ${point}`, format);
+    const originalDocument = await prisma.document.findUniqueOrThrow({ where: { id: ctx.documentId } });
+    const bytes = await sourceBytes(ctx.documentId), before = await extractionEvidence(ctx.documentId);
+    const injected = failAtomicExtraction(ctx.documentId, 'after-upsert');
+    const audit = app.get(AuditLogService), log = audit.log.bind(audit);
+    let reached = 0;
+    const failure = jest.spyOn(audit, 'log').mockImplementation(async (input, tx) => {
+      if (input.entityId === ctx.documentId && input.action === 'EXTRACT_DOCUMENT_FAILED') {
+        reached++;
+        // The update is already executed in the owning transaction; fail before audit SQL.
+        if (point === 'after-status') {
+          const row = await (tx as PrismaService).document.findUnique({ where: { id: ctx.documentId } });
+          expect(row?.status).toBe('EXTRACTION_FAILED');
+        }
+        throw new Error('Synthetic failure-state persistence exception');
+      }
+      return log(input, tx);
+    });
+    try {
+      expect((await ctx.extract()).status).toBe(500);
+      expect(reached).toBe(1); expect(injected.reached()).toBe(1);
+      expect(await extractionEvidence(ctx.documentId)).toEqual(before);
+      expect(await prisma.document.findUniqueOrThrow({ where: { id: ctx.documentId } })).toEqual(originalDocument);
+      expect(await prisma.auditLog.count({ where: { entityId: ctx.documentId, action: 'EXTRACT_DOCUMENT_FAILED' } })).toBe(0);
+      expect(await sourceBytes(ctx.documentId)).toEqual(bytes);
+    } finally { failure.mockRestore(); injected.restore(); }
+    expect((await ctx.extract()).status).toBe(201);
+  });
+
+  it.each(['json', 'xlsx'] as const)('atomic extraction retry rollback remains recoverable: %s', async format => {
+    const ctx = await retainedSource(`double retry ${format}`, format);
+    const bytes = await sourceBytes(ctx.documentId);
+    const injected = failAtomicExtraction(ctx.documentId, 'before-audit', 2);
+    try {
+      for (let attempt = 1; attempt <= 2; attempt++) {
+        expect((await ctx.extract()).status).toBe(500);
+        expect(await prisma.documentExtraction.count({ where: { documentId: ctx.documentId } })).toBe(0);
+        expect(await prisma.auditLog.count({ where: { entityId: ctx.documentId, action: 'EXTRACT_DOCUMENT' } })).toBe(0);
+        expect(await prisma.auditLog.count({ where: { entityId: ctx.documentId, action: 'EXTRACT_DOCUMENT_FAILED' } })).toBe(attempt);
+        expect(await sourceBytes(ctx.documentId)).toEqual(bytes);
+      }
+      expect(injected.reached()).toBe(2);
+    } finally { injected.restore(); }
+    expect((await ctx.extract()).status).toBe(201);
+    expect(await prisma.documentExtraction.count({ where: { documentId: ctx.documentId } })).toBe(1);
   });
 
   it('preapproval REAL_CUSTOMER_DATA denial has zero processing side effects', async () => {

@@ -185,19 +185,26 @@ export class DocumentExtractionService {
       // committing after the authorization lock has been released. Admission is
       // checked after the lock: withdrawal-first denies without even a lease;
       // processing-first completes before withdrawal can commit.
-      const outcome = await this.prisma.$transaction(async tx => {
-        await this.assertRealDocumentApproval(tx, organizationId);
-        try { return { result: await this.extractApproved(document, userId, userEmail, tx) }; }
-        catch (error) { return { error }; }
-      }, {
-        maxWait: 10000,
-        // Includes provider deadline plus persistence/cleanup. Expiry is checked
-        // at admission; a previously admitted operation finishes before withdrawal.
-        timeout: EXTRACTION_TIMEOUT_MS + 60000,
-        isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted,
-      });
-      if ('error' in outcome) throw outcome.error;
-      return outcome.result;
+      let processingStarted = false;
+      try {
+        return await this.prisma.$transaction(async tx => {
+          await this.assertRealDocumentApproval(tx, organizationId);
+          // Required persistence failures must reject the owning transaction.
+          return this.extractApproved(document, userId, userEmail, tx, () => { processingStarted = true; });
+        }, {
+          maxWait: 10000,
+          // Phase A retains the existing admission/withdrawal ordering. Short
+          // transactions and final revision fencing are separate follow-up work.
+          timeout: EXTRACTION_TIMEOUT_MS + 60000,
+          isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted,
+        });
+      } catch (error) {
+        // Admission denials must not create failure state or audit side effects.
+        if (!processingStarted) throw error;
+        const failure = this.extractionFailure(error);
+        await this.recordExtractionFailure(document, userId, failure.error, true);
+        throw failure.error;
+      }
     }
     return this.extractApproved(document, userId, userEmail);
   }
@@ -216,6 +223,7 @@ export class DocumentExtractionService {
     userId?: string,
     userEmail?: string,
     processingTx?: Prisma.TransactionClient,
+    onProcessingStart?: () => void,
   ) {
     const { organizationId, id: documentId } = document;
     this.validateSupportedFile(document);
@@ -230,8 +238,10 @@ export class DocumentExtractionService {
       userId,
     });
     try {
-      const result = await extractionWorkload.run(`${organizationId}:${documentId}`, () =>
-        this.extractWithinLimits(document, userId, userEmail, processingTx), !lease);
+      const result = await extractionWorkload.run(`${organizationId}:${documentId}`, () => {
+          onProcessingStart?.();
+          return this.extractWithinLimits(document, userId, userEmail, processingTx);
+        }, !lease);
       await this.quotaEnforcement.finishExtraction(organizationId, lease?.id, 'COMPLETED');
       return result;
     } catch (error) {
@@ -276,6 +286,7 @@ export class DocumentExtractionService {
       type: DocumentType;
       status: DocumentStatus;
       ingestionDataMode: IngestionDataMode;
+      updatedAt?: Date;
     },
     userId?: string,
     userEmail?: string,
@@ -335,19 +346,7 @@ export class DocumentExtractionService {
         this.logger.warn(
           `[DocumentExtraction] file missing documentId=${documentId} storageKey=${document.fileUrl}`,
         );
-        await (processingTx ?? this.prisma).document.update({
-          where: { id: documentId },
-          data: { status: 'FILE_MISSING' },
-        });
-        await this.trackExtractionEvent({
-          organizationId,
-          userId,
-          documentId,
-          eventName: 'DOCUMENT_EXTRACT_FAILED',
-          metadata: {
-            reason: 'FILE_MISSING',
-          },
-        }, processingTx);
+        if (!processingTx) await this.recordExtractionFailure(document, userId, new DocumentStorageNotFoundError(document.fileUrl));
         addAppBreadcrumb('Uploaded file missing during extraction', {
           feature: 'document-extraction',
           operation: 'file-missing',
@@ -672,19 +671,7 @@ export class DocumentExtractionService {
         this.logger.warn(
           `[DocumentExtraction] file missing during read documentId=${documentId} storageKey=${document.fileUrl}`,
         );
-        await (processingTx ?? this.prisma).document.update({
-          where: { id: documentId },
-          data: { status: 'FILE_MISSING' },
-        });
-        await this.trackExtractionEvent({
-          organizationId,
-          userId,
-          documentId,
-          eventName: 'DOCUMENT_EXTRACT_FAILED',
-          metadata: {
-            reason: 'FILE_MISSING',
-          },
-        }, processingTx);
+        if (!processingTx) await this.recordExtractionFailure(document, userId, error);
         addAppBreadcrumb('Uploaded file missing during extraction', {
           feature: 'document-extraction',
           operation: 'file-missing',
@@ -704,19 +691,7 @@ export class DocumentExtractionService {
       }
 
       if (error instanceof HttpException) {
-        await (processingTx ?? this.prisma).document.update({
-          where: { id: documentId },
-          data: { status: 'EXTRACTION_FAILED' },
-        });
-        await this.trackExtractionEvent({
-          organizationId,
-          userId,
-          documentId,
-          eventName: 'DOCUMENT_EXTRACT_FAILED',
-          metadata: {
-            reason: error.getStatus() === 504 ? 'TIMEOUT' : 'BAD_REQUEST',
-          },
-        }, processingTx);
+        if (!processingTx) await this.recordExtractionFailure(document, userId, error);
         throw error;
       }
 
@@ -741,20 +716,7 @@ export class DocumentExtractionService {
           documentStatus: document.status,
         },
       });
-      await (processingTx ?? this.prisma).document.update({
-        where: { id: documentId },
-        data: { status: 'EXTRACTION_FAILED' },
-      });
-
-      await this.trackExtractionEvent({
-        organizationId,
-        userId,
-        documentId,
-        eventName: 'DOCUMENT_EXTRACT_FAILED',
-        metadata: {
-          reason: 'UNEXPECTED_ERROR',
-        },
-      }, processingTx);
+      if (!processingTx) await this.recordExtractionFailure(document, userId, error);
 
       const friendlyError = new InternalServerErrorException(
         'Extraction failed. Please try again or upload the file again.',
@@ -1546,6 +1508,66 @@ If it contains a utility bill, prefer ELECTRICITY or NATURAL_GAS.
         extractedAt: new Date(),
       },
     });
+  }
+
+  private extractionFailure(error: unknown) {
+    const response = error instanceof HttpException ? error.getResponse() : undefined;
+    const missing = this.isMissingFileError(error) ||
+      (typeof response === 'object' && response !== null && 'status' in response && response.status === 'FILE_MISSING');
+    const status: DocumentStatus = missing ? 'FILE_MISSING' : 'EXTRACTION_FAILED';
+    const reason = missing ? 'FILE_MISSING' : error instanceof HttpException && error.getStatus() === 504
+      ? 'TIMEOUT' : error instanceof HttpException && error.getStatus() < 500 ? 'BAD_REQUEST' : 'UNEXPECTED_ERROR';
+    const stableError = missing ? new NotFoundException({
+      message: this.fileMissingMessage, error: 'File Missing', statusCode: 404, status: 'FILE_MISSING',
+    }) : error instanceof HttpException ? error : new InternalServerErrorException(
+      'Extraction failed. Please try again or upload the file again.',
+    );
+    return { status, reason, error: stableError };
+  }
+
+  private async recordExtractionFailure(
+    document: { id: string; organizationId: string; status: DocumentStatus; ingestionDataMode: IngestionDataMode; updatedAt?: Date },
+    userId: string | undefined,
+    error: unknown,
+    rolledBack = false,
+  ) {
+    const failure = this.extractionFailure(error);
+    try {
+      await this.prisma.$transaction(async tx => {
+        if (document.ingestionDataMode === IngestionDataMode.REAL_CUSTOMER_DATA) {
+          await this.assertRealDocumentApproval(tx, document.organizationId);
+        }
+        // For real-data rollback, compare the captured source version before
+        // recording failure. Synthetic processing retains its separately
+        // committed PROCESSING state. Durable attempt fencing is follow-up work.
+        const changed = await tx.document.updateMany({
+          where: { id: document.id, organizationId: document.organizationId,
+            status: rolledBack ? document.status : 'PROCESSING',
+            ...(rolledBack && document.updatedAt ? { updatedAt: document.updatedAt } : {}),
+          },
+          data: { status: failure.status },
+        });
+        if (!changed.count) return;
+        await this.auditLog.log({
+          organizationId: document.organizationId, userId,
+          action: 'EXTRACT_DOCUMENT_FAILED', entityType: 'Document', entityId: document.id,
+          description: 'Recorded document extraction failure without changing extraction results.',
+          newValue: { status: failure.status, reason: failure.reason },
+        }, tx);
+        await this.activityTracking.track({
+          organizationId: document.organizationId, userId, eventName: 'DOCUMENT_EXTRACT_FAILED',
+          entityType: 'Document', entityId: document.id,
+          metadata: { reason: failure.reason },
+        }, tx);
+      });
+    } catch (failureError) {
+      // This catch is outside the owning failure transaction: required audit
+      // failure rolls back the status as well. Preserve the original failed API
+      // outcome, and leave the rolled-back source available for explicit retry.
+      writeSafeError(this.logger, 'extraction-failure-persistence', failureError, {
+        organizationId: document.organizationId, documentId: document.id,
+      });
+    }
   }
 
   private persistExtraction<T>(tx: Prisma.TransactionClient | undefined, work: (client: Prisma.TransactionClient) => Promise<T>) {
