@@ -15,6 +15,8 @@ import { openai } from '../src/openai/openai.client';
 import * as policy from '../src/documents/document-resource-policy';
 import * as workload from '../src/document-extraction/extraction-workload';
 import { authHeader, cleanupTestData, createTestUser, uniqueTestId } from './helpers/factories';
+import type { TestUser } from './helpers/factories';
+import { authorizeSyntheticDocumentExtraction } from './helpers/synthetic-ai-authorization';
 
 jest.mock('../src/openai/openai.client', () => ({ isOpenAiConfigured: jest.fn().mockReturnValue(true), openai: { responses: { create: jest.fn() } } }));
 const provider = openai.responses.create as jest.Mock;
@@ -32,6 +34,7 @@ describe('F08 direct upload and extraction resource boundaries', () => {
   let prisma: PrismaService;
   let auth: ReturnType<typeof authHeader>;
   let organizationId: string;
+  let providerCustomer: TestUser;
   let directory: string;
   const run = uniqueTestId('f08-resources');
   const uploadRoot = resolve(process.cwd(), 'uploads');
@@ -49,6 +52,7 @@ describe('F08 direct upload and extraction resource boundaries', () => {
     const [target] = await prisma.$queryRaw<Array<{ name: string }>>`SELECT current_database() AS name`;
     expect(target.name).toBe(targetDatabase.database);
     const user = await createTestUser(app, { organizationName: run, email: `${run}@carbonlite-e2e.test` });
+    providerCustomer = user;
     auth = authHeader(user.accessToken); organizationId = user.user.organizationId;
   });
   beforeEach(() => { provider.mockReset().mockResolvedValue(emptyResult); });
@@ -131,6 +135,7 @@ describe('F08 direct upload and extraction resource boundaries', () => {
     await access(join(process.cwd(), saved.body.fileUrl));
   });
   it('keeps failed and timed-out extraction sources retryable', async () => {
+    await authorizeSyntheticDocumentExtraction(app, providerCustomer);
     const saved = await upload(pdf).expect(201);
     provider.mockRejectedValueOnce(new Error('Synthetic provider failure'));
     expect((await extract(saved.body.id)).status).toBe(500);
@@ -165,6 +170,7 @@ describe('F08 direct upload and extraction resource boundaries', () => {
     expect(provider).not.toHaveBeenCalled();
   });
   it('prevents overlapping same-document provider work without corrupting the winning operation', async () => {
+    await authorizeSyntheticDocumentExtraction(app, providerCustomer);
     const saved = await upload(pdf).expect(201); const entered = deferred<void>(); const release = deferred<typeof emptyResult>();
     provider.mockImplementationOnce(() => { entered.resolve(undefined); return release.promise; });
     const first = extract(saved.body.id);
@@ -178,6 +184,7 @@ describe('F08 direct upload and extraction resource boundaries', () => {
     expect((await extract(saved.body.id)).status).toBe(201);
   });
   it('bounds concurrent documents and allows a capacity-rejected request to retry after release', async () => {
+    await authorizeSyntheticDocumentExtraction(app, providerCustomer);
     const documents = [];
     for (let i = 0; i < workload.MAX_CONCURRENT_EXTRACTIONS + 1; i++) documents.push((await upload(pdf).expect(201)).body);
     const entered = deferred<void>(); const release = deferred<typeof emptyResult>(); let active = 0;

@@ -3,6 +3,7 @@ import request from 'supertest';
 import { openai } from '../src/openai/openai.client';
 import { PrismaService } from '../src/prisma/prisma.service';
 import { createE2eApp } from './helpers/e2e-app';
+import { authorizeSyntheticDocumentExtraction } from './helpers/synthetic-ai-authorization';
 import {
   authHeader,
   cleanupTestData,
@@ -85,6 +86,7 @@ describe('User activity events (e2e)', () => {
       organizationName: `${testRunId} Extraction Org`,
       email: `extraction-${testRunId}@carbonlite-e2e.test`,
     });
+    await authorizeSyntheticDocumentExtraction(app, user);
     const successDocument = await uploadTestDocument(
       user.accessToken,
       `${testRunId}-extract-success.csv`,

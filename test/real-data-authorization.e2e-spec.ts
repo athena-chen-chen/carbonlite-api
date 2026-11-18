@@ -283,6 +283,9 @@ describe('organization real-data authorization gate', () => {
   });
 
   it('is fail-closed, platform-admin controlled, revision-bound, and tenant isolated', async () => {
+    const previousRuntimeFlag = process.env.REAL_DATA_AI_PROCESSING_ENABLED;
+    const previousConsentVersion = process.env.CARBONLITE_AI_CONSENT_VERSION;
+    try {
     const customer = await createTestUser(app, {
       organizationName: `${run} customer`,
       email: `${uniqueTestId(run)}@carbonlite-e2e.test`,
@@ -414,6 +417,16 @@ describe('organization real-data authorization gate', () => {
       .set(authHeader(platform.accessToken))
       .send({ ...aiBase, authorizedDataMode: 'SYNTHETIC_TEST_ONLY' })
       .expect(200);
+    delete process.env.REAL_DATA_AI_PROCESSING_ENABLED;
+    await expect(app.get(AiAuthorizationService).assertProviderRequestAllowed(
+      organization.id, 'OPENAI', 'DOCUMENT_EXTRACTION', 'REAL_CUSTOMER_DATA',
+    )).rejects.toMatchObject({ response: expect.objectContaining({ code: 'AI_REAL_DATA_PROCESSING_DISABLED' }) });
+    process.env.REAL_DATA_AI_PROCESSING_ENABLED = 'true';
+    delete process.env.CARBONLITE_AI_CONSENT_VERSION;
+    await expect(app.get(AiAuthorizationService).assertProviderRequestAllowed(
+      organization.id, 'OPENAI', 'DOCUMENT_EXTRACTION', 'REAL_CUSTOMER_DATA',
+    )).rejects.toMatchObject({ response: expect.objectContaining({ code: 'AI_RUNTIME_CONSENT_VERSION_REQUIRED' }) });
+    process.env.CARBONLITE_AI_CONSENT_VERSION = 'real-data-ai-v1';
     await expect(app.get(AiAuthorizationService).assertProviderRequestAllowed(
       organization.id, 'OPENAI', 'DOCUMENT_EXTRACTION', 'REAL_CUSTOMER_DATA',
     )).rejects.toMatchObject({ status: 403 });
@@ -422,6 +435,11 @@ describe('organization real-data authorization gate', () => {
       .set(authHeader(platform.accessToken))
       .send({ ...aiBase, authorizedDataMode: 'REAL_CUSTOMER_DATA', realDataApprovalRevision: 1 })
       .expect(200);
+    process.env.CARBONLITE_AI_CONSENT_VERSION = 'mismatched-e2e-consent';
+    await expect(app.get(AiAuthorizationService).assertProviderRequestAllowed(
+      organization.id, 'OPENAI', 'DOCUMENT_EXTRACTION', 'REAL_CUSTOMER_DATA',
+    )).rejects.toMatchObject({ response: expect.objectContaining({ code: 'AI_RUNTIME_CONSENT_VERSION_MISMATCH' }) });
+    process.env.CARBONLITE_AI_CONSENT_VERSION = 'real-data-ai-v1';
     await expect(app.get(AiAuthorizationService).assertProviderRequestAllowed(
       organization.id, 'OPENAI', 'DOCUMENT_EXTRACTION', 'REAL_CUSTOMER_DATA',
     )).resolves.toMatchObject({ authorizedDataMode: AiAuthorizedDataMode.REAL_CUSTOMER_DATA, realDataApprovalRevision: 1 });
@@ -505,5 +523,11 @@ describe('organization real-data authorization gate', () => {
       revisionTwoEvidence[0].organizationIdHash,
     )).toBe(true);
     expect(JSON.stringify(revisionTwoEvidence)).not.toContain(additiveEvidenceKey);
+    } finally {
+      if (previousRuntimeFlag === undefined) delete process.env.REAL_DATA_AI_PROCESSING_ENABLED;
+      else process.env.REAL_DATA_AI_PROCESSING_ENABLED = previousRuntimeFlag;
+      if (previousConsentVersion === undefined) delete process.env.CARBONLITE_AI_CONSENT_VERSION;
+      else process.env.CARBONLITE_AI_CONSENT_VERSION = previousConsentVersion;
+    }
   });
 });
