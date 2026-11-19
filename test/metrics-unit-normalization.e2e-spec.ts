@@ -1,3 +1,5 @@
+import { deriveAirTravelRoute } from '../src/domain/air-travel/air-travel';
+import { governedFactor, createGovernedFactor } from './helpers/governed-factor';
 import { INestApplication } from '@nestjs/common';
 import request from 'supertest';
 import { PrismaService } from '../src/prisma/prisma.service';
@@ -83,6 +85,7 @@ describe('Metrics unit normalization (e2e)', () => {
       .post('/api/conversion-factors')
       .set(auth)
       .send({
+        ...governedFactor(),
         name: `${testRunId} Custom litre diesel factor`,
         type: 'EMISSION',
         activityType: 'DIESEL',
@@ -133,10 +136,13 @@ describe('Metrics unit normalization (e2e)', () => {
       .get('/api/conversion-factors')
       .set(auth)
       .expect(200);
-    const airTravelFactor = factorResponse.body.items.find(
-      (factor: { activityType: string; isSystemDefault: boolean }) =>
-        factor.isSystemDefault && factor.activityType === 'AIR_TRAVEL',
-    );
+    const routeMetadata = { schemaVersion: 1, type: 'AIR_TRAVEL', originAirport: 'YYC',
+      destinationAirport: 'YYZ', passengerCount: 1, tripType: 'ONE_WAY' };
+    const route = deriveAirTravelRoute(routeMetadata);
+    const airTravelFactor = await createGovernedFactor(prisma, {
+      organizationId: user.user.organizationId, name: 'E2E-reviewed air travel factor', activityType: 'AIR_TRAVEL', unit: 'passenger-km', factorValue: .115,
+      methodologyProvenance: { sourceVersion: 'E2E_REVIEWED_2026', haulCategory: route.haulCategory },
+    });
     const electricityFactor = factorResponse.body.items.find(
       (factor: { activityType: string; isSystemDefault: boolean }) =>
         factor.isSystemDefault && factor.activityType === 'ELECTRICITY',
@@ -147,6 +153,7 @@ describe('Metrics unit normalization (e2e)', () => {
       .set(auth)
       .send({
         activityType: 'AIR_TRAVEL',
+        activityMetadata: routeMetadata,
         recordDate: '2026-01-01',
         quantity: 10,
         unit: 'kilometers',
@@ -176,12 +183,15 @@ describe('Metrics unit normalization (e2e)', () => {
       })
       .expect(201);
 
+    const airMetric = metrics.body.items.find((item: { activityDataId: string }) => item.activityDataId === airTravel.body.id);
+    expect(Number(airMetric.value)).toBe(Math.round(Math.round(route.passengerKm * 1000) / 1000 * .115 * 1000) / 1000);
+    expect(Number(airTravel.body.quantity)).toBe(Number(route.passengerKm.toFixed(4)));
     expect(metrics.body.items).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           activityDataId: airTravel.body.id,
           factorId: airTravelFactor.id,
-          value: '1.15',
+          value: expect.any(String),
         }),
         expect.objectContaining({
           activityDataId: electricity.body.id,

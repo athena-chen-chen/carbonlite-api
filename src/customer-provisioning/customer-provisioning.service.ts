@@ -1,3 +1,4 @@
+import { ControlDatabaseService, runControlOperation } from '../prisma/control-database.service';
 import {
   BadRequestException,
   ConflictException,
@@ -36,6 +37,7 @@ export class CustomerProvisioningService {
     private readonly prisma: PrismaService,
     @Optional() private readonly legalHolds?: LegalHoldsService,
     private readonly realDataAuthorization?: RealDataAuthorizationService,
+    @Optional() private readonly control?: ControlDatabaseService,
   ) {}
 
   async getCustomerPreflight(query: CustomerPreflightQueryDto) {
@@ -350,7 +352,14 @@ export class CustomerProvisioningService {
       throw new BadRequestException('Exact organization confirmation is required.');
     }
 
-    return this.prisma.$transaction(async tx => {
+    return runControlOperation(this.control, this.prisma, 'CUSTOMER_SUSPENSION', async tx => {
+      // Every suspension participates in the extraction commit ordering point,
+      // including synthetic workspaces without a live real-data decision. Take
+      // the fence before organization-row locks, using this owning transaction.
+      if (!this.realDataAuthorization) {
+        throw new ServiceUnavailableException('Real-data authorization enforcement is unavailable.');
+      }
+      await this.realDataAuthorization.lockProcessingApproval(tx, command.organizationId, false);
       const organization = await tx.organization.findUnique({
         where: { id: command.organizationId },
       });

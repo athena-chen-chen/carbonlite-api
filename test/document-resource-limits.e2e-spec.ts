@@ -15,6 +15,8 @@ import { openai } from '../src/openai/openai.client';
 import * as policy from '../src/documents/document-resource-policy';
 import * as workload from '../src/document-extraction/extraction-workload';
 import { authHeader, cleanupTestData, createTestUser, uniqueTestId } from './helpers/factories';
+import type { TestUser } from './helpers/factories';
+import { authorizeSyntheticDocumentExtraction } from './helpers/synthetic-ai-authorization';
 
 jest.mock('../src/openai/openai.client', () => ({ isOpenAiConfigured: jest.fn().mockReturnValue(true), openai: { responses: { create: jest.fn() } } }));
 const provider = openai.responses.create as jest.Mock;
@@ -32,6 +34,7 @@ describe('F08 direct upload and extraction resource boundaries', () => {
   let prisma: PrismaService;
   let auth: ReturnType<typeof authHeader>;
   let organizationId: string;
+  let providerCustomer: TestUser;
   let directory: string;
   const run = uniqueTestId('f08-resources');
   const uploadRoot = resolve(process.cwd(), 'uploads');
@@ -49,6 +52,7 @@ describe('F08 direct upload and extraction resource boundaries', () => {
     const [target] = await prisma.$queryRaw<Array<{ name: string }>>`SELECT current_database() AS name`;
     expect(target.name).toBe(targetDatabase.database);
     const user = await createTestUser(app, { organizationName: run, email: `${run}@carbonlite-e2e.test` });
+    providerCustomer = user;
     auth = authHeader(user.accessToken); organizationId = user.user.organizationId;
   });
   beforeEach(() => { provider.mockReset().mockResolvedValue(emptyResult); });
@@ -131,6 +135,7 @@ describe('F08 direct upload and extraction resource boundaries', () => {
     await access(join(process.cwd(), saved.body.fileUrl));
   });
   it('keeps failed and timed-out extraction sources retryable', async () => {
+    await authorizeSyntheticDocumentExtraction(app, providerCustomer);
     const saved = await upload(pdf).expect(201);
     provider.mockRejectedValueOnce(new Error('Synthetic provider failure'));
     expect((await extract(saved.body.id)).status).toBe(500);
@@ -153,18 +158,48 @@ describe('F08 direct upload and extraction resource boundaries', () => {
     ]);
     const mime = extension === 'json' ? 'application/json' : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
     const saved = await upload(buffer, `retry.${extension}`, mime).expect(201);
-    jest.spyOn(prisma, '$transaction').mockRejectedValueOnce(new Error('Synthetic structured persistence failure'));
+    const transaction = prisma.$transaction.bind(prisma);
+    let persistenceReached = 0;
+    // Leave quota/lease initialization intact. Fail only after the intended
+    // extraction upsert has executed inside its real rollback transaction.
+    const persistenceFailure = jest.spyOn(prisma, '$transaction').mockImplementation(((work: any, options: any) => {
+      if (typeof work !== 'function') return transaction(work, options);
+      return transaction(async tx => work(new Proxy(tx, {
+        get(target, key) {
+          if (key !== 'documentExtraction') return Reflect.get(target, key);
+          return new Proxy(target.documentExtraction, {
+            get(delegate, operation) {
+              if (operation !== 'upsert') return Reflect.get(delegate, operation);
+              return async (args: any) => {
+                const result = await delegate.upsert(args);
+                if (args.where.documentId === saved.body.id) {
+                  persistenceReached++;
+                  throw new Error('Synthetic structured persistence failure');
+                }
+                return result;
+              };
+            },
+          });
+        },
+      })), options);
+    }) as any);
     expect((await extract(saved.body.id)).status).toBe(500);
     expect(await prisma.document.findUnique({ where: { id: saved.body.id } })).toMatchObject({ status: 'EXTRACTION_FAILED' });
+    expect(persistenceReached).toBe(1);
+    persistenceFailure.mockRestore();
+    expect(await prisma.document.count({ where: { id: saved.body.id } })).toBe(1);
     expect(await prisma.documentExtraction.count({ where: { documentId: saved.body.id } })).toBe(0);
     expect(await prisma.activityData.count({ where: { sourceDocumentId: saved.body.id } })).toBe(0);
     await access(join(process.cwd(), saved.body.fileUrl));
     const retried = await extract(saved.body.id);
     expect(retried.status).toBe(201);
     expect(retried.body.parsedActivities).toHaveLength(1);
+    expect(await prisma.documentExtraction.count({ where: { documentId: saved.body.id } })).toBe(1);
+    expect(await prisma.activityData.count({ where: { sourceDocumentId: saved.body.id } })).toBe(0);
     expect(provider).not.toHaveBeenCalled();
   });
   it('prevents overlapping same-document provider work without corrupting the winning operation', async () => {
+    await authorizeSyntheticDocumentExtraction(app, providerCustomer);
     const saved = await upload(pdf).expect(201); const entered = deferred<void>(); const release = deferred<typeof emptyResult>();
     provider.mockImplementationOnce(() => { entered.resolve(undefined); return release.promise; });
     const first = extract(saved.body.id);
@@ -178,6 +213,7 @@ describe('F08 direct upload and extraction resource boundaries', () => {
     expect((await extract(saved.body.id)).status).toBe(201);
   });
   it('bounds concurrent documents and allows a capacity-rejected request to retry after release', async () => {
+    await authorizeSyntheticDocumentExtraction(app, providerCustomer);
     const documents = [];
     for (let i = 0; i < workload.MAX_CONCURRENT_EXTRACTIONS + 1; i++) documents.push((await upload(pdf).expect(201)).body);
     const entered = deferred<void>(); const release = deferred<typeof emptyResult>(); let active = 0;
@@ -186,6 +222,8 @@ describe('F08 direct upload and extraction resource boundaries', () => {
     try {
       await entered.promise;
       expect((await extract(documents.at(-1).id)).status).toBe(429);
+      expect(await prisma.aIJob.count({ where: { documentId: documents.at(-1).id } })).toBe(0);
+      expect(await prisma.auditLog.count({ where: { entityId: documents.at(-1).id, action: 'EXTRACT_DOCUMENT_STARTED' } })).toBe(0);
       expect(provider).toHaveBeenCalledTimes(workload.MAX_CONCURRENT_EXTRACTIONS);
       expect(await prisma.document.findUnique({ where: { id: documents.at(-1).id } })).toMatchObject({ status: 'UPLOADED' });
     } finally { release.resolve(emptyResult); }

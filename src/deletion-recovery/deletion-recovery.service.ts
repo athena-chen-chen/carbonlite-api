@@ -56,6 +56,8 @@ export class DeletionRecoveryService {
         documentIds: [documentId],
       },
       async (tx) => {
+        // Same row lock/order as confirmation: count only after preceding imports commit.
+        await tx.$queryRaw`SELECT "id" FROM "Document" WHERE "id" = ${documentId} AND "organizationId" = ${organizationId} FOR UPDATE`;
         const document = await tx.document.findUnique({
           where: { id: documentId },
           select: { id: true, organizationId: true, fileUrl: true },
@@ -183,6 +185,8 @@ export class DeletionRecoveryService {
       if (intent.status === DocumentDeletionIntentStatus.RECONCILIATION_REQUIRED) {
         return { kind: 'RECONCILIATION_REQUIRED' as const };
       }
+      // Lock before quarantine/counting, not implicitly at DELETE after the count.
+      await tx.$queryRaw`SELECT "id" FROM "Document" WHERE "id" = ${documentId} AND "organizationId" = ${organizationId} FOR UPDATE`;
       const document = await tx.document.findUnique({ where: { id: documentId } });
       if (!document || document.organizationId !== organizationId) {
         await tx.documentDeletionIntent.update({

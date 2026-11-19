@@ -1,3 +1,4 @@
+import { createGovernedFactor } from './helpers/governed-factor';
 import { INestApplication } from '@nestjs/common';
 import request from 'supertest';
 import { PrismaService } from '../src/prisma/prisma.service';
@@ -35,6 +36,7 @@ describe('ActivityData delete persistence (e2e)', () => {
         quantity: 10,
         unit: 'liters',
         sourceType: 'MANUAL',
+        jurisdictionCountry: 'Canada', jurisdictionRegion: 'Alberta',
         sourceReference,
       })
       .expect(201);
@@ -102,6 +104,7 @@ describe('ActivityData delete persistence (e2e)', () => {
       organizationName: `${testRunId} Reporting Delete Org`,
       email: `reporting-delete-${testRunId}@carbonlite-e2e.test`,
     });
+    await createGovernedFactor(prisma, { organizationId: user.user.organizationId });
     const includedA = await createActivity(user.accessToken, `${testRunId}-reporting-a`);
     const includedB = await createActivity(user.accessToken, `${testRunId}-reporting-b`);
     const unsupported = await request(app.getHttpServer())

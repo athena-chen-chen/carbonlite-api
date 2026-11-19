@@ -1,3 +1,5 @@
+import { ControlDatabaseService, runControlOperation } from '../prisma/control-database.service';
+import { cancelExtractionAttempts } from '../document-extraction/extraction-cancellation';
 import { randomUUID } from 'crypto';
 import {
   BadRequestException,
@@ -6,6 +8,7 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  Optional,
   ServiceUnavailableException,
 } from '@nestjs/common';
 import {
@@ -41,6 +44,7 @@ export class RealDataAuthorizationService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly auditLog: AuditLogService,
+    @Optional() private readonly control?: ControlDatabaseService,
   ) {
     const summary = this.evidenceKeyring.configurationSummary();
     this.logger.log(
@@ -106,6 +110,7 @@ export class RealDataAuthorizationService {
     }
 
     return this.prisma.$transaction(async tx => {
+      await this.lockProcessingApproval(tx, organizationId, false);
       await this.assertApprovalPrerequisites(tx, organizationId, dto.confirmationOrganizationSlug);
       const previous = await tx.organizationRealDataAuthorization.findUnique({ where: { organizationId } });
       const normalized = {
@@ -184,12 +189,14 @@ export class RealDataAuthorizationService {
     dto: WithdrawRealDataAuthorizationDto,
   ) {
     this.assertExactTarget(organizationId, dto);
-    return this.prisma.$transaction(tx => this.withdrawWithinTransaction(
+    const result = await runControlOperation(this.control, this.prisma, 'REAL_DATA_WITHDRAWAL', tx => this.withdrawWithinTransaction(
       tx,
       organizationId,
       actorId,
       dto.withdrawalReason.trim(),
     ));
+    cancelExtractionAttempts(organizationId, true);
+    return result;
   }
 
   async withdrawWithinTransaction(
@@ -198,6 +205,7 @@ export class RealDataAuthorizationService {
     actorId: string,
     withdrawalReason: string,
   ) {
+    await this.lockProcessingApproval(tx, organizationId, false);
     const previous = await tx.organizationRealDataAuthorization.findUnique({ where: { organizationId } });
     if (!previous) throw new NotFoundException('Real-data authorization record not found.');
     if (previous.status === RealDataAuthorizationStatus.WITHDRAWN) {
@@ -233,8 +241,8 @@ export class RealDataAuthorizationService {
         entityType: 'OrganizationAiAuthorization',
         entityId: organizationId,
         description: 'Real-customer-data AI authorization withdrawn with real-data authorization.',
-        oldValue: { status: realDataAi.status, authorizedDataMode: realDataAi.authorizedDataMode },
-        newValue: { status: AiAuthorizationStatus.WITHDRAWN, authorizedDataMode: realDataAi.authorizedDataMode },
+        oldValue: { grantGeneration: realDataAi.grantGeneration, status: realDataAi.status, authorizedDataMode: realDataAi.authorizedDataMode },
+        newValue: { grantGeneration: realDataAi.grantGeneration, status: AiAuthorizationStatus.WITHDRAWN, authorizedDataMode: realDataAi.authorizedDataMode },
       }, tx);
     }
     await this.writeEvidence(tx, authorization);
@@ -304,10 +312,19 @@ export class RealDataAuthorizationService {
     return normalized as DeclaredIngestionDataMode;
   }
 
-  async assertEffectiveRealDataApproval(organizationId: string, expectedRevision?: number) {
+  // Dedicated namespace: quota/deletion organization locks are never acquired by
+  // withdrawal. Processing holds this shared lock through its protected commit;
+  // approval/withdrawal take the exclusive counterpart before changing a revision.
+  async lockProcessingApproval(tx: Prisma.TransactionClient, organizationId: string, shared: boolean) {
+    const key = `real-data-processing:${organizationId}`;
+    if (shared) await tx.$queryRaw`SELECT 1 AS locked FROM pg_advisory_xact_lock_shared(hashtextextended(${key}, 0))`;
+    else await tx.$queryRaw`SELECT 1 AS locked FROM pg_advisory_xact_lock(hashtextextended(${key}, 0))`;
+  }
+
+  async assertEffectiveRealDataApproval(organizationId: string, expectedRevision?: number, client: Pick<Prisma.TransactionClient, 'organizationRealDataAuthorization'> = this.prisma) {
     let authorization;
     try {
-      authorization = await this.prisma.organizationRealDataAuthorization.findUnique({
+      authorization = await client.organizationRealDataAuthorization.findUnique({
         where: { organizationId },
         include: { organization: { select: { isActive: true, customerStatus: true } } },
       });
@@ -327,6 +344,33 @@ export class RealDataAuthorizationService {
       throw new ForbiddenException(
         codedForbidden('REAL_DATA_APPROVAL_REVISION_MISMATCH', 'Real-data authorization revision does not match.'),
       );
+    }
+    return authorization;
+  }
+
+  async assertProcessingIsolation(tx: Prisma.TransactionClient) {
+    const [setting] = await tx.$queryRaw<Array<{ isolation: string }>>`SELECT current_setting('transaction_isolation') AS "isolation"`;
+    // Advisory-lock waits do not refresh a repeatable-read snapshot. Refuse a
+    // caller transaction that could authorize from a pre-withdrawal snapshot.
+    if (setting?.isolation !== 'read committed') {
+      throw new ServiceUnavailableException({ statusCode: 503, code: 'PROCESSING_FENCE_ISOLATION_UNSUPPORTED', message: 'Processing authorization requires a fresh transaction snapshot.' });
+    }
+  }
+
+  async lockAndValidateRevision(
+    tx: Prisma.TransactionClient,
+    organizationId: string,
+    decisionId: string,
+    approvalRevision: number,
+  ) {
+    if (typeof organizationId !== 'string' || !organizationId.trim() || typeof decisionId !== 'string' || !decisionId.trim() || !Number.isSafeInteger(approvalRevision) || approvalRevision < 1) {
+      throw new ForbiddenException(codedForbidden('REAL_DATA_OPERATION_INVALID', 'Real-data operation identity is invalid.'));
+    }
+    await this.assertProcessingIsolation(tx);
+    await this.lockProcessingApproval(tx, organizationId, true);
+    const authorization = await this.assertEffectiveRealDataApproval(organizationId, approvalRevision, tx);
+    if (authorization.decisionId !== decisionId) {
+      throw new ForbiddenException(codedForbidden('REAL_DATA_APPROVAL_DECISION_MISMATCH', 'Real-data authorization decision does not match.'));
     }
     return authorization;
   }

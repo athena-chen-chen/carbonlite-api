@@ -26,6 +26,7 @@ async function bootstrap() {
   }
 
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
+  app.enableShutdownHooks();
   const requestLogger = new Logger('RequestPerformance');
 
   app.use(restoreAccessGate(recoveryAccessPolicy));

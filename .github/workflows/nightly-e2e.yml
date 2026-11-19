@@ -27,25 +27,49 @@ jobs:
           POSTGRES_PASSWORD: postgres
           POSTGRES_DB: carbonlite_ci_test
         ports:
-          - 5432:5432
+          - 55447:5432
         options: >-
           --health-cmd "pg_isready -U postgres -d carbonlite_ci_test"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
 
+      pgbouncer:
+        image: edoburu/pgbouncer@sha256:53d98b3174b0842c475b9842fb0a733b2d9f7ec9da834ec42252aa553f48c628
+        env:
+          DB_HOST: postgres
+          DB_USER: postgres
+          DB_PASSWORD: postgres
+          DB_NAME: carbonlite_ci_test
+          AUTH_TYPE: scram-sha-256
+          POOL_MODE: transaction
+          DEFAULT_POOL_SIZE: 2
+          MAX_CLIENT_CONN: 30
+          ADMIN_USERS: postgres
+        ports:
+          - 55448:5432
+
     env:
       APP_ENV: test
-      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/carbonlite_ci_test
+      DATABASE_URL: postgresql://postgres:postgres@localhost:55447/carbonlite_ci_test
+      CONTROL_POOL_PGBOUNCER_TEST_URL: postgresql://postgres:postgres@localhost:55448/carbonlite_ci_test
+      CONTROL_POOL_TEST_POOLER_HOST: pgbouncer
       FRONTEND_URL: http://127.0.0.1:4173
       JWT_SECRET: carbonlite-nightly-ci-only
       NODE_ENV: test
+      # Disposable PostgreSQL fixtures only; application defaults remain fail-closed.
+      PUBLIC_REGISTRATION_ENABLED: 'true'
+      REAL_DATA_EVIDENCE_HMAC_ACTIVE_VERSION: ci-v1
+      # Public deterministic test material: CARBONLITE_DISPOSABLE_CI_ONLY_KEY_V1.
+      REAL_DATA_EVIDENCE_HMAC_ADDITIONAL_KEYS: '{"ci-v1":"base64:Q0FSQk9OTElURV9ESVNQT1NBQkxFX0NJX09OTFlfS0VZX1Yx"}'
       # Deterministic tests mock the provider; this only permits module initialization.
       OPENAI_API_KEY: ci-mocked-not-a-real-key
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up pnpm
         uses: pnpm/action-setup@v4
@@ -74,13 +98,20 @@ jobs:
       - name: Run backend unit tests
         run: pnpm test:unit
 
+      - name: Build production application
+        run: pnpm build
+
+      - name: Build immutable prior artifact for local rollback validation
+        run: |
+          rollback_artifact="$(node scripts/phase-e-rollback-artifact.mjs)"
+          printf 'CARBONLITE_PHASE_E_ROLLBACK_ARTIFACT=%s\n' "$rollback_artifact" >> "$GITHUB_ENV"
+
       - name: Run full backend E2E suite
+        env:
+          CONTROL_POOL_TEST_POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
         run: pnpm test:e2e
 
       - name: Typecheck
         run: pnpm exec tsc --noEmit -p tsconfig.json
-
-      - name: Build production application
-        run: pnpm build
 
       # GitHub Actions removes the disposable PostgreSQL service with the job.

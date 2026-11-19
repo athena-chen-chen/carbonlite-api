@@ -1,3 +1,4 @@
+import { createGovernedFactor } from './helpers/governed-factor';
 import { INestApplication } from '@nestjs/common';
 import request from 'supertest';
 import { PrismaService } from '../src/prisma/prisma.service';
@@ -25,6 +26,11 @@ describe('canonical document confirmation eligibility (e2e)', () => {
       provinceState: null,
       allowDemoFactorsForCalculations: options.allowDemoFactorsForCalculations ?? false,
     } });
+    if (options.reviewedFactors === false) {
+      await createGovernedFactor(prisma, { organizationId: user.user.organizationId, isSystemDefault: true, region: 'Canada', jurisdiction: 'Canada' });
+      await createGovernedFactor(prisma, { organizationId: user.user.organizationId,
+        isSystemDefault: true, name: 'E2E-reviewed hotel stay factor', activityType: 'HOTEL', unit: 'nights', factorValue: 15, region: 'Canada', jurisdiction: 'Canada' });
+    }
     const auth = authHeader(user.accessToken);
     const rows = inputs.map((row, index) => ({ ...row, sourceRow: index + 2, sourceSheetName: 'Main', sourceReference: `source-${index}` }));
     let documentId: string;

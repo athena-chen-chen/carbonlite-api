@@ -1,3 +1,4 @@
+import { extractionOperationsFixture } from '../../test/helpers/extraction-operations-fixture';
 import * as XLSX from 'xlsx';
 import { parseSpreadsheetActivityRows } from './spreadsheet-activity-rows';
 import { DocumentExtractionService } from './document-extraction.service';
@@ -47,6 +48,7 @@ describe('Uploaded tabular workbook extraction', () => {
       null as never,
       storage as never,
       { beginExtraction: jest.fn().mockResolvedValue(null), finishExtraction: jest.fn() } as never,
+      undefined, undefined, extractionOperationsFixture(document) as never,
     );
     const result = await service.extract('org', 'document', 'actor');
     expect(openai.responses.create).not.toHaveBeenCalled();

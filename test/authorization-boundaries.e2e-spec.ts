@@ -1,3 +1,4 @@
+import { ConversionFactorsService } from '../src/conversion-factors/conversion-factors.service';
 import { assertSafeTestDatabaseTarget } from './helpers/database-safety';
 import * as XLSX from 'xlsx';
 import { INestApplication } from '@nestjs/common';
@@ -64,7 +65,7 @@ describe('platform, workspace and tenant authorization boundaries', () => {
     });
   });
   describe('checkpoint B factor usage privacy', () => {
-    it('scopes shared-version counts, calculations and history to each customer; platform sees global usage', async () => {
+    it('denies customer HTTP factor usage/history, scopes internal service reads, and permits platform global reads', async () => {
       const a = await actor(MembershipRole.OWNER);
       const b = await actor(MembershipRole.ADMIN);
       const platform = await actor(undefined, true);
@@ -83,13 +84,16 @@ describe('platform, workspace and tenant authorization boundaries', () => {
         }
         for (const [index, own] of fixtures.entries()) {
           const other = fixtures[1 - index];
-          const usage = await request(app.getHttpServer()).get(`/api/factor-versions/${version.id}/usage`).set(own.user.auth)
-            .query({ organizationId: other.user.user.organizationId, platform: 'true' }).expect(200);
+          await request(app.getHttpServer()).get(`/api/factor-versions/${version.id}/usage`).set(own.user.auth)
+            .query({ organizationId: other.user.user.organizationId, platform: 'true' }).expect(403);
+          const service = app.get(ConversionFactorsService);
+          const usage = { body: await service.getFactorVersionUsage(version.id, { organizationId: own.user.user.organizationId }) };
           expect(usage.body).toMatchObject({ activityRecordsUsingThisFactor: 1, calculations: index + 1, organizations: 1 });
           expect(usage.body.recentCalculations.map((item: any) => item.id).sort()).toEqual(own.metrics.map(row => row.id).sort());
           const serialized = JSON.stringify(usage.body);
           for (const secret of [other.user.user.organizationId, other.activity.id, ...other.metrics.map(row => row.id)]) expect(serialized).not.toContain(secret);
-          const history = await request(app.getHttpServer()).get(`/api/factors/${factor.id}/history`).set(own.user.auth).expect(200);
+          await request(app.getHttpServer()).get(`/api/factors/${factor.id}/history`).set(own.user.auth).expect(403);
+          const history = { body: await service.getFactorHistory(factor.id, { organizationId: own.user.user.organizationId }) };
           expect(history.body).toMatchObject({ total: 1, items: [expect.objectContaining({ id: own.history.id, changedBy: own.user.user.id })] });
           expect(JSON.stringify(history.body)).not.toContain(other.user.user.id);
           expect(JSON.stringify(history.body)).not.toContain(other.user.user.email);
@@ -203,9 +207,23 @@ describe('platform, workspace and tenant authorization boundaries', () => {
       await request(app.getHttpServer()).delete(`/api/reports/${f.report.id}`).set(user.auth).expect(200);
       const extracted = await request(app.getHttpServer()).post('/api/document-extraction/extract').set(user.auth).send({ documentId: f.document.id }).expect(201);
       const unwrap = (value: any) => value && typeof value === 'object' && 'value' in value ? value.value : value;
-      const activities = extracted.body.parsedActivities.map((row: any) => Object.fromEntries(Object.entries(row).map(([key, value]) => [key, unwrap(value)])));
+      // Extraction review metadata is not the confirmation DTO. Project only
+      // supported input/lineage fields; never forward arbitrary response keys.
+      const confirmationFields = ['activityType', 'recordDate', 'quantity', 'unit', 'jurisdictionCountry',
+        'jurisdictionRegion', 'sourceReference', 'sourceRow', 'sourceSheetName', 'sourceFileName'] as const;
+      const activities = extracted.body.parsedActivities.map((row: any) => Object.fromEntries(
+        confirmationFields.filter(key => row[key] !== undefined).map(key => [key, unwrap(row[key])]),
+      ));
+      const beforeRejectedConfirm = await prisma.activityData.count({ where: { organizationId: user.user.organizationId } });
+      await request(app.getHttpServer()).post('/api/document-extraction/confirm').set(user.auth)
+        .send({ documentId: f.document.id, activities: activities.map((row: any) => ({ ...row, unexpectedConfirmationField: true })) }).expect(400);
+      expect(await prisma.activityData.count({ where: { organizationId: user.user.organizationId } })).toBe(beforeRejectedConfirm);
       const confirmed = await request(app.getHttpServer()).post('/api/document-extraction/confirm').set(user.auth).send({ documentId: f.document.id, activities }).expect(201);
       expect(confirmed.body.count).toBe(1);
+      expect(await prisma.activityData.findUniqueOrThrow({ where: { id: confirmed.body.createdIds[0] } }))
+        .toMatchObject({ organizationId: user.user.organizationId, sourceDocumentId: f.document.id, documentId: f.document.id });
+      expect(await prisma.userActivityEvent.findFirst({ where: { organizationId: user.user.organizationId,
+        entityId: f.document.id, eventName: 'ACTIVITY_RECORD_IMPORTED' } })).not.toBeNull();
       const staged = await request(app.getHttpServer()).post('/api/spreadsheet-import/review-rows').set(user.auth)
         .send({ sourceType: 'EXCEL', sourceFileName: 'staged.csv', importBatchId: uniqueTestId(run), rows: [{ activityType: 'DIESEL', quantity: 10, unit: 'L', recordDate: '2026-03-07', jurisdictionCountry: 'Canada', rowId: 'row-2', sourceRow: 2, status: 'READY', issues: [] }] }).expect(201);
       expect(staged.body.sourceDocument.id).toBeTruthy();

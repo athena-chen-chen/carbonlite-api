@@ -4,6 +4,7 @@ import request from 'supertest';
 import { openai } from '../src/openai/openai.client';
 import { PrismaService } from '../src/prisma/prisma.service';
 import { createE2eApp } from './helpers/e2e-app';
+import { authorizeSyntheticDocumentExtraction } from './helpers/synthetic-ai-authorization';
 import {
   authHeader,
   cleanupTestData,
@@ -89,6 +90,7 @@ describe('Document extraction retry (e2e)', () => {
       organizationName: `${testRunId} Success Org`,
       email: `success-${testRunId}@carbonlite-e2e.test`,
     });
+    await authorizeSyntheticDocumentExtraction(app, user);
     const document = await uploadTestDocument(
       user.accessToken,
       `${testRunId}-success.csv`,
@@ -119,6 +121,7 @@ describe('Document extraction retry (e2e)', () => {
       organizationName: `${testRunId} Missing Org`,
       email: `missing-${testRunId}@carbonlite-e2e.test`,
     });
+    await authorizeSyntheticDocumentExtraction(app, user);
     const document = await uploadTestDocument(
       user.accessToken,
       `${testRunId}-missing.csv`,
@@ -149,6 +152,7 @@ describe('Document extraction retry (e2e)', () => {
       organizationName: `${testRunId} No Data Org`,
       email: `no-data-${testRunId}@carbonlite-e2e.test`,
     });
+    await authorizeSyntheticDocumentExtraction(app, user);
     const document = await uploadTestDocument(
       user.accessToken,
       `${testRunId}-no-data.csv`,
@@ -197,6 +201,7 @@ describe('Document extraction retry (e2e)', () => {
       organizationName: `${testRunId} Failure Org`,
       email: `failure-${testRunId}@carbonlite-e2e.test`,
     });
+    await authorizeSyntheticDocumentExtraction(app, user);
     const document = await uploadTestDocument(
       user.accessToken,
       `${testRunId}-failure.csv`,

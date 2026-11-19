@@ -66,9 +66,11 @@ describe('Admin pilot reviewers (e2e)', () => {
         workspaceName: `${testRunId} CarbonLite Sample Workspace`,
       },
     });
-    expect(response.body.inviteLink).toMatch(
-      /^http:\/\/localhost:5173\/set-password\?token=.+/,
-    );
+    const inviteUrl = new URL(response.body.inviteLink);
+    const expectedOrigin = new URL(process.env.FRONTEND_URL || process.env.APP_URL || 'http://localhost:5173').origin;
+    expect(inviteUrl.origin).toBe(expectedOrigin);
+    expect(inviteUrl.pathname).toBe('/set-password');
+    expect(inviteUrl.searchParams.get('token')).toBeTruthy();
     expect(response.body).not.toHaveProperty('passwordHash');
     expect(response.body).not.toHaveProperty('passwordSetupTokenHash');
 
@@ -351,9 +353,11 @@ describe('Admin pilot reviewers (e2e)', () => {
         status: 'Active',
       },
     });
-    expect(response.body.inviteLink).toMatch(
-      /^http:\/\/localhost:5173\/set-password\?token=.+/,
-    );
+    const inviteUrl = new URL(response.body.inviteLink);
+    const expectedOrigin = new URL(process.env.FRONTEND_URL || process.env.APP_URL || 'http://localhost:5173').origin;
+    expect(inviteUrl.origin).toBe(expectedOrigin);
+    expect(inviteUrl.pathname).toBe('/set-password');
+    expect(inviteUrl.searchParams.get('token')).toBeTruthy();
     expect(response.body.inviteLink).not.toBe(createResponse.body.inviteLink);
 
     const afterReviewer = await prisma.user.findUniqueOrThrow({

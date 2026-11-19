@@ -13,6 +13,12 @@ export class ExtractionWorkload {
     work: () => Promise<T>,
     enforceProcessCapacity = true,
   ): Promise<T> {
+    const release = this.reserve(key, enforceProcessCapacity);
+    try { return await work(); }
+    finally { release(); }
+  }
+
+  reserve(key: string, enforceProcessCapacity = true): () => void {
     if (this.running.has(key)) throw new ConflictException('Extraction is already running for this document. Please wait before retrying.');
     if (enforceProcessCapacity && this.running.size >= MAX_CONCURRENT_EXTRACTIONS) {
       throw new HttpException(
@@ -21,14 +27,17 @@ export class ExtractionWorkload {
       );
     }
     this.running.add(key);
-    try { return await work(); }
-    finally { this.running.delete(key); }
+    let released = false;
+    return () => { if (!released) { released = true; this.running.delete(key); } };
   }
 }
 export const extractionWorkload = new ExtractionWorkload();
 
-export async function withExtractionDeadline<T>(work: (signal: AbortSignal) => Promise<T>): Promise<T> {
+export async function withExtractionDeadline<T>(work: (signal: AbortSignal) => Promise<T>, cancellation?: AbortSignal): Promise<T> {
   const controller = new AbortController();
+  const abort = () => controller.abort();
+  cancellation?.addEventListener('abort', abort, { once: true });
+  if (cancellation?.aborted) controller.abort();
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     return await Promise.race([
@@ -41,5 +50,5 @@ export async function withExtractionDeadline<T>(work: (signal: AbortSignal) => P
         }, EXTRACTION_TIMEOUT_MS);
       }),
     ]);
-  } finally { clearTimeout(timer); }
+  } finally { clearTimeout(timer); cancellation?.removeEventListener('abort', abort); }
 }

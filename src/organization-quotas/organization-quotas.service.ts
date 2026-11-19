@@ -1,3 +1,4 @@
+import { readExtractionOperation } from '../document-extraction/extraction-operation';
 import {
   ConflictException,
   ForbiddenException,
@@ -169,86 +170,128 @@ export class OrganizationQuotasService {
     userId?: string;
     now?: Date;
   }) {
-    return this.prisma.$transaction(async (tx) => {
-      await this.lockOrganization(tx, input.organizationId);
-      const policy = await tx.organizationQuota.findUnique({
-        where: { organizationId: input.organizationId },
-        select: {
-          enabled: true,
-          maxConcurrentExtractions: true,
-          organization: {
-            select: { isActive: true, customerStatus: true },
-          },
-        },
-      });
-      if (!policy?.enabled) return null;
-      this.assertUsageAllowed(policy.organization);
+    return this.prisma.$transaction(tx => this.beginExtractionWithinTransaction(tx, input));
+  }
 
-      const now = input.now ?? new Date();
-      await tx.aIJob.updateMany({
-        where: {
-          organizationId: input.organizationId,
-          jobType: AIJobType.EXTRACT_ACTIVITY_DATA,
-          status: { in: [AIJobStatus.PENDING, AIJobStatus.RUNNING] },
-          OR: [
-            { leaseExpiresAt: null },
-            { leaseExpiresAt: { lte: now } },
-          ],
-        },
-        data: {
-          status: AIJobStatus.FAILED,
-          completedAt: now,
-          errorMessage: 'Extraction lease expired before completion.',
-        },
-      });
-
-      const alreadyRunning = await tx.aIJob.findFirst({
-        where: {
-          organizationId: input.organizationId,
-          documentId: input.documentId,
-          jobType: AIJobType.EXTRACT_ACTIVITY_DATA,
-          status: { in: [AIJobStatus.PENDING, AIJobStatus.RUNNING] },
-          leaseExpiresAt: { gt: now },
-        },
-        select: { id: true },
-      });
-      if (alreadyRunning) {
-        throw new QuotaExceededException(
-          'EXTRACTION_ALREADY_RUNNING',
-          'Extraction is already running for this document.',
-          { limit: 1 },
-          HttpStatus.CONFLICT,
-        );
+  async withExtractionAdmission<T>(organizationId: string, work: (tx: TransactionClient) => Promise<T>) {
+    return this.prisma.$transaction(async tx => {
+      // Do not hold quota/admission locks behind a long processing document lock.
+      await tx.$queryRaw`SELECT set_config('lock_timeout', '1000ms', true)`;
+      // Match deletion/quota ordering: organization advisory lock before document lock.
+      await this.lockOrganization(tx, organizationId);
+      const organization = await tx.organization.findUnique({ where: { id: organizationId }, select: { isActive: true, customerStatus: true } });
+      if (!organization) throw new NotFoundException('Organization not found.');
+      // Match normal workspace access for quota-free synthetic/demo workflows.
+      // Enabled quota policies retain their stricter ACTIVE/PILOT check below.
+      if (!organization.isActive || organization.customerStatus === 'SUSPENDED') {
+        throw new ForbiddenException('Organization access is unavailable. Please contact an administrator.');
       }
-
-      const running = await tx.aIJob.count({
-        where: {
-          organizationId: input.organizationId,
-          jobType: AIJobType.EXTRACT_ACTIVITY_DATA,
-          status: { in: [AIJobStatus.PENDING, AIJobStatus.RUNNING] },
-          leaseExpiresAt: { gt: now },
-        },
-      });
-      if (running >= policy.maxConcurrentExtractions) {
-        throw new QuotaExceededException(
-          'EXTRACTION_CONCURRENCY_EXCEEDED',
-          'Your organization already has the maximum number of extraction jobs running.',
-          { limit: policy.maxConcurrentExtractions, remaining: 0 },
-        );
+      return work(tx);
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted }).catch(error => {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2010' && error.meta?.code === '55P03') {
+        throw new ConflictException({ statusCode: 409, code: 'EXTRACTION_ADMISSION_BUSY', message: 'Extraction admission is busy. Please retry later.' });
       }
+      throw error;
+    });
+  }
 
-      return tx.aIJob.create({
-        data: {
-          organizationId: input.organizationId,
-          documentId: input.documentId,
-          createdById: input.userId ?? null,
-          jobType: AIJobType.EXTRACT_ACTIVITY_DATA,
-          status: AIJobStatus.RUNNING,
-          startedAt: now,
-          leaseExpiresAt: new Date(now.getTime() + EXTRACTION_LEASE_MS),
+  async beginExtractionWithinTransaction(
+    tx: TransactionClient,
+    input: { organizationId: string; documentId: string; userId?: string; now?: Date },
+    operation?: { id: string; metadata: Prisma.InputJsonObject },
+  ) {
+    await this.lockOrganization(tx, input.organizationId);
+    const policy = await tx.organizationQuota.findUnique({
+      where: { organizationId: input.organizationId },
+      select: {
+        enabled: true,
+        maxConcurrentExtractions: true,
+        organization: {
+          select: { isActive: true, customerStatus: true },
         },
-        select: { id: true },
-      });
+      },
+    });
+    if (!policy?.enabled && !operation) return null;
+    if (policy?.enabled) this.assertUsageAllowed(policy.organization);
+
+    const now = input.now ?? new Date();
+    let recoverableIds: string[] | undefined;
+    if (operation) {
+      const expired = await tx.aIJob.findMany({ where: { organizationId: input.organizationId, jobType: AIJobType.EXTRACT_ACTIVITY_DATA,
+        status: { in: [AIJobStatus.PENDING, AIJobStatus.RUNNING] }, OR: [{ leaseExpiresAt: null }, { leaseExpiresAt: { lte: now } }] },
+        select: { id: true, organizationId: true, documentId: true, inputJson: true } });
+      recoverableIds = expired.filter(job => {
+        try { const identity = readExtractionOperation(job.inputJson); return identity.operationId === job.id && identity.organizationId === job.organizationId && identity.documentId === job.documentId; }
+        catch { return false; } // Unknown identities require explicit recovery, not silent expiry.
+      }).map(job => job.id);
+    }
+    await tx.aIJob.updateMany({
+      where: {
+        organizationId: input.organizationId,
+        // Durable extraction must not silently retire legacy/unknown identities.
+        // Their explicit recovery path owns the required retirement evidence.
+        ...(recoverableIds ? { id: { in: recoverableIds } } : {}),
+        jobType: AIJobType.EXTRACT_ACTIVITY_DATA,
+        status: { in: [AIJobStatus.PENDING, AIJobStatus.RUNNING] },
+        OR: [
+          { leaseExpiresAt: null },
+          { leaseExpiresAt: { lte: now } },
+        ],
+      },
+      data: {
+        status: AIJobStatus.FAILED,
+        completedAt: now,
+        errorMessage: 'Extraction lease expired before completion.',
+      },
+    });
+
+    const alreadyRunning = await tx.aIJob.findFirst({
+      where: {
+        organizationId: input.organizationId,
+        documentId: input.documentId,
+        jobType: AIJobType.EXTRACT_ACTIVITY_DATA,
+        status: { in: [AIJobStatus.PENDING, AIJobStatus.RUNNING] },
+        leaseExpiresAt: { gt: now },
+      },
+      select: { id: true },
+    });
+    if (alreadyRunning) {
+      throw new QuotaExceededException(
+        'EXTRACTION_ALREADY_RUNNING',
+        'Extraction is already running for this document.',
+        { limit: 1 },
+        HttpStatus.CONFLICT,
+      );
+    }
+
+    const running = await tx.aIJob.count({
+      where: {
+        organizationId: input.organizationId,
+        jobType: AIJobType.EXTRACT_ACTIVITY_DATA,
+        status: { in: [AIJobStatus.PENDING, AIJobStatus.RUNNING] },
+        leaseExpiresAt: { gt: now },
+      },
+    });
+    if (policy?.enabled && running >= policy.maxConcurrentExtractions) {
+      throw new QuotaExceededException(
+        'EXTRACTION_CONCURRENCY_EXCEEDED',
+        'Your organization already has the maximum number of extraction jobs running.',
+        { limit: policy.maxConcurrentExtractions, remaining: 0 },
+      );
+    }
+
+    return tx.aIJob.create({
+      data: {
+        ...(operation ? { id: operation.id, inputJson: operation.metadata } : {}),
+        organizationId: input.organizationId,
+        documentId: input.documentId,
+        createdById: input.userId ?? null,
+        jobType: AIJobType.EXTRACT_ACTIVITY_DATA,
+        status: AIJobStatus.RUNNING,
+        startedAt: now,
+        leaseExpiresAt: new Date(now.getTime() + EXTRACTION_LEASE_MS),
+      },
+      select: { id: true },
     });
   }
 

@@ -14,6 +14,7 @@ import { configureHttpSecurity } from '../../src/common/security/http-security';
 export async function createE2eApp(options?: {
   globalFilters?: ExceptionFilter[];
   enableSentryDebugRoute?: boolean;
+  beforeInit?: (app: INestApplication) => void;
 }) {
   assertSafeTestDatabaseTarget();
   const moduleRef = await Test.createTestingModule({
@@ -43,7 +44,11 @@ export async function createE2eApp(options?: {
     app.useGlobalFilters(...options.globalFilters);
   }
 
+  options?.beforeInit?.(app);
   await app.init();
+  // Own one ready loopback listener for the fixture lifetime. Supertest must
+  // not repeatedly bind/close this server between requests under suite pressure.
+  await app.listen(0, '127.0.0.1');
 
   return {
     app,

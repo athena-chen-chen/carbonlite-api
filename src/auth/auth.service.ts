@@ -549,8 +549,8 @@ export class AuthService {
     return this.buildAuthResponse(updatedUser);
   }
 
-  async validateJwtPayload(payload: JwtPayload): Promise<AuthenticatedUser> {
-    const user = await this.prisma.user.findFirst({
+  async validateJwtPayload(payload: JwtPayload, client: Pick<Prisma.TransactionClient, 'user'> = this.prisma): Promise<AuthenticatedUser> {
+    const user = await client.user.findFirst({
       where: {
         id: payload.sub,
         organizationId: payload.organizationId,

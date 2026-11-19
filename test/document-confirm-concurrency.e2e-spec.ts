@@ -1,3 +1,4 @@
+import { DOCUMENT_STORAGE, DocumentStorage, documentStorageKey } from '../src/documents/document-storage';
 import { assertSafeTestDatabaseTarget } from './helpers/database-safety';
 import { INestApplication } from '@nestjs/common';
 import request from 'supertest';
@@ -67,9 +68,11 @@ describe('database-serialized document confirmation (e2e)', () => {
           rows: rows.map((row, index) => ({ ...row, rowId: `row-${index}`, status: 'READY', issues: [] })) }).expect(201);
       documentId = saved.body.sourceDocument.id;
     } else {
-      const document = await prisma.document.create({ data: { organizationId: user.user.organizationId,
-        fileName: `${testRunId}.xlsx`, fileUrl: '/test-only/not-an-upload', status: 'REVIEW_REQUIRED' } });
-      documentId = document.id;
+      const uploaded = await request(app.getHttpServer()).post('/api/documents/upload').set(auth)
+        .field('type', 'SPREADSHEET').attach('file', Buffer.from(`activityType,recordDate,quantity,unit,sourceReference\nDIESEL,2026-03-07,1,L,${uniqueTestId(testRunId)}\n`),
+          { filename: `${testRunId}.csv`, contentType: 'text/csv' }).expect(201);
+      documentId = uploaded.body.id;
+      await prisma.document.update({ where: { id: documentId }, data: { status: 'REVIEW_REQUIRED' } });
       await prisma.documentExtraction.create({ data: { organizationId: user.user.organizationId, documentId,
         status: 'REVIEW_REQUIRED', extractedJson: { activities: rows }, extractedRows: rows,
         sourceRowCount: rows.length, extractedRowCount: rows.length } });
@@ -243,12 +246,111 @@ describe('database-serialized document confirmation (e2e)', () => {
     expect((await ctx.confirm()).body.count).toBe(0);
   });
 
+  it('counts preserved activities only after an overlapping confirmation commits', async () => {
+    const ctx = await source(false, eligible);
+    const held = deferred<void>(), release = deferred<void>(), deleting = deferred<number>();
+    const original = prisma.$transaction.bind(prisma);
+    let confirmPid = 0;
+    const created: any[] = [];
+    const spy = jest.spyOn(prisma, '$transaction').mockImplementation(((callback: any, options: any) =>
+      original(async tx => {
+        const [backend] = await tx.$queryRaw<Array<{ pid: number }>>`SELECT pg_backend_pid() AS pid`;
+        const activities = new Proxy(tx.activityData, { get(target, property) {
+          if (property === 'create') return async (args: any) => {
+            const row = await target.create(args); created.push(row); return row;
+          };
+          if (property === 'findMany') return async (args: any) => {
+            const records = await target.findMany(args);
+            confirmPid = backend.pid; held.resolve(undefined); await release.promise; return records;
+          };
+          return Reflect.get(target, property);
+        } });
+        const intents = new Proxy(tx.documentDeletionIntent, { get(target, property) {
+          if (property === 'findFirst') return async (args: any) => {
+            const intent = await target.findFirst(args);
+            if (intent) deleting.resolve(backend.pid);
+            return intent;
+          };
+          return Reflect.get(target, property);
+        } });
+        return callback(new Proxy(tx, { get(target, property) {
+          if (property === 'activityData') return activities;
+          if (property === 'documentDeletionIntent') return intents;
+          return Reflect.get(target, property);
+        } }));
+      }, options)) as any);
+    const pending: Promise<any>[] = [];
+    try {
+      pending.push(ctx.confirm());
+      await deadline(held.promise, 'confirmation document lock');
+      pending.push(request(app.getHttpServer()).delete(`/api/documents/${ctx.documentId}`).set(ctx.auth).then(r => r));
+      const deletionPid = await deadline(deleting.promise, 'deletion transaction');
+      await deadline((async () => {
+        const expires = Date.now() + 5000;
+        while (Date.now() < expires) {
+          const [state] = await prisma.$queryRaw<Array<{ blocked: boolean }>>`
+            SELECT ${confirmPid}::int = ANY(pg_blocking_pids(${deletionPid}::int)) AS blocked`;
+          if (state.blocked) return;
+          await new Promise<void>(done => setImmediate(done));
+        }
+        throw new Error('Deletion did not wait on the confirmation document lock');
+      })(), 'deletion waiting for confirmation');
+      release.resolve(undefined);
+      const [confirmed, deleted] = await Promise.all(pending);
+      expect(confirmed.status).toBe(201); expect(confirmed.body.count).toBe(3);
+      expect(deleted.status).toBe(200);
+      expect(deleted.body.preservedActivityRecords).toBe(3);
+      const records = await ctx.records(); expect(records).toHaveLength(3);
+      expect(records).toEqual(created.map(row => ({ ...row, documentId: null })).sort((a, b) => a.id.localeCompare(b.id)));
+      const audits = await prisma.auditLog.findMany({ where: { entityId: deleted.body.deletionIntentId, action: 'DELETE_DOCUMENT' } });
+      expect(audits).toHaveLength(1);
+      expect(audits[0].newValue).toMatchObject({ preservedActivityRecords: 3, deletedActivityRecords: 0 });
+    } finally {
+      release.resolve(undefined); await Promise.allSettled(pending); spy.mockRestore();
+    }
+  });
+
+  it.each([
+    {}, { jurisdictionCountry: 'USA' }, { jurisdictionRegion: 'Ontario' },
+    { facilityName: 'Changed' }, { jurisdictionCountry: null, jurisdictionRegion: '', facilityName: null },
+  ])('keeps imported staging immutable on retry %j', async changes => {
+    const ctx = await source(true, eligible);
+    expect((await ctx.confirm()).body.count).toBe(3);
+    const before = await prisma.spreadsheetImportReviewRow.findMany({ where: { sourceDocumentId: ctx.documentId }, orderBy: { id: 'asc' } });
+    const canonical = await ctx.records(); const document = await prisma.document.findUnique({ where: { id: ctx.documentId } });
+    const events = await prisma.userActivityEvent.count({ where: { entityId: ctx.documentId, eventName: 'ACTIVITY_RECORD_IMPORTED' } });
+    const retry = ctx.rows.map(row => ({ ...row, ...changes })) as Row[];
+    expect((await ctx.confirm(retry)).body.count).toBe(0);
+    expect(await prisma.spreadsheetImportReviewRow.findMany({ where: { sourceDocumentId: ctx.documentId }, orderBy: { id: 'asc' } })).toEqual(before);
+    expect(await ctx.records()).toEqual(canonical);
+    expect(await prisma.document.findUnique({ where: { id: ctx.documentId } })).toEqual(document);
+    expect(await prisma.userActivityEvent.count({ where: { entityId: ctx.documentId, eventName: 'ACTIVITY_RECORD_IMPORTED' } })).toBe(events);
+    await expectSingleContribution(ctx);
+  });
+
+  it('preserves imported staging while importing new rows in a concurrent mixed retry', async () => {
+    const ctx = await source(true, eligible);
+    expect((await ctx.confirm([ctx.rows[0]])).body.count).toBe(1);
+    const before = await prisma.spreadsheetImportReviewRow.findFirstOrThrow({ where: { sourceDocumentId: ctx.documentId, sourceRow: String(ctx.rows[0].sourceRow) } });
+    const mixed = ctx.rows.map((row, index) => index ? row : { ...row, jurisdictionRegion: 'Ontario', facilityName: 'Ignored correction' });
+    expect(totalCreated((await overlap(ctx, mixed)).results)).toBe(2);
+    expect(await prisma.spreadsheetImportReviewRow.findUnique({ where: { id: before.id } })).toEqual(before);
+    await expectSingleContribution(ctx);
+  });
+
   it('preserves IDs, snapshots, provenance and totals when deleting a concurrently confirmed source', async () => {
     const ctx = await source(false, eligible);
     expect(totalCreated((await overlap(ctx, ctx.rows)).results)).toBe(3);
     const before = await ctx.records();
-    await request(app.getHttpServer()).delete(`/api/documents/${ctx.documentId}`).set(ctx.auth).expect(200)
-      .expect({ deletedDocument: true, deletedActivityRecords: 0 });
+    const storage = app.get<DocumentStorage>(DOCUMENT_STORAGE);
+    const document = await prisma.document.findUniqueOrThrow({ where: { id: ctx.documentId } });
+    expect(await storage.exists(documentStorageKey(document.fileUrl))).toBe(true);
+    const deleted = await request(app.getHttpServer()).delete(`/api/documents/${ctx.documentId}`).set(ctx.auth).expect(200);
+    expect(deleted.body).toMatchObject({ deletedDocument: true, deletedActivityRecords: 0,
+      preservedActivityRecords: 3, storageLifecycle: 'PENDING_PURGE', sourceEvidence: 'QUARANTINED' });
+    const intent = await prisma.documentDeletionIntent.findUniqueOrThrow({ where: { id: deleted.body.deletionIntentId } });
+    expect(await storage.exists(documentStorageKey(document.fileUrl))).toBe(false);
+    expect(await storage.quarantineExists(intent.quarantineKey)).toBe(true);
     expect(await prisma.document.findUnique({ where: { id: ctx.documentId } })).toBeNull();
     expect(await ctx.records()).toEqual(before.map(row => ({ ...row, documentId: null })));
     const summary = await request(app.getHttpServer()).get('/api/metrics/calculation-summary').set(ctx.auth)
