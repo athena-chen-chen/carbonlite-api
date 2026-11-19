@@ -25,6 +25,22 @@ describe('pool activation identity', () => {
   const env = { CONTROL_POOL_MODE: 'clean-rc-v1', APP_ENV: 'rc', NODE_ENV: 'production', RENDER_SERVICE_ID: CLEAN_RC_TARGET.renderServiceId,
     RENDER_GIT_BRANCH: 'release/phase2-real-data-rc', RENDER_GIT_COMMIT: manifest.releaseSha,
     DATABASE_URL: 'postgresql://fixture:fixture@127.0.0.1/carbonlite_ci_test', CONTROL_POOL_RC_MANIFEST: JSON.stringify(manifest) };
+  // Pure parser model, NOT an operator approval or usable endpoint. No client
+  // is constructed here. Actual activation still requires independently supplied
+  // deployment metadata and both live SQL identity checks.
+  const parserModel = { ...manifest, endpointHostname: 'ep-rc-parser-only-pooler.us-east-1.aws.neon.tech', approvalReference: 'CL-UNIT-MOCK-APPROVAL-0001' };
+  const parserEnvironment = { ...env, DATABASE_URL: `postgresql://carbonlite_rc_app:unused@${parserModel.endpointHostname}/carbonlite_rc?sslmode=require&sslaccept=strict`,
+    CONTROL_POOL_RC_MANIFEST: JSON.stringify(parserModel) };
+  it('parses a complete approval-shaped model without constructing or connecting a client', () => {
+    expect(prototypePoolConfiguration(parserEnvironment)).toMatchObject({ mode: 'clean-rc-v1', database: 'carbonlite_rc', role: 'carbonlite_rc_app' });
+  });
+  it.each([
+    { runtimeRole: 'wrong-role' }, { database: 'wrong-db' }, { neonProjectId: 'wrong-project' }, { neonBranchId: 'wrong-branch' },
+    { renderServiceId: 'wrong-service' }, { endpointHostname: 'different.invalid' }, { releaseSha: 'b'.repeat(40) },
+    { workPoolLimit: 5 }, { controlPoolLimit: 3 }, { approvalReference: '' }, { endpointHostname: undefined }, { unexpected: true },
+  ])('rejects mismatches against an otherwise complete parser model %#', change => {
+    expect(() => prototypePoolConfiguration({ ...parserEnvironment, CONTROL_POOL_RC_MANIFEST: JSON.stringify({ ...parserModel, ...change }) })).toThrow();
+  });
   it('never accepts a synthetic manifest for RC activation', () => { expect(() => prototypePoolConfiguration(env)).toThrow(); });
   it.each([
     { CONTROL_POOL_RC_MANIFEST: undefined }, { CONTROL_POOL_RC_MANIFEST: '{}' }, { LOCAL_CONTROL_POOL_PROTOTYPE: 'true' },

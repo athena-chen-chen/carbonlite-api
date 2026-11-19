@@ -34,8 +34,6 @@ export class ControlAdmissionService {
     const permit = new ControlPermit(() => this.active.delete(permit));
     this.active.add(permit); return permit;
   }
-  async close() {
-    this.closing = true;
-    await Promise.all([...this.active].map(permit => permit.done));
-  }
+  async whenIdle() { await Promise.all([...this.active].map(permit => permit.done)); }
+  async close() { this.closing = true; await this.whenIdle(); }
 }
