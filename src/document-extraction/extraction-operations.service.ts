@@ -7,7 +7,7 @@ import { RealDataAuthorizationService } from '../real-data-authorization/real-da
 import { AiAuthorizationService } from '../ai-authorization/ai-authorization.service';
 import { AuditLogService } from '../audit-log/audit-log.service';
 import { ActivityTrackingService } from '../activity-tracking/activity-tracking.service';
-import { ExtractionOperationMetadata, extractionProvider, invalidExtractionOperation, readExtractionOperation } from './extraction-operation';
+import { ExtractionOperationMetadata, extractionProvider, invalidExtractionOperation, readExtractionOperation, readExtractionRecovery } from './extraction-operation';
 
 @Injectable()
 export class ExtractionOperationsService {
@@ -34,15 +34,26 @@ export class ExtractionOperationsService {
           realDataDecisionId = approval.decisionId; approvalRevision = approval.approvalRevision;
         }
         const provider = extractionProvider(document.fileName);
+        if (provider && document.ingestionDataMode !== 'REAL_CUSTOMER_DATA') await this.realData.lockProcessingApproval(tx, organizationId, true);
         const authorization = provider ? await this.ai.assertProviderRequestAllowed(organizationId, provider, 'DOCUMENT_EXTRACTION', document.ingestionDataMode, tx) : null;
         const metadata: ExtractionOperationMetadata = {
-          version: 1, phase: 'ADMITTED', operationId: randomUUID(), organizationId, documentId,
+          version: 2, phase: 'ADMITTED', operationId: randomUUID(), organizationId, documentId,
           ingestionDataMode: document.ingestionDataMode, realDataDecisionId, approvalRevision,
           provider, processingScope: provider ? 'DOCUMENT_EXTRACTION' : null,
           consentVersion: authorization?.consentVersion ?? null,
+          aiGrantGeneration: authorization?.grantGeneration ?? null,
         };
         // Validate the server-built record too: there is no permissive legacy fallback.
         readExtractionOperation(metadata);
+        const priorJobs = await tx.aIJob.findMany({ where: { organizationId, documentId, jobType: 'EXTRACT_ACTIVITY_DATA', status: { in: ['PENDING', 'RUNNING'] } }, select: { id: true, inputJson: true } });
+        for (const prior of priorJobs) {
+          try {
+            const identity = readExtractionOperation(prior.inputJson);
+            if (identity.operationId !== prior.id || identity.organizationId !== organizationId || identity.documentId !== documentId) return invalidExtractionOperation();
+          } catch {
+            throw new ConflictException({ statusCode: 409, code: 'EXTRACTION_LEGACY_RECONCILIATION_REQUIRED', message: 'Previous operation identity requires explicit audited reconciliation before another attempt.', automaticRetry: false });
+          }
+        }
         const quota = await tx.organizationQuota.findUnique({ where: { organizationId }, select: { enabled: true } });
         const job = await this.quotas.beginExtractionWithinTransaction(tx, { organizationId, documentId, userId }, { id: metadata.operationId, metadata });
         if (!job) return invalidExtractionOperation();
@@ -52,7 +63,7 @@ export class ExtractionOperationsService {
           mimeType: document.mimeType, updatedAt: document.updatedAt.toISOString(),
         } } });
         release = extractionWorkload.reserve(`${organizationId}:${documentId}`);
-        const evidence = { operationId: job.id, version: metadata.version, phase: metadata.phase, ingestionDataMode: metadata.ingestionDataMode, approvalRevision, provider };
+        const evidence = { operationId: job.id, version: metadata.version, phase: metadata.phase, ingestionDataMode: metadata.ingestionDataMode, approvalRevision, provider, aiGrantGeneration: metadata.aiGrantGeneration };
         await this.audit.log({ organizationId, userId, action: 'EXTRACT_DOCUMENT_STARTED', entityType: 'Document', entityId: documentId,
           description: 'Document extraction durably admitted.', newValue: evidence }, tx);
         await this.tracking.track({ organizationId, userId, eventName: 'DOCUMENT_EXTRACT_STARTED', entityType: 'Document', entityId: documentId, metadata: evidence }, tx);
@@ -67,7 +78,7 @@ export class ExtractionOperationsService {
     await this.lockAndValidate(tx, organizationId, documentId, operationId);
     await tx.aIJob.update({ where: { id: operationId }, data: { inputJson: { ...context.metadata, phase: 'DISPATCH_ADMITTED' } } });
     await this.audit.log({ organizationId, userId, action: 'EXTRACT_PROVIDER_DISPATCH_ADMITTED', entityType: 'Document', entityId: documentId,
-      description: 'One provider attempt durably admitted.', newValue: { operationId, provider: context.metadata.provider } }, tx);
+      description: 'One provider attempt durably admitted.', newValue: { operationId, provider: context.metadata.provider, aiGrantGeneration: context.metadata.aiGrantGeneration } }, tx);
   }
 
   async finalize<T>(tx: Prisma.TransactionClient, organizationId: string, documentId: string, operationId: string, work: (tx: Prisma.TransactionClient) => Promise<T>) {
@@ -88,8 +99,8 @@ export class ExtractionOperationsService {
     await tx.$queryRaw`SELECT "id" FROM "Document" WHERE "id" = ${documentId} AND "organizationId" = ${organizationId} FOR UPDATE`;
     await tx.$queryRaw`SELECT "id" FROM "AIJob" WHERE "id" = ${operationId} AND "organizationId" = ${organizationId} FOR UPDATE`;
     const job = await tx.aIJob.findFirst({ where: { id: operationId, organizationId, jobType: 'EXTRACT_ACTIVITY_DATA' } });
-    if (!job || job.status !== 'RUNNING') return;
-    const metadata = readExtractionOperation(job.inputJson);
+    if (!job || !['PENDING', 'RUNNING'].includes(job.status)) return;
+    const metadata = readExtractionRecovery(job.inputJson);
     if (metadata.operationId !== operationId || metadata.documentId !== documentId || metadata.organizationId !== organizationId || (job.documentId !== null && job.documentId !== documentId)) return invalidExtractionOperation();
     const document = await tx.document.findFirst({ where: { id: documentId, organizationId } });
     const source = job.outputJson;
@@ -98,6 +109,26 @@ export class ExtractionOperationsService {
       source.fileUrl === document.fileUrl && source.fileName === document.fileName && source.mimeType === document.mimeType && source.updatedAt === document.updatedAt.toISOString();
     await work(tx, updateDocument);
     await tx.aIJob.update({ where: { id: operationId }, data: { status: 'FAILED', completedAt: new Date(), leaseExpiresAt: null, errorMessage: 'Extraction failed.' } });
+  }
+
+  /** Explicit maintenance recovery only: never dispatch, replay or rewrite results. */
+  async retireLegacy(tx: Prisma.TransactionClient, organizationId: string, documentId: string, operationId: string, userId?: string) {
+    if ([organizationId, documentId, operationId].some(value => typeof value !== 'string' || !value.trim() || value !== value.trim())) return invalidExtractionOperation();
+    await tx.$queryRaw`SELECT "id" FROM "Document" WHERE "id" = ${documentId} AND "organizationId" = ${organizationId} FOR UPDATE`;
+    await tx.$queryRaw`SELECT "id" FROM "AIJob" WHERE "id" = ${operationId} AND "organizationId" = ${organizationId} FOR UPDATE`;
+    const job = await tx.aIJob.findFirst({ where: { id: operationId, organizationId, documentId, jobType: 'EXTRACT_ACTIVITY_DATA' } });
+    if (!job) return invalidExtractionOperation();
+    if (!['PENDING', 'RUNNING'].includes(job.status)) return { retired: false };
+    if (readExtractionRecovery(job.inputJson).version !== 1) return invalidExtractionOperation();
+    if (job.leaseExpiresAt && job.leaseExpiresAt > new Date()) throw new ConflictException('Legacy operation lease remains active; drain and reconcile first.');
+    await this.fail(tx, organizationId, documentId, operationId, async (client, updateDocument) => {
+      if (updateDocument) await client.document.update({ where: { id: documentId }, data: { status: 'EXTRACTION_FAILED' } });
+      const metadata = { operationId, reason: 'LEGACY_GRANT_IDENTITY_UNKNOWN', providerDelivery: 'UNKNOWN', automaticReplay: false };
+      await this.audit.log({ organizationId, userId, action: 'EXTRACT_LEGACY_OPERATION_RETIRED', entityType: 'Document', entityId: documentId,
+        description: 'Expired legacy operation retired without authorizing processing or replay.', newValue: metadata }, client);
+      await this.tracking.track({ organizationId, userId, entityId: documentId, entityType: 'Document', eventName: 'DOCUMENT_EXTRACT_FAILED', metadata }, client);
+    });
+    return { retired: true };
   }
 
   async lockSource(tx: Prisma.TransactionClient, organizationId: string, documentId: string, operationId: string) {
@@ -138,7 +169,7 @@ export class ExtractionOperationsService {
     }
     if (metadata.provider) {
       const authorization = await this.ai.assertProviderRequestAllowed(organizationId, metadata.provider, 'DOCUMENT_EXTRACTION', metadata.ingestionDataMode, tx);
-      if (!authorization || authorization.consentVersion !== metadata.consentVersion) return invalidExtractionOperation();
+      if (!authorization || authorization.consentVersion !== metadata.consentVersion || authorization.grantGeneration !== metadata.aiGrantGeneration) return invalidExtractionOperation();
     }
     const fencedDocument = await tx.document.findFirst({ where: { id: documentId, organizationId }, include: { organization: { select: { isActive: true, customerStatus: true } } } });
     if (!fencedDocument || fencedDocument.ingestionDataMode !== metadata.ingestionDataMode || extractionProvider(fencedDocument.fileName) !== metadata.provider ||

@@ -8,6 +8,7 @@ import {
 function enabledAuthorization(overrides: Record<string, unknown> = {}) {
   return {
     organizationId: 'org-a',
+    grantGeneration: 1,
     status: 'ENABLED',
     consentVersion: 'consent-v1',
     provider: AI_PROVIDER_OPENAI,
@@ -29,6 +30,7 @@ function enabledAuthorization(overrides: Record<string, unknown> = {}) {
 
 function subject(record: unknown) {
   const tx = {
+    organization: { findUnique: jest.fn().mockResolvedValue({ isActive: true, customerStatus: 'ACTIVE' }) },
     organizationAiAuthorization: {
       findUnique: jest.fn().mockResolvedValue(record),
       upsert: jest.fn(),

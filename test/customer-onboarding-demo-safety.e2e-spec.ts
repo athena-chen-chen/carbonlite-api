@@ -1,3 +1,5 @@
+import { monitorEventLoopDelay } from 'node:perf_hooks';
+import type { Request, Response, NextFunction } from 'express';
 import { INestApplication } from '@nestjs/common';
 import request from 'supertest';
 import { PrismaService } from '../src/prisma/prisma.service';
@@ -16,16 +18,28 @@ import {
 } from './helpers/factories';
 
 describe('Real customer onboarding stays free of demo data (e2e)', () => {
+  const eventLoop = monitorEventLoopDelay({ resolution: 20 });
   let app: INestApplication;
   let prisma: PrismaService;
   let operatorToken: string;
   const testRunId = uniqueTestId('customer-demo-safety');
+  const timings: Array<{ method: string; route: string; status?: number; elapsedMs?: number }> = [];
   const password = 'Fictional-Test-Only!2026';
 
   beforeAll(async () => {
+    eventLoop.enable();
     process.env.PUBLIC_REGISTRATION_ENABLED = 'true';
     process.env.DEMO_RESET_ENABLED = 'true';
-    const e2e = await createE2eApp();
+    const e2e = await createE2eApp({ beforeInit: application => {
+    // Test-local diagnostics only: route templates and timing, never URL queries,
+    // credentials, setup links, request bodies or customer/provider payloads.
+      application.use((req: Request, res: Response, next: NextFunction) => {
+      const safeRoutes = new Set(['/api/auth/register', '/api/auth/login', '/api/auth/set-password', '/api/admin/pilot-reviewers', '/api/admin/customer-provisioning/paid-pilot', '/api/admin/customer-provisioning/golden-sample-cleanup', '/api/admin/demo-data/reset', '/api/metrics/summary']);
+      const started = performance.now(), entry: typeof timings[number] = { method: req.method, route: safeRoutes.has(req.path) ? req.path : 'unclassified' }; timings.push(entry);
+      res.once('finish', () => { entry.route = req.route?.path ?? 'unmatched'; entry.status = res.statusCode; entry.elapsedMs = Math.round(performance.now() - started); });
+      next();
+    });
+    } });
     app = e2e.app;
     prisma = e2e.prisma;
     const operator = await createTestUser(app, {
@@ -40,7 +54,10 @@ describe('Real customer onboarding stays free of demo data (e2e)', () => {
     operatorToken = await loginAndGetToken(app, operator.user.email, password);
   });
 
+  afterEach(() => console.info('Onboarding request stages', timings));
+
   afterAll(async () => {
+    eventLoop.disable(); console.info('Disposable suite scheduling diagnostics', { meanMs: Math.round(eventLoop.mean / 1e6), maxMs: Math.round(eventLoop.max / 1e6), p99Ms: Math.round(eventLoop.percentile(99) / 1e6), rssMiB: Math.round(process.memoryUsage().rss / 1048576) });
     await cleanupTestData(prisma, testRunId);
     await app.close();
   });

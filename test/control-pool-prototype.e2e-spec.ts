@@ -1,3 +1,4 @@
+import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { HttpException, INestApplication } from '@nestjs/common';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -19,6 +20,7 @@ import { PrismaService } from '../src/prisma/prisma.service';
 import { ControlAdmissionService } from '../src/prisma/control-admission.service';
 import { ControlDatabaseService } from '../src/prisma/control-database.service';
 import { FacilitiesService } from '../src/facilities/facilities.service';
+import { AiAuthorizationService } from '../src/ai-authorization/ai-authorization.service';
 import { RealDataAuthorizationService } from '../src/real-data-authorization/real-data-authorization.service';
 import { ExtractionOperationsService } from '../src/document-extraction/extraction-operations.service';
 import { AuditLogService } from '../src/audit-log/audit-log.service';
@@ -28,6 +30,7 @@ import { openai } from '../src/openai/openai.client';
 function barrier() { let resolve!: () => void; const promise = new Promise<void>(done => { resolve = done; }); return { promise, resolve }; }
 
 describe('local bounded Work/Control pool prototype', () => {
+  const eventLoop = monitorEventLoopDelay({ resolution: 20 });
   let app: INestApplication, work: PrismaService, control: ControlDatabaseService;
   let admin: Awaited<ReturnType<typeof createTestUser>>;
   const run = uniqueTestId('control-pool');
@@ -40,6 +43,7 @@ describe('local bounded Work/Control pool prototype', () => {
   const controlClient = () => (control as unknown as { client: PrismaService }).client;
 
   beforeAll(async () => {
+    eventLoop.enable();
     if (assertSafeTestDatabaseTarget().port !== '55447') throw new Error('Phase D disposable direct PostgreSQL fixture required on port 55447');
     process.env.LOCAL_CONTROL_POOL_PROTOTYPE = 'true'; process.env.APP_ENV = 'test'; process.env.NODE_ENV = 'test';
     process.env.REAL_DATA_AI_PROCESSING_ENABLED = 'true'; process.env.CARBONLITE_AI_CONSENT_VERSION = 'real-data-ai-v1';
@@ -49,6 +53,7 @@ describe('local bounded Work/Control pool prototype', () => {
   });
   afterEach(() => { jest.restoreAllMocks(); provider.mockReset(); });
   afterAll(async () => {
+    eventLoop.disable(); console.info('Disposable suite scheduling diagnostics', { meanMs: Math.round(eventLoop.mean / 1e6), maxMs: Math.round(eventLoop.max / 1e6), p99Ms: Math.round(eventLoop.percentile(99) / 1e6), rssMiB: Math.round(process.memoryUsage().rss / 1048576) });
     try {
       const storage = app.get<DocumentStorage>(DOCUMENT_STORAGE);
       for (const key of phaseEQuarantineKeys) if (await storage.quarantineExists(key)) await storage.purgeQuarantine(key);
@@ -300,10 +305,17 @@ describe('local bounded Work/Control pool prototype', () => {
       if (input.action === 'REAL_DATA_AUTHORIZATION_WITHDRAWN' && input.organizationId === ctx.org.id) {
         const rows = await (tx as Prisma.TransactionClient).$queryRaw<Array<{ pid: number }>>`SELECT pg_backend_pid() AS pid`; pid = rows[0].pid;
         entered.resolve(); await release.promise;
+        // A returned callback is deliberately classified UNKNOWN. Prove this
+        // known-rollback case by observing the expired transaction in the callback
+        // itself, not only in an external pg_stat_activity poll.
+        const resumed = performance.now();
+        try { await (tx as Prisma.TransactionClient).$queryRaw`SELECT 1`; }
+        catch (error) { console.info('Known rollback callback settlement', { rejected: true, resumedMs: Math.round(performance.now() - resumed), code: (error as { code?: string }).code }); throw error; }
+        throw new Error('Expired control transaction unexpectedly remained usable');
       }
       return result;
     });
-    const started = performance.now(), pending = ctx.withdraw(); await entered.promise;
+    const startedWall = Date.now(), started = performance.now(), pending = ctx.withdraw(); await entered.promise;
     try {
       // PostgreSQL state, rather than a sleep, determines when Prisma's transaction
       // has rolled back. The callback remains deliberately blocked until then.
@@ -316,6 +328,7 @@ describe('local bounded Work/Control pool prototype', () => {
       expect(ended).toBe(true);
     } finally { release.resolve(); }
     const response = await pending;
+    console.info('Control timeout response timing', { elapsedMs: Math.round(performance.now() - started), wallElapsedMs: Date.now() - startedWall, code: response.body.code });
     expect(response.status).toBe(503); expect(response.body).toMatchObject({ code: 'CONTROL_TRANSACTION_TIMEOUT', outcome: 'NOT_COMMITTED', automaticRetry: false });
     expect(performance.now() - started).toBeLessThan(6000);
     expect(await state(ctx.org.id)).toEqual(before);
@@ -849,6 +862,290 @@ describe('local bounded Work/Control pool prototype', () => {
     const current = await controlProcess('normal');
     try { expect(await state(ctx.org.id)).toEqual(before); expect(current.events.some(event => event.event === 'provider-accepted')).toBe(false); }
     finally { await current.kill(); }
+  });
+
+  const aiGrantDecision = { status: 'ENABLED', consentVersion: 'real-data-ai-v1', provider: 'OPENAI', processingScope: 'DOCUMENT_EXTRACTION',
+    authorizedDataMode: 'REAL_CUSTOMER_DATA', realDataApprovalRevision: 1, evidenceReference: 'synthetic://generation',
+    authorizedRepresentativeReference: 'synthetic-generation-operator', effectiveAt: '2026-11-01T00:00:00.000Z' };
+  const grantEndpoint = (id: string) => `/api/admin/organizations/${id}/ai-authorization`;
+  async function replaceAiGrant(id: string) {
+    await request(app.getHttpServer()).post(`${grantEndpoint(id)}/withdraw`).set(authHeader(admin.accessToken))
+      .send({ withdrawalReference: 'synthetic://generation-withdrawal' }).expect(201);
+    return request(app.getHttpServer()).put(grantEndpoint(id)).set(authHeader(admin.accessToken)).send(aiGrantDecision).expect(200);
+  }
+  it('Grant generation starts at one and binds version-two durable admission', async () => {
+    const ctx = await source('generation admission', true);
+    const authorization = await work.organizationAiAuthorization.findUniqueOrThrow({ where: { organizationId: ctx.org.id } });
+    expect(authorization).toMatchObject({ grantGeneration: 1 });
+    const admitted = await app.get(ExtractionOperationsService).admit(ctx.org.id, ctx.documentId, ctx.user.user.id); admitted.release();
+    const job = await work.aIJob.findUniqueOrThrow({ where: { id: admitted.operation.id } });
+    expect(job.inputJson).toMatchObject({ version: 2, aiGrantGeneration: 1 });
+  });
+  it('Grant generation withdrawal and identical-consent replacement cannot revive old dispatch', async () => {
+    const ctx = await source('generation old dispatch', true), operations = app.get(ExtractionOperationsService);
+    const admitted = await operations.admit(ctx.org.id, ctx.documentId, ctx.user.user.id); admitted.release();
+    const replacement = await replaceAiGrant(ctx.org.id);
+    expect(replacement.body).toMatchObject({ grantGeneration: 2, consentVersion: aiGrantDecision.consentVersion });
+    await expect(work.$transaction(tx => operations.dispatch(tx, ctx.org.id, ctx.documentId, admitted.operation.id, ctx.user.user.id))).rejects.toMatchObject({ status: 403 });
+    expect(await work.auditLog.count({ where: { entityId: ctx.documentId, action: 'EXTRACT_PROVIDER_DISPATCH_ADMITTED' } })).toBe(0);
+  });
+  it('Grant generation replacement rejects old finalization and rolls back protected writes', async () => {
+    const ctx = await source('generation old final', true), operations = app.get(ExtractionOperationsService);
+    const admitted = await operations.admit(ctx.org.id, ctx.documentId, ctx.user.user.id); admitted.release();
+    await work.$transaction(tx => operations.dispatch(tx, ctx.org.id, ctx.documentId, admitted.operation.id, ctx.user.user.id));
+    await replaceAiGrant(ctx.org.id);
+    await expect(work.$transaction(tx => operations.finalize(tx, ctx.org.id, ctx.documentId, admitted.operation.id,
+      client => client.userActivityEvent.create({ data: { organizationId: ctx.org.id, entityId: ctx.documentId, eventName: 'GENERATION_UNSAFE' } })))).rejects.toMatchObject({ status: 403 });
+    expect(await work.userActivityEvent.count({ where: { entityId: ctx.documentId, eventName: 'GENERATION_UNSAFE' } })).toBe(0);
+    await noProtectedCommit(ctx.documentId);
+  });
+  it('Grant generation replacement cannot authorize missing generation metadata', async () => {
+    const ctx = await source('generation missing', true), operations = app.get(ExtractionOperationsService);
+    const admitted = await operations.admit(ctx.org.id, ctx.documentId, ctx.user.user.id); admitted.release();
+    const job = await work.aIJob.findUniqueOrThrow({ where: { id: admitted.operation.id } });
+    const metadata = { ...(job.inputJson as Prisma.JsonObject) }; delete metadata.aiGrantGeneration;
+    await work.aIJob.update({ where: { id: job.id }, data: { inputJson: metadata } });
+    await expect(work.$transaction(tx => operations.dispatch(tx, ctx.org.id, ctx.documentId, job.id))).rejects.toMatchObject({ status: 403 });
+  });
+
+  it('Grant generation B processes while completed A results remain unchanged across repeated cycles', async () => {
+    const ctx = await source('generation cycles', true);
+    provider.mockResolvedValue({ output_text: JSON.stringify({ activities: [{ activityType: 'DIESEL', quantity: 1, unit: 'L', recordDate: '2026-03-07', jurisdictionCountry: 'Canada' }] }) });
+    expect((await ctx.extract()).status).toBe(201);
+    const firstCompletion = await work.aIJob.findFirstOrThrow({ where: { documentId: ctx.documentId } });
+    // Model a pre-upgrade completed job using an actual successful extraction.
+    // Its archived identity is never accepted for new processing or rewritten.
+    const legacyCompleted = { ...(firstCompletion.inputJson as Prisma.JsonObject), version: 1 }; delete (legacyCompleted as Prisma.JsonObject).aiGrantGeneration;
+    await work.aIJob.update({ where: { id: firstCompletion.id }, data: { inputJson: legacyCompleted } });
+    const completed = await work.aIJob.findUniqueOrThrow({ where: { id: firstCompletion.id } });
+    const snapshot = await work.documentExtraction.findUnique({ where: { documentId: ctx.documentId } });
+    expect(await work.$transaction(tx => app.get(ExtractionOperationsService).retireLegacy(tx, ctx.org.id, ctx.documentId, completed.id, admin.user.id))).toEqual({ retired: false });
+    for (const generation of [2, 3, 4]) {
+      expect((await replaceAiGrant(ctx.org.id)).body.grantGeneration).toBe(generation);
+      expect(await work.aIJob.findUnique({ where: { id: completed.id } })).toEqual(completed);
+      expect(await work.documentExtraction.findUnique({ where: { documentId: ctx.documentId } })).toEqual(snapshot);
+    }
+    expect((await ctx.extract()).status).toBe(201);
+    const jobs = await work.aIJob.findMany({ where: { documentId: ctx.documentId }, orderBy: { createdAt: 'asc' } });
+    expect(jobs).toHaveLength(2); expect(jobs[1].inputJson).toMatchObject({ version: 2, aiGrantGeneration: 4 });
+    expect(jobs.every(job => job.status === 'COMPLETED' && job.leaseExpiresAt === null)).toBe(true);
+  });
+  it('Grant generation replacement during provider work rejects the old response without replay', async () => {
+    const ctx = await source('generation provider wait', true), entered = barrier(), release = barrier();
+    provider.mockImplementation(async () => { entered.resolve(); await release.promise; return { output_text: JSON.stringify({ activities: [] }) }; });
+    const pending = ctx.extract(); await entered.promise;
+    try { await replaceAiGrant(ctx.org.id); release.resolve(); expect((await pending).status).toBe(403); }
+    finally { release.resolve(); await pending; }
+    expect(provider).toHaveBeenCalledTimes(1); await noProtectedCommit(ctx.documentId);
+    expect(await work.aIJob.findFirst({ where: { documentId: ctx.documentId } })).toMatchObject({ status: 'FAILED', leaseExpiresAt: null });
+    expect(await work.auditLog.count({ where: { entityId: ctx.documentId, action: 'EXTRACT_DOCUMENT_FAILED' } })).toBe(1);
+  });
+  it.each([
+    ['missing', undefined], ['null', null], ['zero', 0], ['negative', -1], ['text', '1'], ['fraction', 1.5], ['overflow', 2147483648],
+  ])('Grant generation rejects malformed %s metadata', async (_label, generation) => {
+    const ctx = await source('generation malformed ' + _label, true), operations = app.get(ExtractionOperationsService);
+    const admitted = await operations.admit(ctx.org.id, ctx.documentId, ctx.user.user.id); admitted.release();
+    const job = await work.aIJob.findUniqueOrThrow({ where: { id: admitted.operation.id } });
+    const data = { ...(job.inputJson as Prisma.JsonObject), aiGrantGeneration: generation };
+    if (generation === undefined) delete data.aiGrantGeneration;
+    await work.aIJob.update({ where: { id: job.id }, data: { inputJson: data as Prisma.InputJsonObject } });
+    await expect(work.$transaction(tx => operations.dispatch(tx, ctx.org.id, ctx.documentId, job.id))).rejects.toMatchObject({ status: 403 });
+    expect(provider).not.toHaveBeenCalled(); await noProtectedCommit(ctx.documentId);
+  });
+  it.each(['organizationId', 'provider', 'processingScope'] as const)('Grant generation rejects cross-context %s identity', async field => {
+    const ctx = await source('generation scope ' + field, true), other = await source('generation other ' + field, true), operations = app.get(ExtractionOperationsService);
+    const admitted = await operations.admit(ctx.org.id, ctx.documentId, ctx.user.user.id); admitted.release();
+    const job = await work.aIJob.findUniqueOrThrow({ where: { id: admitted.operation.id } });
+    const changed = field === 'organizationId' ? other.org.id : field === 'provider' ? 'OTHER_PROVIDER' : 'OTHER_SCOPE';
+    await work.aIJob.update({ where: { id: job.id }, data: { inputJson: { ...(job.inputJson as Prisma.JsonObject), [field]: changed } } });
+    await expect(work.$transaction(tx => operations.dispatch(tx, ctx.org.id, ctx.documentId, job.id))).rejects.toMatchObject({ status: 403 });
+    expect(provider).not.toHaveBeenCalled(); await noProtectedCommit(ctx.documentId);
+  });
+  it('Grant generation issuance and audit roll back together without consuming a generation', async () => {
+    const ctx = await source('generation audit rollback', true), before = await work.organizationAiAuthorization.findUniqueOrThrow({ where: { organizationId: ctx.org.id } });
+    const audit = app.get(AuditLogService), log = audit.log.bind(audit);
+    const spy = jest.spyOn(audit, 'log').mockImplementation((input, tx) => {
+      if (input.action === 'AI_AUTHORIZATION_RECORDED' && input.organizationId === ctx.org.id) throw new Error('Synthetic generation audit failure');
+      return log(input, tx);
+    });
+    try { await expect(app.get(AiAuthorizationService).recordDecision(ctx.org.id, admin.user.id, aiGrantDecision as never)).rejects.toThrow('Synthetic generation audit failure'); }
+    finally { spy.mockRestore(); }
+    expect(await work.organizationAiAuthorization.findUnique({ where: { organizationId: ctx.org.id } })).toEqual(before);
+    expect((await request(app.getHttpServer()).put(grantEndpoint(ctx.org.id)).set(authHeader(admin.accessToken)).send(aiGrantDecision).expect(200)).body.grantGeneration).toBe(2);
+  });
+  it('Grant generation concurrent issuance and withdrawal serialize without counter reuse', async () => {
+    const ctx = await source('generation concurrent', true), service = app.get(AiAuthorizationService);
+    const grants = await Promise.all([service.recordDecision(ctx.org.id, admin.user.id, aiGrantDecision as never), service.recordDecision(ctx.org.id, admin.user.id, aiGrantDecision as never)]);
+    expect(grants.map(grant => grant.grantGeneration).sort()).toEqual([2, 3]);
+    await Promise.all([service.withdraw(ctx.org.id, admin.user.id, 'synthetic://concurrent'), service.recordDecision(ctx.org.id, admin.user.id, aiGrantDecision as never)]);
+    const final = await work.organizationAiAuthorization.findUniqueOrThrow({ where: { organizationId: ctx.org.id } });
+    expect(final.grantGeneration).toBe(4); expect(['ENABLED', 'WITHDRAWN']).toContain(final.status);
+    const audits = await work.auditLog.findMany({ where: { organizationId: ctx.org.id, action: 'AI_AUTHORIZATION_RECORDED' } });
+    expect(audits.map(row => (row.newValue as Prisma.JsonObject).grantGeneration).sort()).toEqual([1, 2, 3, 4]);
+  });
+  it('Grant generation is server-owned, cannot reset through deletion, and fails closed on exhaustion', async () => {
+    const ctx = await source('generation bounds', true), before = await work.organizationAiAuthorization.findUniqueOrThrow({ where: { organizationId: ctx.org.id } });
+    await request(app.getHttpServer()).put(grantEndpoint(ctx.org.id)).set(authHeader(admin.accessToken)).send({ ...aiGrantDecision, grantGeneration: 1 }).expect(400);
+    expect(await work.organizationAiAuthorization.findUnique({ where: { organizationId: ctx.org.id } })).toEqual(before);
+    await expect(work.organizationAiAuthorization.delete({ where: { organizationId: ctx.org.id } })).rejects.toThrow();
+    await expect(work.organizationAiAuthorization.update({ where: { organizationId: ctx.org.id }, data: { grantGeneration: 0 } })).rejects.toThrow();
+    await expect(work.$executeRawUnsafe('TRUNCATE "OrganizationAiAuthorization"')).rejects.toThrow();
+    await work.organizationAiAuthorization.update({ where: { organizationId: ctx.org.id }, data: { grantGeneration: 2147483647 } });
+    const counts = await work.auditLog.count({ where: { organizationId: ctx.org.id } });
+    await request(app.getHttpServer()).put(grantEndpoint(ctx.org.id)).set(authHeader(admin.accessToken)).send(aiGrantDecision).expect(409)
+      .expect(({ body }) => expect(body.code).toBe('AI_GRANT_GENERATION_EXHAUSTED'));
+    expect((await work.organizationAiAuthorization.findUniqueOrThrow({ where: { organizationId: ctx.org.id } })).grantGeneration).toBe(2147483647);
+    expect(await work.auditLog.count({ where: { organizationId: ctx.org.id } })).toBe(counts);
+  });
+  it('Grant generation remains independent of real-data decisions and rejects expired leases', async () => {
+    const ctx = await source('generation independent', true), operations = app.get(ExtractionOperationsService);
+    const realBefore = await work.organizationRealDataAuthorization.findUniqueOrThrow({ where: { organizationId: ctx.org.id } });
+    const admitted = await operations.admit(ctx.org.id, ctx.documentId, ctx.user.user.id); admitted.release();
+    await replaceAiGrant(ctx.org.id);
+    expect(await work.organizationRealDataAuthorization.findUnique({ where: { organizationId: ctx.org.id } })).toEqual(realBefore);
+    await work.aIJob.update({ where: { id: admitted.operation.id }, data: { leaseExpiresAt: new Date(Date.now() - 1) } });
+    await expect(work.$transaction(tx => operations.dispatch(tx, ctx.org.id, ctx.documentId, admitted.operation.id))).rejects.toMatchObject({ status: 409 });
+    expect((await ctx.withdraw()).status).toBe(201); const realAfter = await ctx.approve();
+    expect(realAfter.approvalRevision).toBe(realBefore.approvalRevision + 1);
+    expect((await work.organizationAiAuthorization.findUniqueOrThrow({ where: { organizationId: ctx.org.id } })).grantGeneration).toBe(2);
+    expect((await work.organizationAiAuthorization.findUniqueOrThrow({ where: { organizationId: ctx.org.id } })).status).toBe('WITHDRAWN');
+    const newGrant = await request(app.getHttpServer()).put(grantEndpoint(ctx.org.id)).set(authHeader(admin.accessToken)).send({ ...aiGrantDecision, realDataApprovalRevision: realAfter.approvalRevision }).expect(200);
+    expect(newGrant.body).toMatchObject({ grantGeneration: 3, realDataApprovalRevision: 2 });
+  });
+  it.each(['PENDING', 'RUNNING'] as const)('Grant generation legacy %s jobs require explicit audited retirement before retry', async legacyStatus => {
+    const ctx = await source('generation legacy operation', true), operations = app.get(ExtractionOperationsService);
+    const admitted = await operations.admit(ctx.org.id, ctx.documentId, ctx.user.user.id); admitted.release();
+    const job = await work.aIJob.findUniqueOrThrow({ where: { id: admitted.operation.id } });
+    const legacy = { ...(job.inputJson as Prisma.JsonObject), version: 1 }; delete (legacy as Prisma.JsonObject).aiGrantGeneration;
+    await work.aIJob.update({ where: { id: job.id }, data: { inputJson: legacy, status: legacyStatus } });
+    await expect(work.$transaction(tx => operations.dispatch(tx, ctx.org.id, ctx.documentId, job.id))).rejects.toMatchObject({ status: 403 });
+    await expect(work.$transaction(tx => operations.retireLegacy(tx, ctx.org.id, ctx.documentId, job.id, admin.user.id))).rejects.toMatchObject({ status: 409 });
+    await work.aIJob.update({ where: { id: job.id }, data: { leaseExpiresAt: new Date(Date.now() - 1) } });
+    const denied = await ctx.extract(); expect(denied.status).toBe(409); expect(denied.body.code).toBe('EXTRACTION_LEGACY_RECONCILIATION_REQUIRED');
+    expect((await work.aIJob.findUniqueOrThrow({ where: { id: job.id } })).status).toBe(legacyStatus);
+    const audit = app.get(AuditLogService), log = audit.log.bind(audit);
+    const spy = jest.spyOn(audit, 'log').mockImplementation((input, tx) => { if (input.action === 'EXTRACT_LEGACY_OPERATION_RETIRED') throw new Error('Synthetic retirement audit failure'); return log(input, tx); });
+    try { await expect(work.$transaction(tx => operations.retireLegacy(tx, ctx.org.id, ctx.documentId, job.id, admin.user.id))).rejects.toThrow('Synthetic retirement audit failure'); }
+    finally { spy.mockRestore(); }
+    expect((await work.aIJob.findUniqueOrThrow({ where: { id: job.id } })).status).toBe(legacyStatus);
+    expect(await work.$transaction(tx => operations.retireLegacy(tx, ctx.org.id, ctx.documentId, job.id, admin.user.id))).toEqual({ retired: true });
+    expect(await work.aIJob.findUnique({ where: { id: job.id } })).toMatchObject({ status: 'FAILED', leaseExpiresAt: null, inputJson: legacy });
+    expect(await work.auditLog.count({ where: { entityId: ctx.documentId, action: 'EXTRACT_LEGACY_OPERATION_RETIRED' } })).toBe(1);
+    expect(await work.$transaction(tx => operations.retireLegacy(tx, ctx.org.id, ctx.documentId, job.id, admin.user.id))).toEqual({ retired: false });
+    await noProtectedCommit(ctx.documentId); expect(provider).not.toHaveBeenCalled();
+  });
+  it('Grant generation zero is ineffective until explicit reissuance and local extraction has null generation', async () => {
+    const ctx = await customer('generation zero');
+    await work.organizationAiAuthorization.create({ data: { ...aiGrantDecision, organizationId: ctx.org.id, status: 'ENABLED', authorizedDataMode: 'REAL_CUSTOMER_DATA',
+      verifiedById: admin.user.id, verifiedAt: new Date(), effectiveAt: new Date(aiGrantDecision.effectiveAt) } });
+    await expect(app.get(AiAuthorizationService).assertProviderRequestAllowed(ctx.org.id, 'OPENAI', 'DOCUMENT_EXTRACTION', 'REAL_CUSTOMER_DATA')).rejects.toMatchObject({ status: 403 });
+    expect((await request(app.getHttpServer()).put(grantEndpoint(ctx.org.id)).set(authHeader(admin.accessToken)).send(aiGrantDecision).expect(200)).body.grantGeneration).toBe(1);
+    const local = await source('generation local'); expect((await local.extract()).status).toBe(201);
+    expect((await work.aIJob.findFirstOrThrow({ where: { documentId: local.documentId } })).inputJson).toMatchObject({ version: 2, aiGrantGeneration: null });
+  });
+
+  it('Grant generation lost issuance acknowledgement returns UNKNOWN without another grant', async () => {
+    const ctx = await source('generation uncertain issuance', true), proxy = await postgresAckProxy();
+    const url = new URL(process.env.DATABASE_URL!); url.port = String(proxy.port);
+    const child = await controlProcess('grant-ack', { DATABASE_URL: url.toString() });
+    const pending = child.request(`admin/organizations/${ctx.org.id}/ai-authorization`, admin.accessToken, aiGrantDecision, 'PUT');
+    try {
+      await child.wait('grant-prepared'); proxy.arm(); child.child.send('release'); await proxy.lost;
+      expect(await pending).toMatchObject({ status: 503, body: { code: 'AI_GRANT_OUTCOME_UNCERTAIN', outcome: 'UNKNOWN', automaticRetry: false, reconciliationRequired: true } });
+      expect((await work.organizationAiAuthorization.findUniqueOrThrow({ where: { organizationId: ctx.org.id } })).grantGeneration).toBe(2);
+      expect(await work.auditLog.count({ where: { organizationId: ctx.org.id, action: 'AI_AUTHORIZATION_RECORDED' } })).toBe(2);
+    } finally { await child.kill(); await pending; await proxy.close(); }
+  });
+  it('Grant generation rollback reads with the actual old Prisma client but blocks all old writes', async () => {
+    const ctx = await source('generation rollback gate', true);
+    provider.mockResolvedValue({ output_text: JSON.stringify({ activities: [{ activityType: 'DIESEL', quantity: 1, unit: 'L', recordDate: '2026-03-07', jurisdictionCountry: 'Canada' }] }) });
+    expect((await ctx.extract()).status).toBe(201);
+    const completedBefore = await work.aIJob.findFirstOrThrow({ where: { documentId: ctx.documentId } });
+    const resultBefore = await work.documentExtraction.findUniqueOrThrow({ where: { documentId: ctx.documentId } });
+    await replaceAiGrant(ctx.org.id);
+    const before = await work.organizationAiAuthorization.findUniqueOrThrow({ where: { organizationId: ctx.org.id } });
+    const countsBefore = await phaseEApplicationCounts();
+    const old = await controlProcess('rollback', { CARBONLITE_TEST_BUILD_ROOT: process.env.CARBONLITE_PHASE_E_ROLLBACK_ARTIFACT! });
+    try {
+      const read = await old.request(`admin/organizations/${ctx.org.id}/ai-authorization`, admin.accessToken, undefined, 'GET');
+      expect(read.status).toBe(200); expect(read.body).not.toHaveProperty('grantGeneration');
+      expect((await old.request(`admin/organizations/${ctx.org.id}/ai-authorization`, admin.accessToken, aiGrantDecision, 'PUT')).body.code).toBe('ROLLBACK_READ_ONLY_REQUIRED');
+      expect((await old.request('document-extraction/extract', ctx.user.accessToken, { documentId: ctx.documentId })).body.code).toBe('ROLLBACK_READ_ONLY_REQUIRED');
+      expect(await work.organizationAiAuthorization.findUnique({ where: { organizationId: ctx.org.id } })).toEqual(before);
+      expect(await phaseEApplicationCounts()).toEqual(countsBefore);
+      expect(old.events.some(event => event.event === 'provider-accepted')).toBe(false);
+      expect(await work.aIJob.findUnique({ where: { id: completedBefore.id } })).toEqual(completedBefore);
+      expect(await work.documentExtraction.findUnique({ where: { documentId: ctx.documentId } })).toEqual(resultBefore);
+    } finally { await old.kill(); }
+  });
+  it('Grant generation migration preserves existing fields and assigns only unknown zero', async () => {
+    const migration = await readFile(join(process.cwd(), 'prisma/migrations/20261119000000_ai_grant_generation/migration.sql'), 'utf8');
+    const ddl = migration.replace(/^BEGIN;\n/, '').replace(/\nCOMMIT;\n?$/, '');
+    const sql = `BEGIN; CREATE SCHEMA grant_migration_fixture; SET LOCAL search_path TO grant_migration_fixture;
+      CREATE TABLE "Organization" ("id" text PRIMARY KEY);
+      CREATE TABLE "OrganizationAiAuthorization" ("organizationId" text PRIMARY KEY REFERENCES "Organization"("id") ON DELETE CASCADE, "status" text NOT NULL, "consentVersion" text NOT NULL);
+      INSERT INTO "Organization" VALUES ('synthetic-a'), ('synthetic-b');
+      INSERT INTO "OrganizationAiAuthorization" VALUES ('synthetic-a', 'ENABLED', 'synthetic-v1'), ('synthetic-b', 'WITHDRAWN', 'synthetic-v1');
+      ${ddl}
+      SELECT json_build_object('rows', count(*), 'unknown', count(*) FILTER (WHERE "grantGeneration" = 0), 'consent', count(*) FILTER (WHERE "consentVersion" = 'synthetic-v1')) FROM "OrganizationAiAuthorization";
+      ROLLBACK;`;
+    const output = await promisify(execFile)('docker', ['exec', '-i', process.env.CONTROL_POOL_TEST_POSTGRES_CONTAINER!, 'psql', '-U', 'postgres', '-d', 'carbonlite_ci_test', '-v', 'ON_ERROR_STOP=1', '-Atc', sql]);
+    const row = output.stdout.split('\n').find(line => line.startsWith('{')); expect(JSON.parse(row!)).toEqual({ rows: 2, unknown: 2, consent: 2 });
+  });
+
+  it.each(['dispatch', 'finalize'] as const)('Grant generation withdrawal alone rejects admitted %s without success or completed lease', async stage => {
+    const ctx = await source('generation withdrawn ' + stage, true), operations = app.get(ExtractionOperationsService);
+    const admitted = await operations.admit(ctx.org.id, ctx.documentId, ctx.user.user.id); admitted.release();
+    if (stage === 'finalize') await work.$transaction(tx => operations.dispatch(tx, ctx.org.id, ctx.documentId, admitted.operation.id));
+    await request(app.getHttpServer()).post(`${grantEndpoint(ctx.org.id)}/withdraw`).set(authHeader(admin.accessToken)).send({ withdrawalReference: 'synthetic://before-' + stage }).expect(201);
+    await expect(work.$transaction(tx => stage === 'dispatch' ? operations.dispatch(tx, ctx.org.id, ctx.documentId, admitted.operation.id) :
+      operations.finalize(tx, ctx.org.id, ctx.documentId, admitted.operation.id, async () => undefined))).rejects.toMatchObject({ status: 403 });
+    await noProtectedCommit(ctx.documentId); expect(provider).not.toHaveBeenCalled();
+    expect((await work.aIJob.findUniqueOrThrow({ where: { id: admitted.operation.id } })).status).toBe('RUNNING');
+    expect((await work.organizationAiAuthorization.findUniqueOrThrow({ where: { organizationId: ctx.org.id } })).grantGeneration).toBe(1);
+  });
+
+  it('Grant generation quota expiry preserves an unknown other-document operation for reconciliation', async () => {
+    const ctx = await source('generation unknown expiry', true), operations = app.get(ExtractionOperationsService);
+    const admitted = await operations.admit(ctx.org.id, ctx.documentId, ctx.user.user.id); admitted.release();
+    const job = await work.aIJob.findUniqueOrThrow({ where: { id: admitted.operation.id } });
+    const unknown = { ...(job.inputJson as Prisma.JsonObject) }; delete unknown.aiGrantGeneration;
+    await work.aIJob.update({ where: { id: job.id }, data: { inputJson: unknown, leaseExpiresAt: new Date(Date.now() - 1) } });
+    const other = await request(app.getHttpServer()).post('/api/documents/upload').set(authHeader(ctx.user.accessToken)).set('X-CarbonLite-Data-Mode', 'REAL_CUSTOMER_DATA')
+      .field('type', 'PDF').field('allowDuplicate', 'true').attach('file', Buffer.from('%PDF-1.4\n% Synthetic unknown lease\n%%EOF\n'), { filename: `${uniqueTestId(run)}.pdf`, contentType: 'application/pdf' }).expect(201);
+    provider.mockResolvedValue({ output_text: JSON.stringify({ activities: [] }) });
+    await request(app.getHttpServer()).post('/api/document-extraction/extract').set(authHeader(ctx.user.accessToken)).send({ documentId: other.body.id }).expect(201);
+    expect(await work.aIJob.findUnique({ where: { id: job.id } })).toMatchObject({ status: 'RUNNING', inputJson: unknown });
+    const denied = await ctx.extract(); expect(denied.status).toBe(409); expect(denied.body.code).toBe('EXTRACTION_LEGACY_RECONCILIATION_REQUIRED');
+    expect(provider).toHaveBeenCalledTimes(1);
+  });
+
+  it('E2E fixture owns a stable ready listener through authorized and denied requests and shutdown', async () => {
+    const fixture = await createE2eApp(), server = fixture.app.getHttpServer();
+    try {
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('Expected a ready TCP listener');
+      expect(server.listening).toBe(true); expect(address.address).toBe('127.0.0.1');
+      await request(server).get('/api/auth/me').set(authHeader(admin.accessToken)).expect(200);
+      await request(server).get('/api/auth/me').expect(401);
+      await request(server).get('/api/auth/me').set(authHeader(admin.accessToken)).expect(200);
+      expect(server.listening).toBe(true); const after = server.address();
+      if (!after || typeof after === 'string') throw new Error('Expected the original TCP listener');
+      expect(after.port).toBe(address.port);
+    } finally { await fixture.app.close(); }
+    expect(server.listening).toBe(false); expect(server.address()).toBeNull();
+  });
+
+  it('Grant generation migration failure rolls back the column and reset guards together', async () => {
+    const migration = await readFile(join(process.cwd(), 'prisma/migrations/20261119000000_ai_grant_generation/migration.sql'), 'utf8');
+    const cli = ['exec', process.env.CONTROL_POOL_TEST_POSTGRES_CONTAINER!, 'psql', '-U', 'postgres', '-d', 'carbonlite_ci_test', '-v', 'ON_ERROR_STOP=1', '-Atc'];
+    const runSql = (sql: string) => promisify(execFile)('docker', [...cli, sql]);
+    await runSql('CREATE SCHEMA grant_atomic_fixture; CREATE TABLE grant_atomic_fixture."OrganizationAiAuthorization" ("organizationId" text PRIMARY KEY);');
+    try {
+      await expect(runSql('SET search_path TO grant_atomic_fixture; ' + migration.replace('COMMIT;', 'SELECT 1/0; COMMIT;'))).rejects.toThrow();
+      const result = await runSql("SELECT count(*) FROM information_schema.columns WHERE table_schema='grant_atomic_fixture' AND column_name='grantGeneration'; SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='grant_atomic_fixture' AND p.proname='carbonlite_guard_ai_grant_generation';");
+      expect(result.stdout.trim().split('\n')).toEqual(['0', '0']);
+    } finally { await runSql('DROP SCHEMA grant_atomic_fixture CASCADE;'); }
   });
 
 });

@@ -7,6 +7,7 @@ import {
   Injectable,
   NotFoundException,
   Optional,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import { AiAuthorizedDataMode, AiAuthorizationStatus, Prisma } from '@prisma/client';
 import { AuditLogService } from '../audit-log/audit-log.service';
@@ -117,17 +118,34 @@ export class AiAuthorizationService {
       );
     }
 
-    return this.prisma.$transaction(async (tx) => {
+    let prepared = false;
+    try { return await this.prisma.$transaction(async (tx) => {
       // Same ordering point as extraction dispatch/finalization. Never acquire
       // document/job locks while holding this authorization fence.
       await this.realDataAuthorization.lockProcessingApproval(tx, organizationId, false);
+      const currentOrganization = await tx.organization.findUnique({ where: { id: organizationId }, select: { isActive: true, customerStatus: true } });
+      if (!currentOrganization || (dto.status === 'ENABLED' && (!currentOrganization.isActive || currentOrganization.customerStatus !== 'ACTIVE'))) {
+        throw new ConflictException('AI authorization requires a current active organization.');
+      }
+      if (authorizedDataMode === AiAuthorizedDataMode.REAL_CUSTOMER_DATA) {
+        await this.realDataAuthorization.assertEffectiveRealDataApproval(organizationId, realDataApprovalRevision!, tx);
+      }
       const previous = await tx.organizationAiAuthorization.findUnique({
         where: { organizationId },
       });
+      const previousGeneration = previous ? previous.grantGeneration : 0;
+      if (!Number.isInteger(previousGeneration) || previousGeneration < 0 || previousGeneration > 2147483647) {
+        throw new ServiceUnavailableException('AI grant generation is invalid.');
+      }
+      if (dto.status === 'ENABLED' && previousGeneration === 2147483647) {
+        throw new ConflictException({ statusCode: 409, code: 'AI_GRANT_GENERATION_EXHAUSTED', message: 'AI grant generation is exhausted; no grant was issued.' });
+      }
+      const grantGeneration = previousGeneration + (dto.status === 'ENABLED' ? 1 : 0);
       const authorization = await tx.organizationAiAuthorization.upsert({
         where: { organizationId },
         create: {
           organizationId,
+          grantGeneration,
           status: dto.status,
           consentVersion: dto.consentVersion.trim(),
           provider: dto.provider,
@@ -143,6 +161,7 @@ export class AiAuthorizationService {
           realDataApprovalRevision,
         },
         update: {
+          grantGeneration,
           status: dto.status,
           consentVersion: dto.consentVersion.trim(),
           provider: dto.provider,
@@ -171,6 +190,7 @@ export class AiAuthorizationService {
           description: 'Organization AI processing election recorded by a platform administrator.',
           oldValue: previous
             ? {
+                grantGeneration: previous.grantGeneration,
                 status: previous.status,
                 consentVersion: previous.consentVersion,
                 provider: previous.provider,
@@ -178,6 +198,7 @@ export class AiAuthorizationService {
               }
             : null,
           newValue: {
+            grantGeneration: authorization.grantGeneration,
             status: authorization.status,
             consentVersion: authorization.consentVersion,
             provider: authorization.provider,
@@ -193,8 +214,13 @@ export class AiAuthorizationService {
         tx,
       );
 
+      prepared = true;
       return authorization;
-    });
+    }); } catch (error) {
+      if (!prepared) throw error;
+      throw new ServiceUnavailableException({ statusCode: 503, code: 'AI_GRANT_OUTCOME_UNCERTAIN', outcome: 'UNKNOWN',
+        reconciliationRequired: true, automaticRetry: false, message: 'AI grant commit outcome is uncertain. Reconcile authoritative state before resubmission.' });
+    }
   }
 
   async withdraw(
@@ -230,12 +256,14 @@ export class AiAuthorizationService {
           entityId: organizationId,
           description: 'Organization AI processing authorization withdrawn.',
           oldValue: {
+            grantGeneration: previous.grantGeneration,
             status: previous.status,
             consentVersion: previous.consentVersion,
             provider: previous.provider,
             processingScope: previous.processingScope,
           },
           newValue: {
+            grantGeneration: authorization.grantGeneration,
             status: authorization.status,
             consentVersion: authorization.consentVersion,
             provider: authorization.provider,
@@ -334,6 +362,7 @@ export class AiAuthorizationService {
   ) {
     return Boolean(
       authorization &&
+      Number.isInteger(authorization.grantGeneration) && authorization.grantGeneration > 0 &&
       authorization.organization.isActive &&
       authorization.organization.customerStatus === 'ACTIVE' &&
       authorization.status === AiAuthorizationStatus.ENABLED &&

@@ -1,3 +1,4 @@
+import { readExtractionOperation } from '../document-extraction/extraction-operation';
 import {
   ConflictException,
   ForbiddenException,
@@ -214,9 +215,22 @@ export class OrganizationQuotasService {
     if (policy?.enabled) this.assertUsageAllowed(policy.organization);
 
     const now = input.now ?? new Date();
+    let recoverableIds: string[] | undefined;
+    if (operation) {
+      const expired = await tx.aIJob.findMany({ where: { organizationId: input.organizationId, jobType: AIJobType.EXTRACT_ACTIVITY_DATA,
+        status: { in: [AIJobStatus.PENDING, AIJobStatus.RUNNING] }, OR: [{ leaseExpiresAt: null }, { leaseExpiresAt: { lte: now } }] },
+        select: { id: true, organizationId: true, documentId: true, inputJson: true } });
+      recoverableIds = expired.filter(job => {
+        try { const identity = readExtractionOperation(job.inputJson); return identity.operationId === job.id && identity.organizationId === job.organizationId && identity.documentId === job.documentId; }
+        catch { return false; } // Unknown identities require explicit recovery, not silent expiry.
+      }).map(job => job.id);
+    }
     await tx.aIJob.updateMany({
       where: {
         organizationId: input.organizationId,
+        // Durable extraction must not silently retire legacy/unknown identities.
+        // Their explicit recovery path owns the required retirement evidence.
+        ...(recoverableIds ? { id: { in: recoverableIds } } : {}),
         jobType: AIJobType.EXTRACT_ACTIVITY_DATA,
         status: { in: [AIJobStatus.PENDING, AIJobStatus.RUNNING] },
         OR: [

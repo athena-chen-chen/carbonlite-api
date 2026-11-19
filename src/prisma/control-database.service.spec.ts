@@ -65,4 +65,15 @@ describe('control database ownership', () => {
   it('preserves legacy manually constructed unit subjects only when the gate is off', async () => {
     work.$transaction.mockResolvedValue('legacy'); expect(await runControlOperation(undefined, work as unknown as PrismaService, 'CONTROL', jest.fn())).toBe('legacy');
   });
+  it('reports UNKNOWN when the callback returned before a P2028 transaction rejection', async () => {
+    const tx = { $queryRaw: jest.fn().mockResolvedValue([]) };
+    const client = { $transaction: jest.fn(async callback => { await callback(tx); throw Object.assign(new Error('Synthetic late transaction rejection'), { code: 'P2028' }); }) };
+    await expect(enabled(client).transaction('CONTROL', async () => 'prepared')).rejects.toMatchObject({ response: { code: 'CONTROL_OUTCOME_UNCERTAIN', outcome: 'UNKNOWN', automaticRetry: false } });
+  });
+  it('reports known timeout when P2028 rejects inside the callback before completion', async () => {
+    const tx = { $queryRaw: jest.fn().mockResolvedValue([]) };
+    const client = { $transaction: jest.fn(async callback => callback(tx)) };
+    await expect(enabled(client).transaction('CONTROL', async () => { throw Object.assign(new Error('Synthetic expired transaction'), { code: 'P2028' }); })).rejects.toMatchObject({ response: { code: 'CONTROL_TRANSACTION_TIMEOUT', outcome: 'NOT_COMMITTED', automaticRetry: false } });
+  });
+
 });

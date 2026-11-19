@@ -32,6 +32,9 @@ const { DocumentExtractionService } = require(path.join(root, 'dist/document-ext
 const { AuditLogService } = require(path.join(root, 'dist/audit-log/audit-log.service.js'));
 (async () => {
   const app = await NestFactory.create(AppModule, { logger: false });
+  // Model the REQUIRED external read-only rollback gate. The prior application
+  // itself has no generation protection; this is not a safe writable fallback.
+  if (mode === 'rollback') app.use((req, res, next) => req.method === 'GET' ? next() : res.status(503).json({ code: 'ROLLBACK_READ_ONLY_REQUIRED', automaticRetry: false }));
   app.setGlobalPrefix('api'); app.useGlobalPipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true })); app.enableShutdownHooks();
   const work = app.get(PrismaService), control = mode === 'rollback' ? null : app.get(ControlDatabaseService), operations = mode === 'rollback' ? null : app.get(ExtractionOperationsService);
   if (mode === 'dispatch-before-send') {
@@ -102,6 +105,10 @@ const { AuditLogService } = require(path.join(root, 'dist/audit-log/audit-log.se
     const { RealDataAuthorizationService } = require(path.join(root, 'dist/real-data-authorization/real-data-authorization.service.js'));
     const real = app.get(RealDataAuthorizationService), lock = real.lockProcessingApproval.bind(real); let once = true;
     real.lockProcessingApproval = async (...args) => { await lock(...args); if (!args[2] && once) { once = false; await pause('control-fence-held'); } };
+  }
+  if (mode === 'grant-ack') {
+    const audit = app.get(AuditLogService), log = audit.log.bind(audit);
+    audit.log = async (input, tx) => { const result = await log(input, tx); if (input.action === 'AI_AUTHORIZATION_RECORDED') await pause('grant-prepared'); return result; };
   }
   if (mode === 'shutdown') {
     const audit = app.get(AuditLogService), log = audit.log.bind(audit), admission = app.get(ControlAdmissionService), close = admission.close.bind(admission);

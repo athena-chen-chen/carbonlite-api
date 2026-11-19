@@ -222,6 +222,7 @@ describe('DocumentExtractionService AI authorization boundary', () => {
         organizationAiAuthorization: {
           findUnique: jest.fn().mockResolvedValue({
             organizationId: 'org-a',
+            grantGeneration: 1,
             status: 'ENABLED',
             consentVersion: 'P0-AI-MATRIX-REAL-DATA-R2',
             provider: 'OPENAI',
@@ -293,6 +294,7 @@ describe('DocumentExtractionService AI authorization boundary', () => {
         organizationAiAuthorization: {
           findUnique: jest.fn().mockResolvedValue({
             organizationId: 'org-a',
+            grantGeneration: 1,
             status: 'ENABLED',
             consentVersion: 'real-data-consent-r1',
             provider: 'OPENAI',

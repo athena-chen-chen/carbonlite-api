@@ -241,8 +241,8 @@ export class RealDataAuthorizationService {
         entityType: 'OrganizationAiAuthorization',
         entityId: organizationId,
         description: 'Real-customer-data AI authorization withdrawn with real-data authorization.',
-        oldValue: { status: realDataAi.status, authorizedDataMode: realDataAi.authorizedDataMode },
-        newValue: { status: AiAuthorizationStatus.WITHDRAWN, authorizedDataMode: realDataAi.authorizedDataMode },
+        oldValue: { grantGeneration: realDataAi.grantGeneration, status: realDataAi.status, authorizedDataMode: realDataAi.authorizedDataMode },
+        newValue: { grantGeneration: realDataAi.grantGeneration, status: AiAuthorizationStatus.WITHDRAWN, authorizedDataMode: realDataAi.authorizedDataMode },
       }, tx);
     }
     await this.writeEvidence(tx, authorization);

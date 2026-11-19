@@ -954,6 +954,7 @@ model AuditLog {
 }
 
 model OrganizationAiAuthorization {
+  grantGeneration                  Int                   @default(0)
   organizationId                   String                @id
   status                           AiAuthorizationStatus @default(DISABLED)
   consentVersion                   String

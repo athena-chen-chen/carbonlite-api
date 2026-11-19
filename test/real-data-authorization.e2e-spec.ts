@@ -460,9 +460,9 @@ describe('organization real-data authorization gate', () => {
     expect(admitted.quotaEnforced).toBe(enabled);
     const job = await prisma.aIJob.findUniqueOrThrow({ where: { id: admitted.operation.id } });
     expect(job).toMatchObject({ organizationId: ctx.organization.id, documentId: ctx.documentId, status: 'RUNNING',
-      inputJson: { version: 1, phase: 'ADMITTED', operationId: job.id, organizationId: ctx.organization.id,
+      inputJson: { version: 2, phase: 'ADMITTED', operationId: job.id, organizationId: ctx.organization.id,
         documentId: ctx.documentId, ingestionDataMode: 'REAL_CUSTOMER_DATA', realDataDecisionId: approval.decisionId,
-        approvalRevision: approval.approvalRevision, provider: null, processingScope: null, consentVersion: null } });
+        approvalRevision: approval.approvalRevision, provider: null, processingScope: null, consentVersion: null, aiGrantGeneration: null } });
     expect(job.leaseExpiresAt!.getTime()).toBeGreaterThan(Date.now());
     expect(await prisma.auditLog.count({ where: { entityId: ctx.documentId, action: 'EXTRACT_DOCUMENT_STARTED' } })).toBe(1);
     expect(await prisma.userActivityEvent.count({ where: { entityId: ctx.documentId, eventName: 'DOCUMENT_EXTRACT_STARTED' } })).toBe(1);
@@ -532,7 +532,7 @@ describe('organization real-data authorization gate', () => {
 
   it.each([
     ['null', null], ['empty', {}], ['primitive', 'not-metadata'],
-    ['version', { version: 2 }], ['phase', { phase: 'PROVIDER_ADMITTED' }],
+    ['version', { version: 3 }], ['phase', { phase: 'PROVIDER_ADMITTED' }],
     ['identity', { operationId: 'copied-operation' }], ['tenant', { organizationId: 'other-tenant' }],
     ['source', { documentId: 'other-source' }], ['mode', { ingestionDataMode: 'SYNTHETIC_TEST', realDataDecisionId: null, approvalRevision: null }],
     ['revision', { approvalRevision: null }], ['provider', { provider: 'OPENAI' }],
