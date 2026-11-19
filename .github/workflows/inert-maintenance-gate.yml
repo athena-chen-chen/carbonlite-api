@@ -1,0 +1,86 @@
+name: Inert Maintenance Gate
+
+on:
+  pull_request:
+    branches: [release/phase2-real-data-rc]
+    types: [opened, synchronize, reopened]
+    paths:
+      - .github/workflows/inert-maintenance-gate.yml
+      - scripts/inert-maintenance.mjs
+      - test/inert-maintenance.test.mjs
+      - test/helpers/inert-maintenance-observer.mjs
+      - docs/compliance/inert-maintenance-gate-v0.1.md
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: inert-maintenance-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  maintenance:
+    name: Maintenance gate / Node ${{ matrix.node }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['20', '22']
+    steps:
+      - name: Check out exact PR head or dispatched ref
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: Verify source identity and syntax
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          node --version
+          node --check scripts/inert-maintenance.mjs
+          node --check test/inert-maintenance.test.mjs
+          node --check test/helpers/inert-maintenance-observer.mjs
+
+      - name: Standalone subprocess rehearsal (17 tests, zero skips)
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --test --test-reporter=tap test/inert-maintenance.test.mjs | tee "$RUNNER_TEMP/inert-maintenance.tap"
+          grep -qx '# tests 17' "$RUNNER_TEMP/inert-maintenance.tap"
+          grep -qx '# pass 17' "$RUNNER_TEMP/inert-maintenance.tap"
+          grep -qx '# fail 0' "$RUNNER_TEMP/inert-maintenance.tap"
+          grep -qx '# cancelled 0' "$RUNNER_TEMP/inert-maintenance.tap"
+          grep -qx '# skipped 0' "$RUNNER_TEMP/inert-maintenance.tap"
+
+      - name: Isolated focused lint (no application dependencies)
+        shell: bash
+        run: |
+          set -euo pipefail
+          lint_dir="$RUNNER_TEMP/inert-maintenance-lint"
+          npm install --prefix "$lint_dir" --ignore-scripts --no-audit --no-fund --package-lock=false --save-exact eslint@10.7.0 @eslint/js@10.0.1
+          cat > "$lint_dir/eslint.config.cjs" <<'CONFIG'
+          const js = require('@eslint/js');
+          module.exports = [{
+            ...js.configs.recommended,
+            languageOptions: {
+              ecmaVersion: 2022,
+              sourceType: 'module',
+              globals: {
+                process: 'readonly', console: 'readonly', Buffer: 'readonly',
+                setTimeout: 'readonly', clearTimeout: 'readonly'
+              }
+            }
+          }];
+          CONFIG
+          node "$lint_dir/node_modules/eslint/bin/eslint.js" --no-config-lookup --config "$lint_dir/eslint.config.cjs" --max-warnings 0 scripts/inert-maintenance.mjs test/inert-maintenance.test.mjs test/helpers/inert-maintenance-observer.mjs
