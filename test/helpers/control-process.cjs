@@ -73,6 +73,27 @@ const { AuditLogService } = require(path.join(root, 'dist/audit-log/audit-log.se
       return finalize(...args.slice(0, 4), async tx => { const result = await mutate(tx); await pause('before-final'); return result; });
     };
   }
+  if (mode === 'suspension-before-fence' || mode === 'suspension-after-fence') {
+    const validate = operations.lockAndValidate.bind(operations);
+    operations.lockAndValidate = async (...args) => {
+      if (mode === 'suspension-before-fence') await pause('suspension-before-fence');
+      const result = await validate(...args);
+      if (mode === 'suspension-after-fence') await pause('suspension-after-fence');
+      return result;
+    };
+  }
+  if (mode === 'suspension-audit-failure') {
+    const transaction = control.transaction.bind(control);
+    control.transaction = (label, callback, ...options) => transaction(label, tx => callback(new Proxy(tx, {
+      get(target, property) {
+        if (property !== 'auditLog') return target[property];
+        return new Proxy(target.auditLog, { get(delegate, method) {
+          if (method !== 'create') return delegate[method];
+          return input => { if (input.data.action === 'CUSTOMER_ORGANIZATION_SUSPENDED') throw new Error('Synthetic suspension audit failure'); return delegate.create(input); };
+        } });
+      },
+    })), ...options);
+  }
   if (mode === 'after-final') {
     const extraction = app.get(DocumentExtractionService), extract = extraction.extract.bind(extraction);
     extraction.extract = async (...args) => { const result = await extract(...args); await pause('after-final'); return result; };

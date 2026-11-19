@@ -353,6 +353,13 @@ export class CustomerProvisioningService {
     }
 
     return runControlOperation(this.control, this.prisma, 'CUSTOMER_SUSPENSION', async tx => {
+      // Every suspension participates in the extraction commit ordering point,
+      // including synthetic workspaces without a live real-data decision. Take
+      // the fence before organization-row locks, using this owning transaction.
+      if (!this.realDataAuthorization) {
+        throw new ServiceUnavailableException('Real-data authorization enforcement is unavailable.');
+      }
+      await this.realDataAuthorization.lockProcessingApproval(tx, command.organizationId, false);
       const organization = await tx.organization.findUnique({
         where: { id: command.organizationId },
       });

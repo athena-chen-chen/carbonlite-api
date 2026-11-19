@@ -64,7 +64,7 @@ describe('local bounded Work/Control pool prototype', () => {
     }
   });
 
-  async function customer(label: string) {
+  async function customer(label: string, approveInitial = true) {
     const user = await createTestUser(app, { organizationName: `${run} ${label}`, email: `${uniqueTestId(run)}@carbonlite-e2e.test`, factorProfile: 'reviewed' });
     const organizationId = user.user.organizationId;
     const org = await work.organization.update({ where: { id: organizationId }, data: { customerStatus: 'ACTIVE', provisionedAt: new Date() } });
@@ -82,7 +82,7 @@ describe('local bounded Work/Control pool prototype', () => {
         effectiveAt: new Date(Date.now() - 60000).toISOString() });
       expect(response.status).toBe(200); decisions.push(response.body.authorization.decisionId); return response.body.authorization;
     };
-    await approve();
+    if (approveInitial) await approve();
     const withdrawal = { ...target, confirmWithdrawal: true as const, withdrawalReason: 'SYNTHETIC_CONTROL_POOL_TEST' };
     return { user, org, target, withdrawal, approve,
       withdraw: () => request(app.getHttpServer()).post(`${endpoint}/withdraw`).set(authHeader(admin.accessToken)).send(withdrawal).then(r => r),
@@ -654,6 +654,61 @@ describe('local bounded Work/Control pool prototype', () => {
       expect(await work.organization.findUnique({ where: { id: unrelated.org.id } })).toEqual(unrelatedOrgBefore);
       expect(await work.user.findUnique({ where: { id: unrelated.user.user.id } })).toEqual(unrelatedUserBefore);
     } finally { first.child.send('release'); await first.kill(); await second.kill(); await firstRequest; }
+  });
+
+  async function syntheticSuspensionSource(history: 'absent' | 'withdrawn') {
+    const ctx = await customer('Lifecycle suspension ' + history, false);
+    if (history === 'withdrawn') { await ctx.approve(); expect((await ctx.withdraw()).status).toBe(201); }
+    const upload = await request(app.getHttpServer()).post('/api/documents/upload').set(authHeader(ctx.user.accessToken))
+      .set('X-CarbonLite-Data-Mode', 'SYNTHETIC_TEST').field('type', 'SPREADSHEET')
+      .attach('file', Buffer.from(JSON.stringify([{ activityType: 'DIESEL', quantity: 1, unit: 'L', recordDate: '2026-03-07', jurisdictionCountry: 'Canada' }])),
+        { filename: `${uniqueTestId(run)}.json`, contentType: 'application/json' }).expect(201);
+    return { ...ctx, documentId: upload.body.id, suspension: { ...ctx.target, confirmSuspend: true, suspensionReason: 'SYNTHETIC_LIFECYCLE' } };
+  }
+  const suspensionCases = (['absent', 'withdrawn'] as const).flatMap(history =>
+    (['suspension-before-fence', 'suspension-after-fence'] as const).map(checkpoint => ({ history, checkpoint })));
+  it.each(suspensionCases)('Lifecycle suspension serializes $history authorization at $checkpoint', async ({ history, checkpoint }) => {
+    const ctx = await syntheticSuspensionSource(history), before = await state(ctx.org.id);
+    const extraction = await controlProcess(checkpoint), suspension = await controlProcess('normal');
+    const pending = extraction.request('document-extraction/extract', ctx.user.accessToken, { documentId: ctx.documentId });
+    const route = 'admin/customer-provisioning/suspend';
+    try {
+      await extraction.wait(checkpoint);
+      const result = await suspension.request(route, admin.accessToken, ctx.suspension);
+      if (checkpoint === 'suspension-after-fence') {
+        expect(result.status).toBe(503);
+        expect(result.body).toMatchObject({ code: 'CONTROL_FENCE_BUSY', outcome: 'NOT_COMMITTED', automaticRetry: false });
+        expect((await work.organization.findUniqueOrThrow({ where: { id: ctx.org.id } })).customerStatus).toBe('ACTIVE');
+        expect(await work.auditLog.count({ where: { organizationId: ctx.org.id, action: 'CUSTOMER_ORGANIZATION_SUSPENDED' } })).toBe(0);
+        extraction.child.send('release'); expect((await pending).status).toBe(201);
+        expect(await work.documentExtraction.count({ where: { documentId: ctx.documentId } })).toBe(1);
+        expect((await suspension.request(route, admin.accessToken, ctx.suspension)).status).toBe(201);
+      } else {
+        expect(result.status).toBe(201);
+        extraction.child.send('release'); expect((await pending).status).toBe(403);
+        await noProtectedCommit(ctx.documentId);
+        expect(await work.auditLog.count({ where: { entityId: ctx.documentId, action: 'EXTRACT_DOCUMENT' } })).toBe(0);
+        expect(await work.userActivityEvent.count({ where: { entityId: ctx.documentId, eventName: 'DOCUMENT_EXTRACT_SUCCEEDED' } })).toBe(0);
+        expect(await work.aIJob.findFirst({ where: { documentId: ctx.documentId } })).toMatchObject({ status: 'FAILED', leaseExpiresAt: null });
+      }
+      expect((await work.organization.findUniqueOrThrow({ where: { id: ctx.org.id } })).customerStatus).toBe('SUSPENDED');
+      expect(await work.auditLog.count({ where: { organizationId: ctx.org.id, action: 'CUSTOMER_ORGANIZATION_SUSPENDED' } })).toBe(1);
+      expect((await state(ctx.org.id)).authorization).toEqual(before.authorization);
+      expect((await state(ctx.org.id)).evidence).toEqual(before.evidence);
+      expect(await work.organizationAiAuthorization.count({ where: { organizationId: ctx.org.id } })).toBe(0);
+    } finally { extraction.child.send('release'); await extraction.kill(); await suspension.kill(); await pending; }
+  });
+  it.each(['absent', 'withdrawn'] as const)('Lifecycle suspension audit rollback preserves %s authorization and organization', async history => {
+    const ctx = await syntheticSuspensionSource(history), before = await state(ctx.org.id);
+    const child = await controlProcess('suspension-audit-failure');
+    try {
+      expect((await child.request('admin/customer-provisioning/suspend', admin.accessToken, ctx.suspension)).status).toBe(500);
+      expect(await state(ctx.org.id)).toEqual(before);
+      expect((await work.organization.findUniqueOrThrow({ where: { id: ctx.org.id } })).customerStatus).toBe('ACTIVE');
+      expect(await work.auditLog.count({ where: { organizationId: ctx.org.id, action: 'CUSTOMER_ORGANIZATION_SUSPENDED' } })).toBe(0);
+      expect((await ctx.suspend()).status).toBe(201);
+      expect(await work.auditLog.count({ where: { organizationId: ctx.org.id, action: 'CUSTOMER_ORGANIZATION_SUSPENDED' } })).toBe(1);
+    } finally { await child.kill(); }
   });
 
   it('Phase E forced termination during shutdown rolls back the pending withdrawal and reconciles', async () => {
