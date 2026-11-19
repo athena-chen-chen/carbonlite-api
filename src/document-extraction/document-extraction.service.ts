@@ -202,6 +202,10 @@ export class DocumentExtractionService {
       // No database transaction spans storage, parsing, or provider RPC.
       return await this.extractWithinLimits(admission.document, userId, userEmail, admission.operation.id, attempt.signal);
     } catch (error) {
+      // A lost commit acknowledgement cannot authorize failure-state writes or
+      // provider replay. Reconcile the durable operation before another attempt.
+      if (error instanceof HttpException && typeof error.getResponse() === 'object' &&
+          (error.getResponse() as { code?: string }).code === 'EXTRACTION_OUTCOME_UNCERTAIN') throw error;
       const failure = this.extractionFailure(error);
       await this.recordExtractionFailure(admission.document, userId, failure.error, admission.operation.id);
       throw failure.error;
@@ -1494,10 +1498,22 @@ If it contains a utility bill, prefer ELECTRICITY or NATURAL_GAS.
     }
   }
 
-  private persistExtraction<T>(organizationId: string, documentId: string, operationId: string, work: (client: Prisma.TransactionClient) => Promise<T>) {
-    return this.prisma.$transaction(tx => this.operations!.finalize(tx, organizationId, documentId, operationId, work), {
-      isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted,
-    });
+  private async persistExtraction<T>(organizationId: string, documentId: string, operationId: string, work: (client: Prisma.TransactionClient) => Promise<T>) {
+    let prepared = false;
+    try {
+      return await this.prisma.$transaction(async tx => {
+        const result = await this.operations!.finalize(tx, organizationId, documentId, operationId, work);
+        prepared = true;
+        return result;
+      }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted });
+    } catch (error) {
+      if (!prepared) throw error; // Protected callback failed: the owner rolls back.
+      throw new ServiceUnavailableException({
+        statusCode: 503, code: 'EXTRACTION_OUTCOME_UNCERTAIN', outcome: 'UNKNOWN',
+        message: 'Extraction commit outcome is uncertain. Reconcile the durable operation before another attempt.',
+        reconciliationRequired: true, automaticRetry: false,
+      });
+    }
   }
 
   private async trackExtractionEvent(input: {

@@ -1,4 +1,9 @@
 import { HttpException, INestApplication } from '@nestjs/common';
+import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { Test } from '@nestjs/testing';
+import { AppModule } from '../src/app.module';
+import * as identityVerifier from '../src/prisma/pool-identity';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { postgresAckProxy } from './helpers/postgres-ack-proxy';
@@ -17,7 +22,7 @@ import { FacilitiesService } from '../src/facilities/facilities.service';
 import { RealDataAuthorizationService } from '../src/real-data-authorization/real-data-authorization.service';
 import { ExtractionOperationsService } from '../src/document-extraction/extraction-operations.service';
 import { AuditLogService } from '../src/audit-log/audit-log.service';
-import { DOCUMENT_STORAGE, DocumentStorage } from '../src/documents/document-storage';
+import { DOCUMENT_STORAGE, DocumentStorage, documentStorageKey } from '../src/documents/document-storage';
 import { openai } from '../src/openai/openai.client';
 
 function barrier() { let resolve!: () => void; const promise = new Promise<void>(done => { resolve = done; }); return { promise, resolve }; }
@@ -27,6 +32,7 @@ describe('local bounded Work/Control pool prototype', () => {
   let admin: Awaited<ReturnType<typeof createTestUser>>;
   const run = uniqueTestId('control-pool');
   const decisions: string[] = [];
+  const phaseEQuarantineKeys: string[] = [];
   const withdrawalLatencyMs: number[] = [];
   const previous = { prototype: process.env.LOCAL_CONTROL_POOL_PROTOTYPE, app: process.env.APP_ENV, node: process.env.NODE_ENV,
     ai: process.env.REAL_DATA_AI_PROCESSING_ENABLED, consent: process.env.CARBONLITE_AI_CONSENT_VERSION };
@@ -44,6 +50,8 @@ describe('local bounded Work/Control pool prototype', () => {
   afterEach(() => { jest.restoreAllMocks(); provider.mockReset(); });
   afterAll(async () => {
     try {
+      const storage = app.get<DocumentStorage>(DOCUMENT_STORAGE);
+      for (const key of phaseEQuarantineKeys) if (await storage.quarantineExists(key)) await storage.purgeQuarantine(key);
       await work.realDataAuthorizationEvidence.deleteMany({ where: { authorizationDecisionId: { in: decisions } } });
       await cleanupTestData(work, run);
     } finally {
@@ -491,6 +499,301 @@ describe('local bounded Work/Control pool prototype', () => {
       expect((await state(ctx.org.id)).authorization?.status).toBe('WITHDRAWN');
       expect(await work.auditLog.count({ where: { organizationId: ctx.org.id, action: 'REAL_DATA_AUTHORIZATION_WITHDRAWN' } })).toBe(1);
     } finally { await proxy.close(); await isolated!.onModuleDestroy(); }
+  });
+
+  async function committedExtraction(documentId: string) {
+    const job = await work.aIJob.findFirstOrThrow({ where: { documentId }, orderBy: { createdAt: 'desc' } });
+    expect(job).toMatchObject({ status: 'COMPLETED', leaseExpiresAt: null });
+    const document = await work.document.findUniqueOrThrow({ where: { id: documentId } });
+    expect(document.status).toBe('REVIEW_REQUIRED');
+    const extraction = await work.documentExtraction.findFirstOrThrow({ where: { documentId } });
+    expect(await work.auditLog.count({ where: { entityId: documentId, action: 'EXTRACT_DOCUMENT' } })).toBe(1);
+    expect(await work.userActivityEvent.count({ where: { entityId: documentId, eventName: 'DOCUMENT_EXTRACT_SUCCEEDED' } })).toBe(1);
+    expect(await work.userActivityEvent.count({ where: { entityId: documentId, eventName: 'DOCUMENT_EXTRACT_FAILED' } })).toBe(0);
+    return { job, document, extraction };
+  }
+
+  it.each([false, true])('Phase E final-result COMMIT acknowledgement loss is truthful and reconciles after restart: provider=%s', async pdf => {
+    const ctx = await source('Phase E final ack ' + pdf, pdf), proxy = await postgresAckProxy();
+    const url = new URL(process.env.DATABASE_URL!); url.port = String(proxy.port);
+    const child = await controlProcess('final-ack', { DATABASE_URL: url.toString() });
+    const pending = child.request('document-extraction/extract', ctx.user.accessToken, { documentId: ctx.documentId });
+    try {
+      await child.wait('final-ack'); proxy.arm(); child.child.send('release'); await proxy.lost;
+      const response = await pending;
+      const before = await committedExtraction(ctx.documentId);
+      expect(response.status).toBe(503);
+      expect(response.body).toMatchObject({ code: 'EXTRACTION_OUTCOME_UNCERTAIN', outcome: 'UNKNOWN', reconciliationRequired: true, automaticRetry: false });
+      await child.kill(); const restarted = await controlProcess('normal');
+      try {
+        expect(await committedExtraction(ctx.documentId)).toEqual(before);
+        expect(restarted.events.some(event => event.event === 'provider-accepted')).toBe(false);
+        expect(await work.aIJob.count({ where: { documentId: ctx.documentId } })).toBe(1);
+      } finally { await restarted.kill(); }
+    } finally { await child.kill(); await pending; await proxy.close(); }
+  });
+
+  it.each(['dispatch-before-send', 'after-provider-response'] as const)('Phase E provider boundary %s cannot publish after downtime withdrawal', async checkpoint => {
+    const ctx = await source('Phase E ' + checkpoint, true), child = await controlProcess(checkpoint);
+    const pending = child.request('document-extraction/extract', ctx.user.accessToken, { documentId: ctx.documentId });
+    try {
+      await child.wait(checkpoint === 'dispatch-before-send' ? checkpoint : 'response-before-persistence');
+      const old = await work.aIJob.findFirstOrThrow({ where: { documentId: ctx.documentId } });
+      expect(old.inputJson).toMatchObject({ phase: 'DISPATCH_ADMITTED', organizationId: ctx.org.id, approvalRevision: 1 });
+      expect(await work.auditLog.count({ where: { entityId: ctx.documentId, action: 'EXTRACT_PROVIDER_DISPATCH_ADMITTED' } })).toBe(1);
+      if (checkpoint === 'dispatch-before-send') expect(child.events.some(event => event.event === 'provider-accepted')).toBe(false);
+      else await child.wait('provider-accepted');
+      await noProtectedCommit(ctx.documentId); await child.kill(); await pending;
+      expect((await ctx.withdraw()).status).toBe(201);
+      const restarted = await controlProcess('normal');
+      try {
+        restarted.child.send({ command: 'finalize-probe', organizationId: ctx.org.id, documentId: ctx.documentId, operationId: old.id });
+        await restarted.wait('provisional-prepared');
+        expect(await restarted.wait('fence-denied')).toMatchObject({ status: 403, code: 'REAL_DATA_NOT_AUTHORIZED' });
+        expect(await work.userActivityEvent.count({ where: { entityId: ctx.documentId, eventName: 'PHASE_E_PROVISIONAL' } })).toBe(0);
+        await work.aIJob.update({ where: { id: old.id }, data: { leaseExpiresAt: new Date(Date.now() - 1000) } });
+        restarted.child.send({ command: 'finalize', organizationId: ctx.org.id, documentId: ctx.documentId, operationId: old.id });
+        expect((await restarted.wait('fence-denied')).status).toBe(409);
+        expect((await restarted.request('document-extraction/extract', ctx.user.accessToken, { documentId: ctx.documentId })).status).toBe(403);
+        expect(restarted.events.some(event => event.event === 'provider-accepted' || event.event === 'unsafe-finalization')).toBe(false);
+        await noProtectedCommit(ctx.documentId);
+        expect(await work.auditLog.count({ where: { entityId: ctx.documentId, action: 'EXTRACT_PROVIDER_DISPATCH_ADMITTED' } })).toBe(1);
+      } finally { await restarted.kill(); }
+    } finally { await child.kill(); await pending; }
+  });
+
+  it('Phase E lease expiry during downtime fences old decisions and preserves a newer result', async () => {
+    const ctx = await source('Phase E downtime lease'), oldWorker = await controlProcess('before-final');
+    const oldRequest = oldWorker.request('document-extraction/extract', ctx.user.accessToken, { documentId: ctx.documentId });
+    try {
+      await oldWorker.wait('before-final'); const old = await work.aIJob.findFirstOrThrow({ where: { documentId: ctx.documentId } });
+      await oldWorker.kill(); await oldRequest;
+      const restart = await controlProcess('normal');
+      try {
+        const beforeExpiry = await restart.request('document-extraction/extract', ctx.user.accessToken, { documentId: ctx.documentId });
+        expect(beforeExpiry.status).toBe(409); expect(await work.aIJob.count({ where: { documentId: ctx.documentId } })).toBe(1);
+      } finally { await restart.kill(); }
+      expect((await ctx.withdraw()).status).toBe(201); const newer = await ctx.approve(); expect(newer.approvalRevision).toBe(2);
+      expect(newer.decisionId).not.toBe((old.inputJson as Prisma.JsonObject).realDataDecisionId);
+      // Deterministic test-only clock transition occurs while no worker exists.
+      await work.aIJob.update({ where: { id: old.id }, data: { leaseExpiresAt: new Date(Date.now() - 1000) } });
+      const afterExpiry = await controlProcess('normal');
+      try {
+        expect((await afterExpiry.request('document-extraction/extract', ctx.user.accessToken, { documentId: ctx.documentId })).status).toBe(201);
+        const completed = await committedExtraction(ctx.documentId);
+        afterExpiry.child.send({ command: 'finalize', organizationId: ctx.org.id, documentId: ctx.documentId, operationId: old.id });
+        expect((await afterExpiry.wait('fence-denied')).status).toBe(409);
+        expect(await committedExtraction(ctx.documentId)).toEqual(completed);
+        expect((completed.job.inputJson as Prisma.JsonObject).approvalRevision).toBe(2);
+      } finally { await afterExpiry.kill(); }
+    } finally { await oldWorker.kill(); await oldRequest; }
+  });
+
+  it.each(['deletion-prepared', 'deletion-quarantined', 'deletion-committed', 'deletion-ack'] as const)('Phase E physical deletion recovers %s without losing confirmed evidence', async checkpoint => {
+    const ctx = await source('Phase E ' + checkpoint);
+    expect((await ctx.extract()).status).toBe(201);
+    await request(app.getHttpServer()).post('/api/document-extraction/confirm').set(authHeader(ctx.user.accessToken))
+      .send({ documentId: ctx.documentId, activities: [{ activityType: 'DIESEL', quantity: 1, unit: 'L', recordDate: '2026-03-07', jurisdictionCountry: 'Canada', sourceRow: 2 }] }).expect(201);
+    const before = await work.activityData.findFirstOrThrow({ where: { organizationId: ctx.org.id } });
+    expect(before.calculationSnapshot).not.toBeNull();
+    const document = await work.document.findUniqueOrThrow({ where: { id: ctx.documentId } });
+    const proxy = checkpoint === 'deletion-ack' ? await postgresAckProxy() : undefined;
+    const url = new URL(process.env.DATABASE_URL!); if (proxy) url.port = String(proxy.port);
+    const child = await controlProcess(checkpoint, { DATABASE_URL: url.toString() });
+    const pending = child.request(`documents/${ctx.documentId}`, ctx.user.accessToken, undefined, 'DELETE');
+    try {
+      await child.wait(checkpoint === 'deletion-ack' ? 'deletion-prepared' : checkpoint);
+      if (proxy) { proxy.arm(); child.child.send('release'); await proxy.lost; expect((await pending).status).not.toBe(200); }
+      const intent = await work.documentDeletionIntent.findFirstOrThrow({ where: { documentId: ctx.documentId } });
+      phaseEQuarantineKeys.push(intent.quarantineKey);
+      const committed = checkpoint === 'deletion-committed' || checkpoint === 'deletion-ack';
+      expect(intent.status).toBe(committed ? 'PENDING_PURGE' : 'PREPARED');
+      const storage = app.get<DocumentStorage>(DOCUMENT_STORAGE);
+      expect(await storage.exists(documentStorageKey(document.fileUrl))).toBe(checkpoint === 'deletion-prepared');
+      expect(await storage.quarantineExists(intent.quarantineKey)).toBe(checkpoint !== 'deletion-prepared');
+      expect(await work.document.count({ where: { id: ctx.documentId } })).toBe(committed ? 0 : 1);
+      await child.kill(); await pending;
+      const restarted = await controlProcess('normal');
+      try {
+        expect((await restarted.request(`documents/${ctx.documentId}`, ctx.user.accessToken, undefined, 'DELETE')).status).toBe(200);
+        expect(await work.document.count({ where: { id: ctx.documentId } })).toBe(0);
+        expect(await work.documentDeletionIntent.findUnique({ where: { id: intent.id } })).toMatchObject({ status: 'PENDING_PURGE' });
+        expect(await storage.quarantineExists(intent.quarantineKey)).toBe(true);
+        expect(await work.auditLog.count({ where: { entityId: intent.id, action: 'DELETE_DOCUMENT' } })).toBe(1);
+        const after = await work.activityData.findUniqueOrThrow({ where: { id: before.id } });
+        const { documentId: _oldDocument, updatedAt: _oldTime, ...oldEvidence } = before;
+        const { documentId: _newDocument, updatedAt: _newTime, ...newEvidence } = after;
+        expect(after.documentId).toBeNull(); expect(newEvidence).toEqual(oldEvidence);
+        expect(await work.documentExtraction.count({ where: { documentId: ctx.documentId } })).toBe(0);
+      } finally { await restarted.kill(); }
+    } finally { await child.kill(); await pending; await proxy?.close(); }
+  });
+
+  it.each(['withdraw', 'suspend'] as const)('Phase E two-process same-tenant control race serializes %s first', async firstKind => {
+    const ctx = await source('Phase E concurrent ' + firstKind, true), unrelated = await customer('Phase E unrelated ' + firstKind);
+    const unrelatedBefore = await work.organizationRealDataAuthorization.findUnique({ where: { organizationId: unrelated.org.id } });
+    const unrelatedOrgBefore = await work.organization.findUnique({ where: { id: unrelated.org.id } });
+    const unrelatedUserBefore = await work.user.findUnique({ where: { id: unrelated.user.user.id } });
+    const first = await controlProcess('control-' + firstKind), second = await controlProcess('normal');
+    const withdrawRoute = `admin/organizations/${ctx.org.id}/real-data-authorization/withdraw`;
+    const suspendRoute = 'admin/customer-provisioning/suspend', suspendBody = { ...ctx.target, confirmSuspend: true, suspensionReason: 'SYNTHETIC_PHASE_E' };
+    const firstRequest = first.request(firstKind === 'withdraw' ? withdrawRoute : suspendRoute, admin.accessToken, firstKind === 'withdraw' ? ctx.withdrawal : suspendBody);
+    try {
+      await first.wait('control-fence-held');
+      const rejected = await second.request(firstKind === 'withdraw' ? suspendRoute : withdrawRoute, admin.accessToken, firstKind === 'withdraw' ? suspendBody : ctx.withdrawal);
+      expect(rejected.status).toBe(503); expect(rejected.body).toMatchObject({ code: 'CONTROL_FENCE_BUSY', outcome: 'NOT_COMMITTED', automaticRetry: false });
+      first.child.send('release'); expect((await firstRequest).status).toBe(201);
+      expect((await second.request(firstKind === 'withdraw' ? suspendRoute : withdrawRoute, admin.accessToken, firstKind === 'withdraw' ? suspendBody : ctx.withdrawal)).status).toBe(201);
+      expect(await work.organization.findUnique({ where: { id: ctx.org.id } })).toMatchObject({ customerStatus: 'SUSPENDED' });
+      expect(await work.organizationRealDataAuthorization.findUnique({ where: { organizationId: ctx.org.id } })).toMatchObject({ status: 'WITHDRAWN' });
+      expect(await work.organizationAiAuthorization.findUnique({ where: { organizationId: ctx.org.id } })).toMatchObject({ status: 'WITHDRAWN' });
+      expect(await work.auditLog.count({ where: { organizationId: ctx.org.id, action: 'REAL_DATA_AUTHORIZATION_WITHDRAWN' } })).toBe(1);
+      expect(await work.auditLog.count({ where: { organizationId: ctx.org.id, action: 'CUSTOMER_ORGANIZATION_SUSPENDED' } })).toBe(1);
+      expect(await work.realDataAuthorizationEvidence.count({ where: { authorizationDecisionId: { in: (await work.organizationRealDataAuthorization.findMany({ where: { organizationId: ctx.org.id } })).map(row => row.decisionId) } } })).toBe(2);
+      expect(await work.organizationRealDataAuthorization.findUnique({ where: { organizationId: unrelated.org.id } })).toEqual(unrelatedBefore);
+      expect(await work.organization.findUnique({ where: { id: unrelated.org.id } })).toEqual(unrelatedOrgBefore);
+      expect(await work.user.findUnique({ where: { id: unrelated.user.user.id } })).toEqual(unrelatedUserBefore);
+    } finally { first.child.send('release'); await first.kill(); await second.kill(); await firstRequest; }
+  });
+
+  it('Phase E forced termination during shutdown rolls back the pending withdrawal and reconciles', async () => {
+    const ctx = await customer('Phase E forced shutdown'), before = await state(ctx.org.id), child = await controlProcess('shutdown');
+    const pending = child.request(`admin/organizations/${ctx.org.id}/real-data-authorization/withdraw`, admin.accessToken, ctx.withdrawal);
+    try {
+      await child.wait('withdrawal-prepared'); child.child.kill('SIGTERM'); await child.wait('draining'); await child.kill();
+      expect((await pending).status).toBe(0); expect(await state(ctx.org.id)).toEqual(before);
+      const restart = await controlProcess('normal');
+      try { expect((await restart.request(`admin/organizations/${ctx.org.id}/real-data-authorization/withdraw`, admin.accessToken, ctx.withdrawal)).status).toBe(201); }
+      finally { await restart.kill(); }
+      expect((await state(ctx.org.id)).authorization?.status).toBe('WITHDRAWN');
+      expect(await work.auditLog.count({ where: { organizationId: ctx.org.id, action: 'REAL_DATA_AUTHORIZATION_WITHDRAWN' } })).toBe(1);
+    } finally { await child.kill(); await pending; }
+  });
+
+  it('Phase E two-process saturated Work and Control pools recover to authenticated mutations', async () => {
+    const ctx = await customer('Phase E application saturation'), a = await controlProcess('normal'), b = await controlProcess('normal');
+    try {
+      a.child.send('hold-pools'); b.child.send('hold-pools');
+      for (let index = 0; index < 6; index++) { await a.wait('connection-held'); await b.wait('connection-held'); }
+      for (const worker of [a, b]) {
+        const result = await worker.request(`admin/organizations/${ctx.org.id}/real-data-authorization/withdraw`, admin.accessToken, ctx.withdrawal);
+        expect(result.status).toBe(503); expect(result.body.code).toBe('CONTROL_CAPACITY_UNAVAILABLE');
+      }
+      expect((await state(ctx.org.id)).authorization?.status).toBe('REAL_DATA_APPROVED');
+      a.child.send('release'); b.child.send('release'); await a.wait('pools-released'); await b.wait('pools-released');
+      expect((await a.request(`admin/organizations/${ctx.org.id}/real-data-authorization/withdraw`, admin.accessToken, ctx.withdrawal)).status).toBe(201);
+      expect((await b.request(`admin/organizations/${ctx.org.id}/real-data-authorization/withdraw`, admin.accessToken, ctx.withdrawal)).body.result).toBe('ALREADY_WITHDRAWN');
+      expect(await work.auditLog.count({ where: { organizationId: ctx.org.id, action: 'REAL_DATA_AUTHORIZATION_WITHDRAWN' } })).toBe(1);
+    } finally { a.child.send('release'); b.child.send('release'); await a.kill(); await b.kill(); }
+  });
+
+  it('Phase E repeated upstream deadlines and connection interruption recover without queued mutations', async () => {
+    const pooler = process.env.CONTROL_POOL_PGBOUNCER_TEST_URL; if (!pooler) throw new Error('Disposable pooler required'); assertSafeTestDatabaseTarget(pooler);
+    const proxy = await postgresAckProxy({ upstreamPort: 55448 }), url = new URL(pooler); url.port = String(proxy.port);
+    const one = await customer('Phase E upstream one'), two = await customer('Phase E upstream two');
+    const a = await controlProcess('normal', { DATABASE_URL: url.toString() }), b = await controlProcess('normal', { DATABASE_URL: url.toString() });
+    const holder = new PrismaClient(prototypePoolOptions('work', { ...process.env, DATABASE_URL: pooler }));
+    const route = (id: string) => `admin/organizations/${id}/real-data-authorization/withdraw`;
+    try {
+      for (let cycle = 0; cycle < 2; cycle++) {
+        const entered = [barrier(), barrier()], release = barrier();
+        const holds = entered.map(gate => holder.$transaction(async tx => { await tx.$queryRaw`SELECT 1`; gate.resolve(); await release.promise; }, { timeout: 15000 }));
+        await Promise.all(entered.map(gate => gate.promise));
+        try {
+          const results = await Promise.all([a.request(route(one.org.id), admin.accessToken, one.withdrawal), b.request(route(two.org.id), admin.accessToken, two.withdrawal)]);
+          for (const result of results) { expect(result.status).toBe(503); expect(result.body).toMatchObject({ code: 'CONTROL_OUTCOME_UNCERTAIN', outcome: 'UNKNOWN', automaticRetry: false }); }
+          expect((await a.request(route(one.org.id), admin.accessToken, one.withdrawal)).body.code).toBe('CONTROL_ADMISSION_BUSY');
+          expect((await b.request(route(two.org.id), admin.accessToken, two.withdrawal)).body.code).toBe('CONTROL_ADMISSION_BUSY');
+          expect((await state(one.org.id)).authorization?.status).toBe('REAL_DATA_APPROVED'); expect((await state(two.org.id)).authorization?.status).toBe('REAL_DATA_APPROVED');
+          if (cycle === 0) proxy.interrupt();
+        } finally { release.resolve(); await Promise.allSettled(holds); }
+        a.child.send('wait-idle'); b.child.send('wait-idle'); await a.wait('control-idle'); await b.wait('control-idle');
+      }
+      expect((await a.request(route(one.org.id), admin.accessToken, one.withdrawal)).status).toBe(201);
+      expect((await b.request(route(two.org.id), admin.accessToken, two.withdrawal)).status).toBe(201);
+      for (const ctx of [one, two]) expect(await work.auditLog.count({ where: { organizationId: ctx.org.id, action: 'REAL_DATA_AUTHORIZATION_WITHDRAWN' } })).toBe(1);
+    } finally { await a.kill(); await b.kill(); await holder.$disconnect(); await proxy.close(); }
+  });
+
+  it('Phase E observer-confirmed rollback differs from a lost COMMIT acknowledgement', async () => {
+    const ctx = await source('Phase E commit not transmitted'), proxy = await postgresAckProxy({ beforeCommit: true });
+    const url = new URL(process.env.DATABASE_URL!); url.port = String(proxy.port);
+    const child = await controlProcess('final-ack', { DATABASE_URL: url.toString() });
+    const pending = child.request('document-extraction/extract', ctx.user.accessToken, { documentId: ctx.documentId });
+    try {
+      await child.wait('final-ack'); proxy.arm(); child.child.send('release'); await proxy.lost;
+      const response = await pending; expect(response.status).toBe(503); expect(response.body.outcome).toBe('UNKNOWN');
+      await child.kill(); await noProtectedCommit(ctx.documentId);
+      expect(await work.userActivityEvent.count({ where: { entityId: ctx.documentId, eventName: 'DOCUMENT_EXTRACT_SUCCEEDED' } })).toBe(0);
+      const old = await work.aIJob.findFirstOrThrow({ where: { documentId: ctx.documentId } }); expect(old.status).toBe('RUNNING');
+      const restart = await controlProcess('normal');
+      try {
+        expect((await restart.request('document-extraction/extract', ctx.user.accessToken, { documentId: ctx.documentId })).status).toBe(409);
+        await work.aIJob.update({ where: { id: old.id }, data: { leaseExpiresAt: new Date(Date.now() - 1000) } });
+        expect((await restart.request('document-extraction/extract', ctx.user.accessToken, { documentId: ctx.documentId })).status).toBe(201);
+        await committedExtraction(ctx.documentId); expect(restart.events.some(event => event.event === 'provider-accepted')).toBe(false);
+      } finally { await restart.kill(); }
+    } finally { await child.kill(); await pending; await proxy.close(); }
+  });
+
+  async function phaseEApplicationCounts() {
+    return Promise.all([work.user.count(), work.organization.count(), work.membership.count(), work.document.count(),
+      work.activityData.count(), work.auditLog.count(), work.userActivityEvent.count(), work.aIJob.count(),
+      work.organizationRealDataAuthorization.count(), work.organizationAiAuthorization.count(), work.realDataAuthorizationEvidence.count()]);
+  }
+
+  it.each(['work', 'control'] as const)('Phase E actual SQL identity failure in %s prevents startup writes and closes constructed clients', async failingPool => {
+    const countsBefore = await phaseEApplicationCounts();
+    const verify = identityVerifier.verifyPoolIdentity; let calls = 0; const disconnects: jest.SpyInstance[] = [];
+    const workInit = PrismaService.prototype.initializeVerified, controlInit = ControlDatabaseService.prototype.initializeVerified;
+    jest.spyOn(PrismaService.prototype, 'initializeVerified').mockImplementation(function (this: PrismaService) {
+      disconnects.push(jest.spyOn(this, '$disconnect')); return workInit.call(this);
+    });
+    jest.spyOn(ControlDatabaseService.prototype, 'initializeVerified').mockImplementation(function (this: ControlDatabaseService) {
+      disconnects.push(jest.spyOn((this as unknown as { client: PrismaClient }).client, '$disconnect')); return controlInit.call(this);
+    });
+    jest.spyOn(identityVerifier, 'verifyPoolIdentity').mockImplementation(async (client, config) => {
+      ++calls; return verify(client, calls === (failingPool === 'work' ? 1 : 2) ? { ...config, role: 'synthetic_wrong_role' } : config);
+    });
+    const marker = 'PHASE_E_STARTUP_WRITE_' + failingPool;
+    const sentinel = { onModuleInit: () => work.userActivityEvent.create({ data: { organizationId: admin.user.organizationId, userId: admin.user.id, eventName: marker } }) };
+    await expect(Test.createTestingModule({ imports: [AppModule], providers: [{ provide: 'PHASE_E_SENTINEL', useValue: sentinel }] }).compile()).rejects.toThrow();
+    expect(await work.userActivityEvent.count({ where: { eventName: marker } })).toBe(0);
+    expect(await phaseEApplicationCounts()).toEqual(countsBefore);
+    expect(disconnects).toHaveLength(failingPool === 'work' ? 1 : 2);
+    for (const spy of disconnects) expect(spy).toHaveBeenCalled();
+  });
+
+  it('Phase E startup hooks cannot write until both actual identity checks finish', async () => {
+    const verify = identityVerifier.verifyPoolIdentity, entered = barrier(), release = barrier(); let calls = 0;
+    jest.spyOn(identityVerifier, 'verifyPoolIdentity').mockImplementation(async (client, config) => {
+      await verify(client, config); if (++calls === 2) { entered.resolve(); await release.promise; }
+    });
+    const marker = 'PHASE_E_STARTUP_ALLOWED';
+    const sentinel = { onModuleInit: () => work.userActivityEvent.create({ data: { organizationId: admin.user.organizationId, userId: admin.user.id, eventName: marker } }) };
+    const pending = Test.createTestingModule({ imports: [AppModule], providers: [{ provide: 'PHASE_E_SENTINEL', useValue: sentinel }] }).compile();
+    await entered.promise;
+    try { expect(await work.userActivityEvent.count({ where: { eventName: marker } })).toBe(0); }
+    finally { release.resolve(); }
+    const module = await pending, candidate = module.createNestApplication();
+    try { await candidate.init(); expect(await work.userActivityEvent.count({ where: { eventName: marker } })).toBe(1); }
+    finally { await candidate.close(); }
+  });
+
+  it('Phase E isolated prior-build rollback preserves durable withdrawal and evidence history', async () => {
+    const root = process.env.CARBONLITE_PHASE_E_ROLLBACK_ARTIFACT; if (!root) throw new Error('Verified local prior-build artifact required');
+    expect((await readFile(join(root, 'artifact-sha'), 'utf8')).trim()).toBe('0498646f5721619f91ee710a89386b4b84aaf329');
+    const ctx = await customer('Phase E prior build'); expect((await ctx.withdraw()).status).toBe(201);
+    const before = await state(ctx.org.id), countsBefore = await phaseEApplicationCounts();
+    const old = await controlProcess('rollback', { CARBONLITE_TEST_BUILD_ROOT: root });
+    try {
+      const response = await old.request(`admin/organizations/${ctx.org.id}/real-data-authorization`, admin.accessToken, undefined, 'GET');
+      expect(response.status).toBe(200); expect(response.body.status).toBe('WITHDRAWN');
+      expect(await state(ctx.org.id)).toEqual(before); expect(await phaseEApplicationCounts()).toEqual(countsBefore);
+    } finally { await old.kill(); }
+    const current = await controlProcess('normal');
+    try { expect(await state(ctx.org.id)).toEqual(before); expect(current.events.some(event => event.event === 'provider-accepted')).toBe(false); }
+    finally { await current.kill(); }
   });
 
 });

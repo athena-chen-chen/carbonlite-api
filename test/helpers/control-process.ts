@@ -1,10 +1,10 @@
 import { ChildProcess, spawn } from 'node:child_process';
 import { join } from 'node:path';
 
-type Event = { event: string; port?: number; pid?: number; status?: number };
-export async function controlProcess(mode: string) {
+type Event = { event: string; port?: number; pid?: number; status?: number; code?: string };
+export async function controlProcess(mode: string, environment: NodeJS.ProcessEnv = {}) {
   const child = spawn(process.execPath, [join(process.cwd(), 'test/helpers/control-process.cjs'), mode], {
-    cwd: process.cwd(), env: { ...process.env, APP_ENV: 'test', NODE_ENV: 'test', LOCAL_CONTROL_POOL_PROTOTYPE: 'true' },
+    cwd: process.cwd(), env: { ...process.env, ...environment, APP_ENV: 'test', NODE_ENV: 'test', LOCAL_CONTROL_POOL_PROTOTYPE: 'true' },
     stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
   });
   const events: Event[] = [], waiters = new Set<() => void>();
@@ -27,8 +27,8 @@ export async function controlProcess(mode: string) {
   try {
     const ready = await wait('ready');
     return { child: child as ChildProcess, wait, exited, kill, events,
-      request: (route: string, token: string, body: unknown) => fetch(`http://127.0.0.1:${ready.port}/api/${route}`, {
-        method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+      request: (route: string, token: string, body?: unknown, method = 'POST') => fetch(`http://127.0.0.1:${ready.port}/api/${route}`, {
+        method, headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body),
       }).then(async response => ({ status: response.status, body: await response.json() })).catch(() => ({ status: 0, body: null })) };
   } catch (error) { await kill(); throw error; }
 }

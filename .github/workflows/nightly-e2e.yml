@@ -68,6 +68,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up pnpm
         uses: pnpm/action-setup@v4
@@ -98,6 +100,11 @@ jobs:
 
       - name: Build production application
         run: pnpm build
+
+      - name: Build immutable prior artifact for local rollback validation
+        run: |
+          rollback_artifact="$(node scripts/phase-e-rollback-artifact.mjs)"
+          printf 'CARBONLITE_PHASE_E_ROLLBACK_ARTIFACT=%s\n' "$rollback_artifact" >> "$GITHUB_ENV"
 
       - name: Run full backend E2E suite
         env:
