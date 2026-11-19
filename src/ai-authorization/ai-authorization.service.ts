@@ -1,3 +1,4 @@
+import { ControlDatabaseService, runControlOperation } from '../prisma/control-database.service';
 import { cancelExtractionAttempts } from '../document-extraction/extraction-cancellation';
 import {
   BadRequestException,
@@ -5,6 +6,7 @@ import {
   ForbiddenException,
   Injectable,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import { AiAuthorizedDataMode, AiAuthorizationStatus, Prisma } from '@prisma/client';
 import { AuditLogService } from '../audit-log/audit-log.service';
@@ -37,6 +39,7 @@ export class AiAuthorizationService {
     private readonly prisma: PrismaService,
     private readonly auditLog: AuditLogService,
     private readonly realDataAuthorization: RealDataAuthorizationService,
+    @Optional() private readonly control?: ControlDatabaseService,
   ) {}
 
   getForAdmin(organizationId: string) {
@@ -199,7 +202,7 @@ export class AiAuthorizationService {
     verifiedById: string,
     withdrawalReference: string,
   ) {
-    const result = await this.prisma.$transaction(async (tx) => {
+    const result = await runControlOperation(this.control, this.prisma, 'AI_WITHDRAWAL', async (tx) => {
       // Same ordering point as extraction dispatch/finalization. Never acquire
       // document/job locks while holding this authorization fence.
       await this.realDataAuthorization.lockProcessingApproval(tx, organizationId, false);

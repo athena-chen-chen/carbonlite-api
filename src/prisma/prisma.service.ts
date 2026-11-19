@@ -1,3 +1,4 @@
+import { prototypePoolOptions } from './control-pool.configuration';
 
 
 // api/src/prisma/prisma.service.ts
@@ -18,6 +19,8 @@ export class PrismaService
   implements OnModuleInit, OnModuleDestroy
 {
   private readonly logger = new Logger(PrismaService.name);
+
+  constructor() { super(prototypePoolOptions('work')); }
 
   async onModuleInit() {
     try {

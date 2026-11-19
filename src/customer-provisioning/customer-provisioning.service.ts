@@ -1,3 +1,4 @@
+import { ControlDatabaseService, runControlOperation } from '../prisma/control-database.service';
 import {
   BadRequestException,
   ConflictException,
@@ -36,6 +37,7 @@ export class CustomerProvisioningService {
     private readonly prisma: PrismaService,
     @Optional() private readonly legalHolds?: LegalHoldsService,
     private readonly realDataAuthorization?: RealDataAuthorizationService,
+    @Optional() private readonly control?: ControlDatabaseService,
   ) {}
 
   async getCustomerPreflight(query: CustomerPreflightQueryDto) {
@@ -350,7 +352,7 @@ export class CustomerProvisioningService {
       throw new BadRequestException('Exact organization confirmation is required.');
     }
 
-    return this.prisma.$transaction(async tx => {
+    return runControlOperation(this.control, this.prisma, 'CUSTOMER_SUSPENSION', async tx => {
       const organization = await tx.organization.findUnique({
         where: { id: command.organizationId },
       });

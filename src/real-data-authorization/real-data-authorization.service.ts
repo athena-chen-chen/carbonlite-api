@@ -1,3 +1,4 @@
+import { ControlDatabaseService, runControlOperation } from '../prisma/control-database.service';
 import { cancelExtractionAttempts } from '../document-extraction/extraction-cancellation';
 import { randomUUID } from 'crypto';
 import {
@@ -7,6 +8,7 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  Optional,
   ServiceUnavailableException,
 } from '@nestjs/common';
 import {
@@ -42,6 +44,7 @@ export class RealDataAuthorizationService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly auditLog: AuditLogService,
+    @Optional() private readonly control?: ControlDatabaseService,
   ) {
     const summary = this.evidenceKeyring.configurationSummary();
     this.logger.log(
@@ -186,7 +189,7 @@ export class RealDataAuthorizationService {
     dto: WithdrawRealDataAuthorizationDto,
   ) {
     this.assertExactTarget(organizationId, dto);
-    const result = await this.prisma.$transaction(tx => this.withdrawWithinTransaction(
+    const result = await runControlOperation(this.control, this.prisma, 'REAL_DATA_WITHDRAWAL', tx => this.withdrawWithinTransaction(
       tx,
       organizationId,
       actorId,
