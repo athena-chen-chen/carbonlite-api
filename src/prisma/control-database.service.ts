@@ -1,3 +1,4 @@
+import { verifyPoolIdentity } from './pool-identity';
 import { HttpException, Injectable, InternalServerErrorException, Logger, OnModuleDestroy, OnModuleInit, ServiceUnavailableException } from '@nestjs/common';
 import { Prisma, PrismaClient } from '@prisma/client';
 import { PrismaService } from './prisma.service';
@@ -17,10 +18,15 @@ export class ControlDatabaseService implements OnModuleInit, OnModuleDestroy {
   private readonly client = this.enabled ? new PrismaClient(prototypePoolOptions('control')) : undefined;
   constructor(private readonly work: PrismaService) {}
 
-  async onModuleInit() {
-    if (!this.client) return;
-    try { await this.client.$connect(); }
-    catch { throw new Error('Local control-pool connection unavailable. No Work Pool fallback is permitted.'); }
+  private initialized?: Promise<void>;
+  onModuleInit() { return this.initializeVerified(); }
+  initializeVerified() {
+    if (!this.client) return Promise.resolve();
+    if (!this.initialized) this.initialized = (async () => {
+      try { await this.client!.$connect(); await verifyPoolIdentity(this.client!, prototypePoolConfiguration()!); }
+      catch { await this.client!.$disconnect().catch(() => undefined); throw new Error('Control Pool activation failed. No Work Pool fallback is permitted.'); }
+    })();
+    return this.initialized;
   }
   async onModuleDestroy() { await this.client?.$disconnect(); }
   isControlRequest() { return this.enabled && !!controlRequestContext.getStore(); }

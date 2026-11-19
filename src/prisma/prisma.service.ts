@@ -1,4 +1,5 @@
-import { prototypePoolOptions } from './control-pool.configuration';
+import { verifyPoolIdentity } from './pool-identity';
+import { prototypePoolConfiguration, prototypePoolOptions } from './control-pool.configuration';
 
 
 // api/src/prisma/prisma.service.ts
@@ -22,7 +23,17 @@ export class PrismaService
 
   constructor() { super(prototypePoolOptions('work')); }
 
+  private initialized?: Promise<void>;
+  initializeVerified() {
+    if (!this.initialized) this.initialized = (async () => {
+      try { await this.$connect(); const configuration = prototypePoolConfiguration(); if (configuration) await verifyPoolIdentity(this, configuration); }
+      catch { await this.$disconnect().catch(() => undefined); throw new Error('Work Pool activation failed. No fallback permitted.'); }
+    })();
+    return this.initialized;
+  }
+
   async onModuleInit() {
+    if (prototypePoolConfiguration()) return this.initializeVerified();
     try {
       await this.$connect();
     } catch (error) {

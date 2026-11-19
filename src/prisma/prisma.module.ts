@@ -2,11 +2,22 @@ import { ControlDatabaseService } from './control-database.service';
 import { ControlRequestMiddleware } from './control-request.context';
 // api/src/prisma/prisma.module.ts
 import { Global, MiddlewareConsumer, Module, NestModule, RequestMethod } from '@nestjs/common';
+import { prototypePoolConfiguration } from './control-pool.configuration';
 import { PrismaService } from './prisma.service';
 
 @Global()
 @Module({
-  providers: [PrismaService, ControlDatabaseService, ControlRequestMiddleware],
+  providers: [
+    { provide: PrismaService, useFactory: async () => {
+      const work = new PrismaService();
+      if (prototypePoolConfiguration()) await work.initializeVerified();
+      return work;
+    } },
+    { provide: ControlDatabaseService, inject: [PrismaService], useFactory: async (work: PrismaService) => {
+      let control: ControlDatabaseService | undefined;
+      try { control = new ControlDatabaseService(work); await control.initializeVerified(); return control; }
+      catch { await Promise.allSettled([work.$disconnect(), control?.onModuleDestroy()]); throw new Error('Database pools did not activate.'); }
+    } }, ControlRequestMiddleware],
   exports: [PrismaService, ControlDatabaseService],
 })
 export class PrismaModule implements NestModule {

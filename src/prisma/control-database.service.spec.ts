@@ -38,9 +38,9 @@ describe('control database ownership', () => {
     }); expect(client.$transaction).not.toHaveBeenCalled();
   });
   it('disconnects its owning client and fails initialization without leaking errors', async () => {
-    const client = { $connect: jest.fn().mockRejectedValue(new Error('synthetic secret placeholder')), $disconnect: jest.fn() }, subject = enabled(client);
+    const client = { $connect: jest.fn().mockRejectedValue(new Error('synthetic secret placeholder')), $disconnect: jest.fn().mockResolvedValue(undefined) }, subject = enabled(client);
     await expect(subject.onModuleInit()).rejects.toThrow('No Work Pool fallback');
-    await subject.onModuleDestroy(); expect(client.$disconnect).toHaveBeenCalledTimes(1); expect(work.$transaction).not.toHaveBeenCalled();
+    await subject.onModuleDestroy(); expect(client.$disconnect).toHaveBeenCalledTimes(2); expect(work.$transaction).not.toHaveBeenCalled();
   });
   it('rejects missing enabled-mode wiring instead of silently using Work', async () => {
     const saved = { app: process.env.APP_ENV, node: process.env.NODE_ENV, database: process.env.DATABASE_URL };
