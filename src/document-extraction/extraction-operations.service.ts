@@ -51,7 +51,7 @@ export class ExtractionOperationsService {
           sourceVersion: 1, fileUrl: document.fileUrl, fileName: document.fileName,
           mimeType: document.mimeType, updatedAt: document.updatedAt.toISOString(),
         } } });
-        release = extractionWorkload.reserve(`${organizationId}:${documentId}`, quota?.enabled !== true);
+        release = extractionWorkload.reserve(`${organizationId}:${documentId}`);
         const evidence = { operationId: job.id, version: metadata.version, phase: metadata.phase, ingestionDataMode: metadata.ingestionDataMode, approvalRevision, provider };
         await this.audit.log({ organizationId, userId, action: 'EXTRACT_DOCUMENT_STARTED', entityType: 'Document', entityId: documentId,
           description: 'Document extraction durably admitted.', newValue: evidence }, tx);

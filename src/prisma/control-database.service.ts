@@ -1,3 +1,4 @@
+import { ControlAdmissionService } from './control-admission.service';
 import { verifyPoolIdentity } from './pool-identity';
 import { HttpException, Injectable, InternalServerErrorException, Logger, OnModuleDestroy, OnModuleInit, ServiceUnavailableException } from '@nestjs/common';
 import { Prisma, PrismaClient } from '@prisma/client';
@@ -16,7 +17,7 @@ export class ControlDatabaseService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(ControlDatabaseService.name);
   readonly enabled = prototypePoolConfiguration() !== null;
   private readonly client = this.enabled ? new PrismaClient(prototypePoolOptions('control')) : undefined;
-  constructor(private readonly work: PrismaService) {}
+  constructor(private readonly work: PrismaService, private readonly admission = new ControlAdmissionService()) {}
 
   private initialized?: Promise<void>;
   onModuleInit() { return this.initializeVerified(); }
@@ -28,7 +29,7 @@ export class ControlDatabaseService implements OnModuleInit, OnModuleDestroy {
     })();
     return this.initialized;
   }
-  async onModuleDestroy() { await this.client?.$disconnect(); }
+  async onModuleDestroy() { await this.admission.close(); await this.client?.$disconnect(); }
   isControlRequest() { return this.enabled && !!controlRequestContext.getStore(); }
 
   async authenticate<T>(work: (tx: Pick<Prisma.TransactionClient, 'user'>) => Promise<T>): Promise<T> {
@@ -45,25 +46,27 @@ export class ControlDatabaseService implements OnModuleInit, OnModuleDestroy {
     const context = controlRequestContext.getStore() ?? { deadline: Date.now() + CONTROL_REQUEST_MS, expired: false };
     const remaining = context.deadline - Date.now();
     if (context.expired || remaining <= 0) throw unavailable('CONTROL_REQUEST_DEADLINE');
+    const ownedPermit = !context.permit;
+    const permit = context.permit ?? this.admission.acquire();
     const started = Date.now();
     let entered = false, callbackCompleted = false, acquisitionMs = -1, timer: ReturnType<typeof setTimeout> | undefined;
     let outcome = 'FAILED';
-    const transactionMs = Math.max(1, Math.min(budget, remaining - CONTROL_ACQUIRE_MS));
+    const transactionMs = Math.max(1, Math.min(CONTROL_TRANSACTION_MS, budget, remaining - CONTROL_ACQUIRE_MS));
     try {
-      const pending = this.client.$transaction(async tx => {
+      const pending = permit.track(this.client.$transaction(async tx => {
         entered = true;
         acquisitionMs = Date.now() - started;
         const transactionDeadline = Date.now() + transactionMs;
         if (context.expired || Date.now() >= context.deadline) throw unavailable('CONTROL_REQUEST_DEADLINE');
         await tx.$queryRaw`SELECT set_config('lock_timeout', ${`${CONTROL_LOCK_WAIT_MS}ms`}, true)`;
         await tx.$queryRaw`SELECT set_config('statement_timeout', ${`${transactionMs}ms`}, true)`;
-        const result = await controlTransactionContext.run(true, () => work(tx));
+        const result = await controlRequestContext.run({ ...context, permit }, () => controlTransactionContext.run(true, () => work(tx)));
         if (Date.now() >= transactionDeadline) throw unavailable('CONTROL_TRANSACTION_TIMEOUT');
         if (context.expired || Date.now() >= context.deadline) throw unavailable('CONTROL_REQUEST_DEADLINE');
         callbackCompleted = true;
         return result;
       }, { maxWait: Math.max(1, Math.min(CONTROL_ACQUIRE_MS, remaining)), timeout: transactionMs,
-        isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted });
+        isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted }));
       const result = await Promise.race([pending, new Promise<never>((_resolve, reject) => {
         timer = setTimeout(() => { context.expired = true; reject(unavailable('CONTROL_OUTCOME_UNCERTAIN', true)); }, remaining);
       })]);
@@ -83,6 +86,7 @@ export class ControlDatabaseService implements OnModuleInit, OnModuleDestroy {
         message: 'Control transaction failed. No automatic retry was performed.', automaticRetry: false });
     } finally {
       clearTimeout(timer);
+      if (ownedPermit) permit.endResponse();
       // Fixed labels/numeric timing only. No actor, document, SQL, URL or error payload.
       const label = ['AUTHENTICATION', 'REAL_DATA_WITHDRAWAL', 'AI_WITHDRAWAL', 'CUSTOMER_SUSPENSION'].includes(operation) ? operation : 'CONTROL';
       this.logger.log(`operation=${label} outcome=${outcome} durationMs=${Date.now() - started} acquisitionMs=${acquisitionMs}`);

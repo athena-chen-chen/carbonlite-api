@@ -91,7 +91,7 @@ describe('local bounded Work/Control pool prototype', () => {
     const release = barrier(), entered = Array.from({ length: count }, barrier), clients: Prisma.TransactionClient[] = [];
     const held = entered.map((gate, index) => {
       const callback = async (tx: Prisma.TransactionClient) => { await tx.$queryRaw`SELECT 1`; clients[index] = tx; gate.resolve(); await release.promise; };
-      return pool === 'work' ? work.$transaction(callback) : control.transaction('CONTROL', callback);
+      return pool === 'work' ? work.$transaction(callback) : controlClient().$transaction(callback);
     });
     await Promise.race([Promise.all(entered.map(x => x.promise)), Promise.all(held).then(() => { throw new Error('Pool barrier ended before saturation'); })]);
     return { clients, release: async () => { release.resolve(); await Promise.allSettled(held); } };
