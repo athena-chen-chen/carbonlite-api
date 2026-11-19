@@ -2,6 +2,10 @@
 
 This is an opt-in local experiment, not an RC deployment configuration or capacity certification. No authorization, consent, factor-governance, schema or migration rules change.
 
+## Follow-up implementation
+
+The original local-only validation below is historical. The separate RC-safe activation, bounded admission, PgBouncer and process-crash hardening is documented in [Phase D release hardening](phase-d-release-hardening-v0.1.md). It does not activate RC or certify deployment capacity. Existing local restrictions remain.
+
 ## Activation and boundaries
 
 `LOCAL_CONTROL_POOL_PROTOTYPE=true` requires APP_ENV local/development/test, NODE_ENV development/test, and a loopback PostgreSQL URL naming the disposable `carbonlite_ci_test` or `carbonlite_test` database. Non-local endpoints, RC database names, host overrides and unsupported modes fail startup. No second credential or connection URL is introduced. Do not enable this prototype in RC, Preview or Production.
