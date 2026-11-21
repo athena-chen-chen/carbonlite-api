@@ -1,5 +1,6 @@
 import { Prisma } from '@prisma/client';
 import { PoolConfiguration } from './control-pool.configuration';
+import { classifyPoolStartupFailure, PoolIdentityFailure } from './pool-startup-diagnostics';
 
 type IdentityClient = { $transaction: (work: (tx: Prisma.TransactionClient) => Promise<void>, options: { timeout: number; maxWait: number }) => Promise<void> };
 /** No third client, application-table reads, writes, or raw driver errors. */
@@ -11,7 +12,7 @@ export async function verifyPoolIdentity(client: IdentityClient, expected: PoolC
         SELECT current_database()::text AS database, current_user::text AS role, session_user::text AS session,
           (rolsuper OR rolcreaterole OR rolcreatedb OR rolbypassrls) AS elevated FROM pg_roles WHERE rolname = current_user`;
       if (rows.length !== 1 || rows[0].database !== expected.database || rows[0].role !== expected.role || rows[0].session !== expected.role ||
-          (expected.mode === 'clean-rc-v1' && rows[0].elevated)) throw new Error('Identity mismatch');
+          (expected.mode === 'clean-rc-v1' && rows[0].elevated)) throw new PoolIdentityFailure('IDENTITY_MISMATCH');
     }, { timeout: 1000, maxWait: 500 });
-  } catch { throw new Error('Control-pool database identity verification failed. No activation or fallback permitted.'); }
+  } catch (error) { throw new PoolIdentityFailure(classifyPoolStartupFailure(error)); }
 }
