@@ -1,4 +1,5 @@
 import { verifyPoolIdentity } from './pool-identity';
+import { classifyPoolStartupFailure } from './pool-startup-diagnostics';
 import { prototypePoolConfiguration, prototypePoolOptions } from './control-pool.configuration';
 
 
@@ -26,8 +27,19 @@ export class PrismaService
   private initialized?: Promise<void>;
   initializeVerified() {
     if (!this.initialized) this.initialized = (async () => {
-      try { await this.$connect(); const configuration = prototypePoolConfiguration(); if (configuration) await verifyPoolIdentity(this, configuration); }
-      catch { await this.$disconnect().catch(() => undefined); throw new Error('Work Pool activation failed. No fallback permitted.'); }
+      let phase: 'CONNECT' | 'CONFIGURATION' | 'IDENTITY' = 'CONNECT';
+      try {
+        await this.$connect();
+        phase = 'CONFIGURATION';
+        const configuration = prototypePoolConfiguration();
+        if (configuration) { phase = 'IDENTITY'; await verifyPoolIdentity(this, configuration); }
+      }
+      catch (error) {
+        const category = classifyPoolStartupFailure(error);
+        await this.$disconnect().catch(() => undefined);
+        // eslint-disable-next-line preserve-caught-error -- Driver causes can contain credentials; only allowlisted diagnostics may escape.
+        throw new Error(`Work Pool activation failed. No fallback permitted. phase=${phase} category=${category}`);
+      }
     })();
     return this.initialized;
   }
