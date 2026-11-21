@@ -1,0 +1,89 @@
+name: Disposable Prisma Connection Budgets
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  experiment:
+    name: Connection budgets / Node ${{ matrix.node }}
+    if: github.ref == 'refs/heads/experiment/prisma-connection-budgets'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['20', '24.22.1']
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: carbonlite_ci_test
+        ports:
+          - 55447:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d carbonlite_ci_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      pgbouncer:
+        image: edoburu/pgbouncer@sha256:53d98b3174b0842c475b9842fb0a733b2d9f7ec9da834ec42252aa553f48c628
+        env:
+          DB_HOST: postgres
+          DB_USER: postgres
+          DB_PASSWORD: postgres
+          DB_NAME: carbonlite_ci_test
+          AUTH_TYPE: scram-sha-256
+          POOL_MODE: transaction
+          DEFAULT_POOL_SIZE: 2
+          MAX_CLIENT_CONN: 30
+          ADMIN_USERS: postgres
+        ports:
+          - 55448:5432
+
+    env:
+      APP_ENV: test
+      NODE_ENV: test
+      LOCAL_CONTROL_POOL_PROTOTYPE: 'true'
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:55447/carbonlite_ci_test
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.17.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: pnpm
+      - name: Install exact lockfile and generate local engine
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm exec prisma generate
+      - name: Build unchanged application helpers
+        run: pnpm build
+      - name: Existing identity, startup and admission unit regressions
+        env:
+          LOCAL_CONTROL_POOL_PROTOTYPE: 'false'
+        run: pnpm exec jest --config jest.unit.json --runInBand src/prisma/pool-startup-diagnostics.spec.ts src/prisma/pool-startup.spec.ts src/prisma/pool-identity.spec.ts src/prisma/control-database.service.spec.ts src/prisma/control-admission.service.spec.ts src/prisma/control-pool.configuration.spec.ts
+      - name: Syntax and type checks
+        run: |
+          node --check scripts/experiments/prisma-connection-budget.cjs
+          pnpm exec tsc --noEmit
+      - name: Measure isolated connection budgets
+        run: node scripts/experiments/prisma-connection-budget.cjs
+      - name: Upload sanitized measurements only
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: connection-budget-node-${{ matrix.node }}
+          path: experiment-results/results.json
+          if-no-files-found: warn
+          retention-days: 7

@@ -15,6 +15,7 @@ concurrency:
 
 jobs:
   backend-validation:
+    if: github.ref != 'refs/heads/experiment/prisma-connection-budgets'
     name: Backend unit, E2E, typecheck, and build
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -115,3 +116,9 @@ jobs:
         run: pnpm exec tsc --noEmit -p tsconfig.json
 
       # GitHub Actions removes the disposable PostgreSQL service with the job.
+
+  disposable-connection-experiment:
+    if: github.ref == 'refs/heads/experiment/prisma-connection-budgets'
+    uses: ./.github/workflows/prisma-connection-budget.yml
+    permissions:
+      contents: read
