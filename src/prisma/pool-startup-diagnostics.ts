@@ -10,14 +10,22 @@ const categories: Readonly<Record<string, PoolStartupCategory>> = Object.freeze(
   ETIMEDOUT: 'TIMEOUT', '53300': 'CAPACITY', '28P01': 'AUTHENTICATION',
 });
 
+const unreadableProperty = Symbol('unreadable');
+
 function property(value: unknown, key: string): unknown {
   try { return value && typeof value === 'object' ? (value as Record<string, unknown>)[key] : undefined; }
-  catch { return undefined; }
+  catch { return unreadableProperty; }
 }
 
 export function classifyPoolStartupFailure(error: unknown): PoolStartupCategory {
   if (error instanceof PoolIdentityFailure) return error.category;
-  const code = property(error, 'code');
+  const requestCode = property(error, 'code');
+  const initializationCode = property(error, 'errorCode');
+  // Conflicting or malformed fields must never be rescued by the other field.
+  if ((requestCode !== undefined && typeof requestCode !== 'string')
+    || (initializationCode !== undefined && typeof initializationCode !== 'string')
+    || (requestCode !== undefined && initializationCode !== undefined && requestCode !== initializationCode)) return 'UNKNOWN';
+  const code = requestCode ?? initializationCode;
   if (typeof code === 'string' && Object.hasOwn(categories, code)) return categories[code];
   // Prisma raw-query failures expose a PostgreSQL SQLSTATE in meta.code.
   if (code === 'P2010') {
