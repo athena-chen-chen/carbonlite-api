@@ -12,6 +12,7 @@ describe('pool activation identity', () => {
   it('verifies both database and login identity using a read-only transaction', async () => {
     const database = client(); await verifyPoolIdentity(database, expected);
     expect(database.tx.$executeRaw).toHaveBeenCalledTimes(1); expect(database.tx.$queryRaw).toHaveBeenCalledTimes(1);
+    expect(database.$transaction).toHaveBeenCalledWith(expect.any(Function), { timeout: 1000, maxWait: 500 });
   });
   it.each([{ database: 'other' }, { role: 'owner' }, { session: 'owner' }, { elevated: true }])('rejects identity mismatch %#', async change => {
     await expect(verifyPoolIdentity(client([{ ...row, ...change }]), expected)).rejects.toThrow('identity verification failed');
