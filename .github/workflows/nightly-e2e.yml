@@ -1,9 +1,6 @@
-name: Nightly E2E
+name: Isolated Node 24 Full Backend Validation
 
 on:
-  schedule:
-    - cron: '30 2 * * *'
-      timezone: America/Edmonton
   workflow_dispatch:
 
 permissions:
@@ -15,7 +12,8 @@ concurrency:
 
 jobs:
   backend-validation:
-    name: Backend unit, E2E, typecheck, and build
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/ci/rc-node24-full-validation'
+    name: Node 24.22.1 exact-release backend validation
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
@@ -69,7 +67,15 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
         with:
+          ref: 1b38e3054be9da4a5935c1802a9a9389becf37a9
           fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify immutable application source
+        run: |
+          test "$(git rev-parse HEAD)" = "1b38e3054be9da4a5935c1802a9a9389becf37a9"
+          test "$(git rev-parse HEAD^{tree})" = "b1b63d2aa32d09d15c61f0d267ad1915054c50f3"
+          test -z "$(git status --porcelain)"
 
       - name: Set up pnpm
         uses: pnpm/action-setup@v4
@@ -79,8 +85,11 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24.22.1
           cache: pnpm
+
+      - name: Verify exact Node runtime
+        run: test "$(node --version)" = "v24.22.1"
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -94,7 +103,10 @@ jobs:
       - name: Seed isolated CI database
         run: pnpm seed
 
-      # Keep routine full validation here; local development should prefer focused tests.
+      - name: Effective Work and Control startup budget regressions
+        env:
+          LOCAL_CONTROL_POOL_PROTOTYPE: 'false'
+        run: pnpm exec jest --config jest.unit.json --runInBand src/prisma/control-pool.configuration.spec.ts src/prisma/pool-identity.spec.ts src/prisma/pool-startup.spec.ts src/prisma/control-database.service.spec.ts src/prisma/control-admission.service.spec.ts src/prisma/pool-startup-diagnostics.spec.ts
       - name: Run backend unit tests
         run: pnpm test:unit
 
