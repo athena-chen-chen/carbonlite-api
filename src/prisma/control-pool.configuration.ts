@@ -62,8 +62,10 @@ export function prototypePoolOptions(kind: 'work' | 'control', environment: Node
   if (!configuration) return {};
   const url = new URL(configuration.url);
   url.searchParams.set('connection_limit', String(kind === 'work' ? WORK_POOL_LIMIT : CONTROL_POOL_LIMIT));
-  url.searchParams.set('pool_timeout', '1');
-  url.searchParams.set('connect_timeout', '1');
+  // Client-lifetime connection/acquisition limits, not a startup-only override.
+  // Control admission and transaction/request deadlines remain independently bounded.
+  url.searchParams.set('pool_timeout', '5');
+  url.searchParams.set('connect_timeout', '5');
   url.searchParams.set('application_name', `carbonlite-local-${kind}`);
   // Both clients derive their endpoint, database and credentials from exactly
   // the same value. No second URL/role or credential fallback is accepted.

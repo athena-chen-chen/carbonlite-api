@@ -1,3 +1,4 @@
+import { createServer, connect, type Socket } from 'node:net';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { HttpException, INestApplication } from '@nestjs/common';
 import { readFile } from 'node:fs/promises';
@@ -135,6 +136,57 @@ describe('local bounded Work/Control pool prototype', () => {
     await request(app.getHttpServer()).get('/api/auth/me').set(authHeader(admin.accessToken)).expect(200);
     await request(app.getHttpServer()).get('/api/facilities').set(authHeader(admin.accessToken)).expect(200);
   });
+
+  it.each(['work', 'control'] as const)('uses actual %s client configuration through a delayed startup handshake', async kind => {
+    await connectionBudgetStartup(kind, false);
+  });
+  it.each(['work', 'control'] as const)('bounds an unavailable %s startup and disconnects without retry', async kind => {
+    await connectionBudgetStartup(kind, true);
+  });
+  async function connectionBudgetStartup(kind: 'work' | 'control', unavailable: boolean) {
+    const sockets = new Set<Socket>(), timers = new Set<ReturnType<typeof setTimeout>>();
+    // Fault injection delays the PostgreSQL handshake, not application scheduling.
+    const proxy = createServer(socket => {
+      sockets.add(socket); socket.pause(); socket.on('error', () => undefined);
+      socket.on('close', () => sockets.delete(socket));
+      if (unavailable) return;
+      const timer = setTimeout(() => {
+        timers.delete(timer); if (socket.destroyed) return;
+        const upstream = connect(55447, '127.0.0.1', () => { socket.pipe(upstream); upstream.pipe(socket); socket.resume(); });
+        sockets.add(upstream); upstream.on('error', () => socket.destroy());
+        upstream.on('close', () => sockets.delete(upstream)); socket.on('close', () => upstream.destroy());
+      }, 1200);
+      timers.add(timer);
+    });
+    await new Promise<void>(resolve => proxy.listen(0, '127.0.0.1', resolve));
+    const address = proxy.address(); if (!address || typeof address === 'string') throw new Error('Disposable proxy address required');
+    const original = process.env.DATABASE_URL, target = new URL(original!); target.port = String(address.port);
+    let candidate: PrismaService | ControlDatabaseService;
+    try { process.env.DATABASE_URL = target.toString(); candidate = kind === 'work' ? new PrismaService() : new ControlDatabaseService(work, new ControlAdmissionService()); }
+    finally { process.env.DATABASE_URL = original; }
+    const actual = kind === 'work' ? candidate! as PrismaService : (candidate! as unknown as { client: PrismaClient }).client;
+    const connection = jest.spyOn(actual, '$connect'), disconnect = jest.spyOn(actual, '$disconnect');
+    const start = performance.now();
+    try {
+      if (unavailable) {
+        await expect(candidate!.initializeVerified()).rejects.toThrow('activation failed');
+        const elapsed = performance.now() - start;
+        expect(elapsed).toBeGreaterThanOrEqual(4500); expect(elapsed).toBeLessThan(6500);
+        await expect(candidate!.initializeVerified()).rejects.toThrow('activation failed');
+        expect(disconnect).toHaveBeenCalledTimes(1);
+      } else {
+        await candidate!.initializeVerified();
+        expect(performance.now() - start).toBeGreaterThanOrEqual(1200);
+        expect(await actual.$queryRaw`SELECT current_database() AS database`).toEqual([{ database: 'carbonlite_ci_test' }]);
+      }
+      expect(connection).toHaveBeenCalledTimes(1);
+    } finally {
+      await candidate!.onModuleDestroy();
+      for (const timer of timers) clearTimeout(timer);
+      for (const socket of sockets) socket.destroy();
+      await new Promise<void>(resolve => proxy.close(() => resolve()));
+    }
+  }
 
   it('reserves exactly two control connections alongside four saturated work connections', async () => {
     const workSlots = await saturate(4), controlSlots = await saturate(2, 'control');
