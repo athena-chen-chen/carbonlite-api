@@ -1,0 +1,43 @@
+{
+  "repository": "athena-chen-chen/carbonlite-api",
+  "entry_branch": "ci/pilot-network-attribution-entry",
+  "source_branch": "ci/pilot-network-attribution",
+  "baseline": "472120fc7d27f9b56ed6ae3f1e67d602ca2b1f90",
+  "entry_files": [
+    ".github/workflows/nightly-e2e.yml",
+    "ci/pilot-network-entry/verify.py",
+    "ci/pilot-network-entry/approved.json",
+    "ci/pilot-network-entry/test_entry.py",
+    "ci/pilot-network-entry/README.txt",
+    "ci/pilot-network-entry/SHA256SUMS.txt"
+  ],
+  "source_files": {
+    ".github/workflows/pilot-network-attribution.yml": "4149fcbe304e5e1687eb3f0f65b77c20739996fe1b15591891b005400dd2c472",
+    "ci/pilot-network-diagnostic/trace-connect.c": "3cebc1a5be7fd147e41edf0727acc081217f60d29328f43aca8af521b7c49d90",
+    "ci/pilot-network-diagnostic/run.py": "5ef66365ff7d06772138d2d7bf7179b3f6bd1a2246daa3f1080f742d4b8a8a78",
+    "ci/pilot-network-diagnostic/test_diagnostic.py": "4c50f32d429b4f0aba7be5d2b98eb71d5a8e3d868acf8c32b50ab95be3d3b187",
+    "ci/pilot-network-diagnostic/approved.json": "ef75dce1d125c0c43144b12fea14dabf93776c3f75d7b6512150e9ee13cff427",
+    "ci/pilot-network-diagnostic/README.txt": "aa29114de09dcb36ee4c7326cb97d2d1ded0307883a7df2e7e4c8e2e1fdd15dd",
+    "ci/pilot-network-diagnostic/SHA256SUMS.txt": "ea094ad9c0f758b7e4a853f4d102682a95947c9e0c618cde6dfc5a8e3f0910fa"
+  },
+  "exact_pair_index_sha256": "7c2fcda616101ccd1296544743145e4b3ec1a95e5627eea408acda94dc530ed5",
+  "backend": {
+    "repository": "athena-chen-chen/carbonlite-api",
+    "baseline": "1b38e3054be9da4a5935c1802a9a9389becf37a9",
+    "expected_tree": "f4e02d756dc14c0df638d7086b483566e7efeca5",
+    "reviewed_patch_sha256": "1c47279835406536ccb6efdbfe17330b75588916cae5572ab9dce016bd5b182a",
+    "files": {
+      "src/metrics/calculation-quality.service.spec.ts": "14ca799300334673a39b0b0e0284f4ec2513c07ed7694274c3062187ba61557b",
+      "src/metrics/calculation-quality.service.ts": "bd2e5898086ad5c834c719b920cef15f339925a07d3e5e8bb676e5dd9ddde5b2",
+      "src/organizations/organizations.service.spec.ts": "b6162c19ca665ea980fcfd8988bb7a0519b331cb32b483b9727e53d41909b6bf",
+      "src/organizations/organizations.service.ts": "b20cd315c669102229624562ba2ff976f0abf365d5f4bf3f4d4459cceaa8c443",
+      "test/document-resource-limits.e2e-spec.ts": "737c4bef9ac0ed29b578fc95964ef6ff951415f628a3c9e165da25394805c9c2",
+      "test/mutation-outcomes.e2e-spec.ts": "c46d6829a5b18dd48195a1e6b363985e29154633fc1eef54d7b8f78f37693a2e",
+      "test/organization-profile.e2e-spec.ts": "d23eb3fa2978e36655ce1a6bd55c2548a12c0abcf7f8efd82ecd10780cd6137b",
+      "test/pilot-reporting-scope.e2e-spec.ts": "88122ffbc1a27d95995703a0f94288f3f668854aab012b145bbd26bac859ee39"
+    },
+    "expected_commit": "e424c567d43c0086e0dc01b86e48cb648c114078"
+  },
+  "source_commit": "48d41a7958666c27283aa1d9588a3205ca529764",
+  "source_tree": "17f62f117866fa180ebb57c11d79ea0f4ca02c3f"
+}

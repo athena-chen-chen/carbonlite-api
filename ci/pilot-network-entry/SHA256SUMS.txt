@@ -1,0 +1,5 @@
+ac6a4d79a0684eb4970f3514dd02d84bcfb245c8e13d448c75a675d9797ddd7f  .github/workflows/nightly-e2e.yml
+c1f285dbe5adea926e2297f4dac51c816d776d819078c0ea5479845663766a10  ci/pilot-network-entry/README.txt
+99b49d60b4c230fdd0d7ac52f2fce4397dfcb25cc1b0e3e9beb842d3bf6c3b45  ci/pilot-network-entry/approved.json
+5f91871c806089bae528eb7d7a8fc5a8f84fe29af919046fbd83502ef1e31629  ci/pilot-network-entry/test_entry.py
+4db7cd92f38bf5ef2501408f392f8d0c54e9ed632eb94fe9869b0b35735a73a5  ci/pilot-network-entry/verify.py

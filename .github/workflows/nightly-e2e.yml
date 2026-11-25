@@ -1,24 +1,44 @@
-name: Founder Pilot exact-pair validation (manual only)
+name: Isolated Pilot network diagnostic entry (manual only)
 'on':
   workflow_dispatch:
     inputs:
-      frontend_sha:
-        description: Reviewed frontend candidate commit (40 lowercase hex characters)
-        required: true
+      entry_sha:
+        description: Separately approved immutable entry commit (40 lowercase hex)
         type: string
-      backend_sha:
-        description: Reviewed backend candidate commit (40 lowercase hex characters)
         required: true
+      entry_tree:
+        description: Approved entry Git tree (40 lowercase hex)
         type: string
+        required: true
+      entry_index_sha256:
+        description: Approved entry checksum index (64 lowercase hex)
+        type: string
+        required: true
+      diagnostic_sha:
+        description: Confirmation of pinned diagnostic commit (40 lowercase hex)
+        type: string
+        required: true
+      diagnostic_tree:
+        description: Confirmation of pinned diagnostic tree (40 lowercase hex)
+        type: string
+        required: true
 permissions:
   contents: read
 concurrency:
   group: founder-pilot-exact-pair
   cancel-in-progress: false
 jobs:
-  exact-pair:
+  migration-diagnostic:
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 20
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      ENTRY_SHA: ${{ inputs.entry_sha }}
+      ENTRY_TREE: ${{ inputs.entry_tree }}
+      ENTRY_INDEX_SHA256: ${{ inputs.entry_index_sha256 }}
+      DIAGNOSTIC_SHA: ${{ inputs.diagnostic_sha }}
+      DIAGNOSTIC_TREE: ${{ inputs.diagnostic_tree }}
+      INVOKING_WORKFLOW_SHA: ${{ github.workflow_sha }}
     services:
       postgres:
         image: postgres:16
@@ -44,163 +64,140 @@ jobs:
           POOL_MODE: transaction
           DEFAULT_POOL_SIZE: 2
           MAX_CLIENT_CONN: 30
-          ADMIN_USERS: postgres
         ports:
           - 55448:5432
     steps:
-      - name: Require the approved repository, manual event and full commit inputs
+      - name: Require manual isolated immutable execution
         shell: bash
-        env:
-          FRONTEND_SHA: ${{ inputs.frontend_sha }}
-          BACKEND_SHA: ${{ inputs.backend_sha }}
         run: |
           set -euo pipefail
           test "$GITHUB_REPOSITORY" = athena-chen-chen/carbonlite-api
           test "$GITHUB_EVENT_NAME" = workflow_dispatch
-          test "$GITHUB_REF" = refs/heads/ci/pilot-exact-pair-validation
-          [[ "$FRONTEND_SHA" =~ ^[0-9a-f]{40}$ ]]
-          [[ "$BACKEND_SHA" =~ ^[0-9a-f]{40}$ ]]
-      - name: Check out the exact validation workflow revision
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # reviewed v4 revision
+          test "$GITHUB_REF" = refs/heads/ci/pilot-network-attribution-entry
+          for value in "$ENTRY_SHA" "$ENTRY_TREE" "$DIAGNOSTIC_SHA" "$DIAGNOSTIC_TREE"; do
+            [[ "$value" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          done
+          [[ "$ENTRY_INDEX_SHA256" =~ ^[0-9a-f]{64}$ ]] || exit 1
+          test "$ENTRY_SHA" = "$INVOKING_WORKFLOW_SHA"
+          test "$ENTRY_SHA" = "$GITHUB_SHA"
+          test "$DIAGNOSTIC_SHA" = 48d41a7958666c27283aa1d9588a3205ca529764
+          test "$DIAGNOSTIC_TREE" = 17f62f117866fa180ebb57c11d79ea0f4ca02c3f
+      - name: Checkout immutable entry separately
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           repository: athena-chen-chen/carbonlite-api
           ref: ${{ github.workflow_sha }}
-          path: control
-          persist-credentials: false
-      - name: Check out exact frontend candidate
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # reviewed v4 revision
-        with:
-          repository: athena-chen-chen/carbonlite-web
-          ref: ${{ inputs.frontend_sha }}
-          path: carbonlite-web
+          path: entry
           fetch-depth: 0
           persist-credentials: false
-      - name: Check out exact backend candidate
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # reviewed v4 revision
+      - name: Checkout immutable diagnostic source separately
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           repository: athena-chen-chen/carbonlite-api
-          ref: ${{ inputs.backend_sha }}
+          ref: 48d41a7958666c27283aa1d9588a3205ca529764
+          path: control
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Checkout only the immutable backend
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: athena-chen-chen/carbonlite-api
+          ref: e424c567d43c0086e0dc01b86e48cb648c114078
           path: carbonlite-api
           fetch-depth: 0
           persist-credentials: false
-      - name: Verify both complete trees and reviewed file manifests before installing
-        env:
-          FRONTEND_SHA: ${{ inputs.frontend_sha }}
-          BACKEND_SHA: ${{ inputs.backend_sha }}
-          WORKFLOW_SHA: ${{ github.workflow_sha }}
-        run: python3 control/ci/pilot-exact-pair/verify.py
+      - name: Verify entry source backend and checksums before dependencies
+        id: identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -I entry/ci/pilot-network-entry/verify.py
+          python3 control/ci/pilot-network-diagnostic/run.py verify "$GITHUB_WORKSPACE"
       - name: Set up pnpm
-        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # reviewed v4 revision
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
         with:
           version: 10.17.0
           run_install: false
       - name: Set up Node
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # reviewed v4 revision
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: '20'
-      - name: Install unchanged lockfiles (no deployment credentials)
+      - name: Local helper and privacy regressions
+        run: python3 -m unittest discover -s control/ci/pilot-network-diagnostic -p test_diagnostic.py -v
+      - name: Provision pinned engine without invoking the telemetry-capable CLI
         shell: bash
         run: |
           set -euo pipefail
           pnpm --dir carbonlite-api install --frozen-lockfile
-          pnpm --dir carbonlite-web install --frozen-lockfile
-      - name: Recheck source identity after dependency installation
-        env:
-          FRONTEND_SHA: ${{ inputs.frontend_sha }}
-          BACKEND_SHA: ${{ inputs.backend_sha }}
-          WORKFLOW_SHA: ${{ github.workflow_sha }}
-        run: python3 control/ci/pilot-exact-pair/verify.py
-      - name: Prepare the disposable test account and generated client
-        env:
-          POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
+          cd carbonlite-api
+          env -i PATH="$PATH" CI=true node -e 'const {createRequire}=require("module");if(require("prisma/package.json").version!=="6.19.3")process.exit(1);const r=createRequire(require.resolve("prisma/package.json"));const e=r("@prisma/engines");const f=createRequire(r.resolve("@prisma/engines"))("@prisma/fetch-engine");e.ensureNeededBinariesExist({clientEngineType:"library",download:f.download}).catch(()=>process.exitCode=1)' >/dev/null 2>&1
+          cd ..
+          python3 -I entry/ci/pilot-network-entry/verify.py
+          python3 control/ci/pilot-network-diagnostic/run.py verify "$GITHUB_WORKSPACE"
+      - name: Create UID and verify read-only controls without extra tracing privilege
         shell: bash
         run: |
           set -euo pipefail
-          ! id clpairtest >/dev/null 2>&1
           ! getent passwd 24001 >/dev/null
+          ! id clpairtest >/dev/null 2>&1
           sudo useradd --create-home --uid 24001 clpairtest
-          # Existing Control E2E uses docker exec against the disposable services.
-          sudo usermod -aG docker clpairtest
-          mkdir -p pair-results/validation
-          sudo chown -R clpairtest:clpairtest carbonlite-api carbonlite-web pair-results/validation
+          mkdir -m 755 diagnostic-results
+          sudo mkdir -m 700 diagnostic-results/disposable
+          sudo chown clpairtest:clpairtest diagnostic-results/disposable
+          sudo chown -R clpairtest:clpairtest carbonlite-api
           bash control/ci/pilot-exact-pair/runner-access.sh "$GITHUB_WORKSPACE" "$(id -u)" "$(id -g)"
-          sudo -H -u clpairtest env -i PATH="$PATH" POSTGRES_CONTAINER="$POSTGRES_CONTAINER" \
-            python3 "$GITHUB_WORKSPACE/control/ci/pilot-exact-pair/run.py" "$GITHUB_WORKSPACE" generate
-      - name: Close and verify test-process outbound networking
+          python3 control/ci/pilot-network-diagnostic/run.py prepare "$GITHUB_WORKSPACE"
+      - name: Enable unchanged IPv4 and IPv6 outbound denial
         id: network
+        shell: bash
         env:
           POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
           POOLER_CONTAINER: ${{ job.services.pgbouncer.id }}
+        run: bash control/ci/pilot-exact-pair/network.sh enable
+      - name: Capability calibration then two predetermined migration arms
         shell: bash
-        run: |
-          set -euo pipefail
-          bash control/ci/pilot-exact-pair/network.sh enable
-          # Reserved documentation address; packets must be locally rejected.
-          sudo -H -u clpairtest env -i PATH="$PATH" python3 - <<'PY'
-          import socket
-          try:
-              socket.create_connection(('192.0.2.1', 443), timeout=2)
-          except OSError:
-              pass
-          else:
-              raise SystemExit('Outbound isolation failed')
-          PY
-          blocked="$(sudo iptables -L CLPAIR_EGRESS -n -v -x | awk '$3=="REJECT" {print $1}')"
-          test "$blocked" -gt 0
-          date -u +%s%6N > pair-results/network-since-us.txt
-          sudo iptables -Z CLPAIR_EGRESS
-          sudo ip6tables -Z CLPAIR_EGRESS
-          echo 'OUTBOUND_GUARD_PREFLIGHT: PASS' | tee pair-results/network-preflight.txt
-          echo 'enabled=true' >> "$GITHUB_OUTPUT"
-      - name: Run exact-pair synthetic validation with no inherited credentials
         env:
           POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
+        run: python3 control/ci/pilot-network-diagnostic/run.py experiment "$GITHUB_WORKSPACE"
+      - name: Always recheck entry source and backend identities
+        id: final_identity
+        if: always() && steps.identity.outcome == 'success'
         shell: bash
         run: |
           set -euo pipefail
-          sudo -H -u clpairtest env -i PATH="$PATH" POSTGRES_CONTAINER="$POSTGRES_CONTAINER" \
-            python3 "$GITHUB_WORKSPACE/control/ci/pilot-exact-pair/run.py" "$GITHUB_WORKSPACE" validate
-      - name: Fail on unexpected outbound attempts, even when a test caught the error
-        if: ${{ always() && steps.network.outputs.enabled == 'true' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          # Independent diagnostics cannot mask the counter failure, and vice versa.
-          set +e
-          bash control/ci/pilot-exact-pair/network.sh check | tee pair-results/network-status.txt
-          counter_status=${PIPESTATUS[0]}
-          since_us="$(cat pair-results/network-since-us.txt)"
-          [[ "$since_us" =~ ^[0-9]{16}$ ]] || exit 1
-          # Read header-only kernel records since this capture window; no payload logging.
-          sudo journalctl -k --since="@$((since_us / 1000000))" -o json --no-pager -n 2048 \
-            | python3 control/ci/pilot-exact-pair/diagnostics.py network "$since_us" \
-                pair-results/network-events.json pair-results/validation/stage-intervals.json pair-results/network-status.txt
-          diagnostic_status=$?
-          set -e
-          test "$counter_status" = 0
-          test "$diagnostic_status" = 0
-      - name: Verify reviewed source stayed unchanged through validation
-        if: ${{ always() && steps.network.outputs.enabled == 'true' }}
-        env:
-          FRONTEND_SHA: ${{ inputs.frontend_sha }}
-          BACKEND_SHA: ${{ inputs.backend_sha }}
-          WORKFLOW_SHA: ${{ github.workflow_sha }}
-        run: python3 control/ci/pilot-exact-pair/verify.py
-      - name: Upload only sanitized identity, summary and compiler evidence
-        if: ${{ always() }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # reviewed v4 revision
+          python3 -I entry/ci/pilot-network-entry/verify.py
+          python3 control/ci/pilot-network-diagnostic/run.py verify "$GITHUB_WORKSPACE"
+      - name: Always preserve final rejection counter and fail closed
+        if: always() && steps.network.outcome == 'success' && steps.final_identity.outcome == 'success'
+        run: python3 control/ci/pilot-network-diagnostic/run.py counter-check "$GITHUB_WORKSPACE"
+      - name: Validate bounded artifact schema before upload
+        id: export
+        if: always() && steps.final_identity.outcome == 'success'
+        run: python3 control/ci/pilot-network-diagnostic/run.py export-check "$GITHUB_WORKSPACE"
+      - name: Upload bounded structured metadata only
+        if: always() && steps.export.outcome == 'success'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: founder-pilot-exact-pair-${{ github.run_id }}
+          name: pilot-network-diagnostic-${{ github.run_id }}
           retention-days: 7
           if-no-files-found: warn
           path: |
-            pair-results/identity.json
-            pair-results/validation/tests.json
-            pair-results/validation/test-types-baseline.txt
-            pair-results/validation/test-types-candidate.txt
-            pair-results/validation/type-debt-policy.json
-            pair-results/network-preflight.txt
-            pair-results/network-status.txt
-            pair-results/network-events.json
-            pair-results/validation/stage-intervals.json
-            pair-results/validation/*.failures.json
+            diagnostic-results/published/capability.json
+            diagnostic-results/published/arm-A.json
+            diagnostic-results/published/arm-B.json
+            diagnostic-results/published/identity.json
+            diagnostic-results/published/summary.json
+            diagnostic-results/published/network.json
+      - name: Remove only this job's disposable service containers
+        if: always()
+        shell: bash
+        env:
+          POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
+          POOLER_CONTAINER: ${{ job.services.pgbouncer.id }}
+        run: |
+          set -euo pipefail
+          for container in "$POSTGRES_CONTAINER" "$POOLER_CONTAINER"; do
+            [[ "$container" =~ ^[0-9a-f]{64}$ ]]
+            docker rm -f "$container" >/dev/null
+          done
+          # Runner teardown removes firewall rules; never reopen UID egress here.
