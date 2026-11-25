@@ -4,7 +4,7 @@ import { INestApplication, Logger, ValidationPipe } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { MULTER_MODULE_OPTIONS } from '@nestjs/platform-express/multer/files.constants';
 import { randomUUID } from 'node:crypto';
-import { access, mkdir, mkdtemp, readdir, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, rm } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
 import request from 'supertest';
 import { AppModule } from '../src/app.module';
@@ -18,6 +18,7 @@ import { authHeader, cleanupTestData, createTestUser, uniqueTestId } from './hel
 describe('F09 truthful mutation outcomes (real PostgreSQL rollback)', () => {
   let app: INestApplication;
   let prisma: PrismaService;
+  let storage: DocumentStorage;
   let tracker: ActivityTrackingService;
   let organizationId: string;
   let userId: string;
@@ -42,6 +43,7 @@ describe('F09 truthful mutation outcomes (real PostgreSQL rollback)', () => {
     app.useGlobalPipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }));
     await app.init();
     prisma = app.select(PrismaModule).get(PrismaService, { strict: true }); tracker = app.get(ActivityTrackingService);
+    storage = app.get<DocumentStorage>(DOCUMENT_STORAGE);
     const [target] = await prisma.$queryRaw<Array<{ name: string }>>`SELECT current_database() AS name`;
     expect(target.name).toBe(targetDatabase.database);
     const user = await createTestUser(app, { organizationName: run, email: `${run}@carbonlite-e2e.test` });
@@ -164,7 +166,8 @@ describe('F09 truthful mutation outcomes (real PostgreSQL rollback)', () => {
     await extract(saved.id).expect(500); reached();
     expect(await prisma.documentExtraction.count({ where: { documentId: saved.id } })).toBe(0);
     expect(await prisma.document.findUnique({ where: { id: saved.id } })).toMatchObject({ status: 'EXTRACTION_FAILED' });
-    await access(join(process.cwd(), saved.fileUrl));
+    await expect(storage.exists(documentStorageKey(saved.fileUrl))).resolves.toBe(true);
+    await expect(storage.read(documentStorageKey(saved.fileUrl))).resolves.toEqual(expect.any(Buffer));
   });
   it('rolls back calculation results and recalculated snapshots on required summary audit failure', async () => {
     const row = await createActivity();
@@ -230,7 +233,8 @@ describe('F09 truthful mutation outcomes (real PostgreSQL rollback)', () => {
     jest.spyOn(tracker, 'track').mockRejectedValue(new Error('Synthetic optional event failure'));
     const saved = (await upload('optional-upload.json').expect(201)).body;
     expect(await prisma.document.findUnique({ where: { id: saved.id } })).not.toBeNull();
-    await access(join(process.cwd(), saved.fileUrl));
+    await expect(storage.exists(documentStorageKey(saved.fileUrl))).resolves.toBe(true);
+    await expect(storage.read(documentStorageKey(saved.fileUrl))).resolves.toEqual(expect.any(Buffer));
     expect(await prisma.auditLog.count({ where: { entityId: saved.id, action: 'UPLOAD_DOCUMENT' } })).toBe(1);
     expect(await prisma.userActivityEvent.count({ where: { entityId: saved.id, eventName: 'DOCUMENT_UPLOADED' } })).toBe(0);
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('DOCUMENT_UPLOADED'));
