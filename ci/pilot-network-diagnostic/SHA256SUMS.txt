@@ -1,0 +1,6 @@
+4149fcbe304e5e1687eb3f0f65b77c20739996fe1b15591891b005400dd2c472  .github/workflows/pilot-network-attribution.yml
+3cebc1a5be7fd147e41edf0727acc081217f60d29328f43aca8af521b7c49d90  ci/pilot-network-diagnostic/trace-connect.c
+5ef66365ff7d06772138d2d7bf7179b3f6bd1a2246daa3f1080f742d4b8a8a78  ci/pilot-network-diagnostic/run.py
+4c50f32d429b4f0aba7be5d2b98eb71d5a8e3d868acf8c32b50ab95be3d3b187  ci/pilot-network-diagnostic/test_diagnostic.py
+ef75dce1d125c0c43144b12fea14dabf93776c3f75d7b6512150e9ee13cff427  ci/pilot-network-diagnostic/approved.json
+aa29114de09dcb36ee4c7326cb97d2d1ded0307883a7df2e7e4c8e2e1fdd15dd  ci/pilot-network-diagnostic/README.txt

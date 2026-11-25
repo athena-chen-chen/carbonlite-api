@@ -1,0 +1,170 @@
+name: Isolated Pilot migration network diagnostic (manual only)
+'on':
+  workflow_dispatch:
+    inputs:
+      backend_sha:
+        description: Immutable reviewed backend commit
+        type: string
+        required: true
+permissions:
+  contents: read
+concurrency:
+  group: founder-pilot-exact-pair
+  cancel-in-progress: false
+jobs:
+  migration-diagnostic:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: carbonlite_ci_test
+        ports:
+          - 55447:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d carbonlite_ci_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      pgbouncer:
+        image: edoburu/pgbouncer@sha256:53d98b3174b0842c475b9842fb0a733b2d9f7ec9da834ec42252aa553f48c628
+        env:
+          DB_HOST: postgres
+          DB_USER: postgres
+          DB_PASSWORD: postgres
+          DB_NAME: carbonlite_ci_test
+          AUTH_TYPE: scram-sha-256
+          POOL_MODE: transaction
+          DEFAULT_POOL_SIZE: 2
+          MAX_CLIENT_CONN: 30
+        ports:
+          - 55448:5432
+    steps:
+      - name: Require manual isolated immutable execution
+        shell: bash
+        env:
+          CANDIDATE: ${{ inputs.backend_sha }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = athena-chen-chen/carbonlite-api
+          test "$GITHUB_EVENT_NAME" = workflow_dispatch
+          test "$GITHUB_REF" = refs/heads/ci/pilot-network-attribution
+          test "$CANDIDATE" = e424c567d43c0086e0dc01b86e48cb648c114078
+      - name: Checkout this immutable control revision
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: athena-chen-chen/carbonlite-api
+          ref: ${{ github.workflow_sha }}
+          path: control
+          persist-credentials: false
+      - name: Checkout only the immutable backend
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: athena-chen-chen/carbonlite-api
+          ref: e424c567d43c0086e0dc01b86e48cb648c114078
+          path: carbonlite-api
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify identities and both checksum manifests before dependencies
+        shell: bash
+        env:
+          CONTROL_SHA: ${{ github.workflow_sha }}
+        run: |
+          set -euo pipefail
+          test "$(git -C control rev-parse HEAD)" = "$CONTROL_SHA"
+          test -z "$(git -C control status --porcelain --untracked-files=all)"
+          python3 control/ci/pilot-network-diagnostic/run.py verify "$GITHUB_WORKSPACE"
+      - name: Set up pnpm
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
+        with:
+          version: 10.17.0
+          run_install: false
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '20'
+      - name: Local helper and privacy regressions
+        run: python3 -m unittest discover -s control/ci/pilot-network-diagnostic -p test_diagnostic.py -v
+      - name: Provision pinned engine without invoking the telemetry-capable CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm --dir carbonlite-api install --frozen-lockfile
+          cd carbonlite-api
+          env -i PATH="$PATH" CI=true node -e 'const {createRequire}=require("module");if(require("prisma/package.json").version!=="6.19.3")process.exit(1);const r=createRequire(require.resolve("prisma/package.json"));const e=r("@prisma/engines");const f=createRequire(r.resolve("@prisma/engines"))("@prisma/fetch-engine");e.ensureNeededBinariesExist({clientEngineType:"library",download:f.download}).catch(()=>process.exitCode=1)' >/dev/null 2>&1
+          cd ..
+          python3 control/ci/pilot-network-diagnostic/run.py verify "$GITHUB_WORKSPACE"
+      - name: Create UID and verify read-only controls without extra tracing privilege
+        shell: bash
+        run: |
+          set -euo pipefail
+          ! getent passwd 24001 >/dev/null
+          ! id clpairtest >/dev/null 2>&1
+          sudo useradd --create-home --uid 24001 clpairtest
+          mkdir -m 755 diagnostic-results
+          sudo mkdir -m 700 diagnostic-results/disposable
+          sudo chown clpairtest:clpairtest diagnostic-results/disposable
+          sudo chown -R clpairtest:clpairtest carbonlite-api
+          bash control/ci/pilot-exact-pair/runner-access.sh "$GITHUB_WORKSPACE" "$(id -u)" "$(id -g)"
+          python3 control/ci/pilot-network-diagnostic/run.py prepare "$GITHUB_WORKSPACE"
+      - name: Enable unchanged IPv4 and IPv6 outbound denial
+        id: network
+        shell: bash
+        env:
+          POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
+          POOLER_CONTAINER: ${{ job.services.pgbouncer.id }}
+        run: bash control/ci/pilot-exact-pair/network.sh enable
+      - name: Capability calibration then two predetermined migration arms
+        shell: bash
+        env:
+          POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
+        run: python3 control/ci/pilot-network-diagnostic/run.py experiment "$GITHUB_WORKSPACE"
+      - name: Always recheck application and control identity
+        if: always()
+        shell: bash
+        env:
+          CONTROL_SHA: ${{ github.workflow_sha }}
+        run: |
+          set -euo pipefail
+          test "$(git -C control rev-parse HEAD)" = "$CONTROL_SHA"
+          test -z "$(git -C control status --porcelain --untracked-files=all)"
+          python3 control/ci/pilot-network-diagnostic/run.py verify "$GITHUB_WORKSPACE"
+      - name: Always preserve final rejection counter and fail closed
+        if: always() && steps.network.outcome == 'success'
+        run: python3 control/ci/pilot-network-diagnostic/run.py counter-check "$GITHUB_WORKSPACE"
+      - name: Validate bounded artifact schema before upload
+        id: export
+        if: always()
+        run: python3 control/ci/pilot-network-diagnostic/run.py export-check "$GITHUB_WORKSPACE"
+      - name: Upload bounded structured metadata only
+        if: always() && steps.export.outcome == 'success'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: pilot-network-diagnostic-${{ github.run_id }}
+          retention-days: 7
+          if-no-files-found: warn
+          path: |
+            diagnostic-results/published/capability.json
+            diagnostic-results/published/arm-A.json
+            diagnostic-results/published/arm-B.json
+            diagnostic-results/published/identity.json
+            diagnostic-results/published/summary.json
+            diagnostic-results/published/network.json
+      - name: Remove only this job's disposable service containers
+        if: always()
+        shell: bash
+        env:
+          POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
+          POOLER_CONTAINER: ${{ job.services.pgbouncer.id }}
+        run: |
+          set -euo pipefail
+          for container in "$POSTGRES_CONTAINER" "$POOLER_CONTAINER"; do
+            [[ "$container" =~ ^[0-9a-f]{64}$ ]]
+            docker rm -f "$container" >/dev/null
+          done
+          # Runner teardown removes firewall rules; never reopen UID egress here.
