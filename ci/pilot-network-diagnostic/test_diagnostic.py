@@ -1,5 +1,10 @@
 """Local contract/privacy tests. Linux runtime coverage is explicitly separate."""
 import copy
+import contextlib
+import io
+import stat
+import struct
+import types
 import hashlib
 import importlib.util
 import json
@@ -416,6 +421,265 @@ class CContractTests(unittest.TestCase):
         r=subprocess.run([binary,'unsupported','--','/bin/true'],capture_output=True,timeout=5)
         self.assertEqual(r.returncode,78)
         self.assertEqual(r.stdout,b'')
+
+class PreparationEvidenceTests(unittest.TestCase):
+    """Mocked ACL snapshots plus real owner-only temporary artifact I/O, not Linux ACL installation."""
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.workspace = Path(self.temp.name).resolve()
+        (self.workspace / 'diagnostic-results').mkdir(mode=0o700)
+        self.control = self.workspace / 'control'
+        self.here = self.control / 'ci/pilot-network-diagnostic'
+        self.here.mkdir(parents=True)
+        (self.here / 'approved.json').write_text(json.dumps({'payloads': []}))
+        self.info = types.SimpleNamespace(st_mode=stat.S_IFDIR | 0o755,
+                                          st_uid=os.getuid(), st_gid=os.getgid())
+        self.guard_path = driver.CONTROL / 'ci/pilot-exact-pair/runner-permissions.py'
+        if not self.guard_path.is_file():
+            self.guard_path = HERE.parents[2] / 'exact-pair-ci-preparation/ci/pilot-exact-pair/runner-permissions.py'
+        self.guard_spec = importlib.util.spec_from_file_location('evidence_test_guard', self.guard_path)
+        self.guard = importlib.util.module_from_spec(self.guard_spec)
+        self.guard_spec.loader.exec_module(self.guard)
+
+    def entries(self, tag=2, ident=None, perms=7, mask=7):
+        ident = os.getuid() if ident is None else ident
+        values = [(1, 7, 0xffffffff), (4, 5, 0xffffffff), (32, 5, 0xffffffff)]
+        if tag is not None:
+            values += [(tag, perms, ident), (16, mask, 0xffffffff)]
+        data = struct.pack('<I', 2) + b''.join(struct.pack('<HHI', *v) for v in values)
+        return data, self.guard.acl_entries(data)
+
+    def summary(self, tag=2, ident=None, default=True):
+        _, entries = self.entries(tag, ident)
+        with patch.object(driver, 'CONTROL', self.control):
+            return driver.acl_failure_evidence(self.here, self.workspace, self.info,
+                'system.posix_acl_default' if default else 'system.posix_acl_access', entries, 7)
+
+    def prepare_snapshot(self, tag=2, ident=None, mask=7, default=True):
+        data, _ = self.entries(tag, ident, mask=mask)
+        attr = 'system.posix_acl_default' if default else 'system.posix_acl_access'
+        class CompilerReached(Exception): pass
+        with patch.object(driver, 'CONTROL', self.control), patch.object(driver, 'HERE', self.here), \
+             patch.object(driver, 'identity', return_value={}), patch.object(driver.sys, 'platform', 'linux'), \
+             patch.object(driver.importlib.util, 'spec_from_file_location', return_value=self.guard_spec), \
+             patch.object(Path, 'lstat', return_value=self.info), \
+             patch.object(driver.os, 'listxattr', side_effect=lambda path, **kw: [attr] if path == self.here else [], create=True), \
+             patch.object(driver.os, 'getxattr', return_value=data, create=True), \
+             patch.object(driver, 'command', side_effect=CompilerReached):
+            try:
+                driver.prepare(self.workspace)
+            except CompilerReached:
+                return None  # No ACL rejection; no compiler/process was executed.
+            except driver.Blocked as error:
+                self.assertEqual(driver.failure_code(error), 'CONTROL_ACL')
+                return error
+        self.fail('Expected ACL decision or compiler sentinel')
+
+    def invoke_failure(self, error):
+        output = io.StringIO()
+        with patch.object(driver, 'main', side_effect=error), \
+             patch.object(driver.sys, 'argv', ['run.py', 'prepare', str(self.workspace)]), \
+             contextlib.redirect_stderr(output):
+            status = driver.entrypoint()
+        self.assertEqual(status, 1)
+        self.assertIn('HOSTED_NETWORK_DIAGNOSTIC: BLOCKED CONTROL_ACL', output.getvalue())
+        self.assertNotIn(driver.CANARY, output.getvalue())
+        return output.getvalue()
+
+    def test_trusted_owner_only_acl_still_not_rejected(self):
+        self.assertIsNone(self.prepare_snapshot(tag=None))
+
+    def test_trusted_named_user_still_blocked_with_evidence(self):
+        for uid in (0, os.getuid()):
+            with self.subTest(uid=uid):
+                error = self.prepare_snapshot(ident=uid)
+                self.assertIsNotNone(error)
+                row = error.preparation_evidence['preparation_failure']
+                self.assertEqual(row['principal_id'], uid)
+                self.assertTrue(row['principal_class'].startswith('TRUSTED_'))
+
+    def test_approved_named_group_still_blocked(self):
+        with patch.object(driver, 'acl_principal_class', return_value='TRUSTED_APPROVED_GROUP'):
+            error = self.prepare_snapshot(tag=8, ident=os.getgid())
+            self.assertEqual(error.preparation_evidence['preparation_failure']['principal_class'], 'TRUSTED_APPROVED_GROUP')
+
+    def test_untrusted_named_user_still_blocked(self):
+        error = self.prepare_snapshot(ident=24001)
+        self.assertEqual(error.preparation_evidence['preparation_failure']['principal_class'], 'UNTRUSTED_NAMED_USER')
+
+    def test_untrusted_named_group_still_blocked(self):
+        error = self.prepare_snapshot(tag=8, ident=24001)
+        self.assertEqual(error.preparation_evidence['preparation_failure']['principal_class'], 'UNTRUSTED_NAMED_GROUP')
+
+    def test_masked_write_acl_decision_unchanged(self):
+        self.assertIsNone(self.prepare_snapshot(ident=24001, mask=5))
+
+    def test_default_acl_records_only_inheritance_potential(self):
+        row = self.summary()['preparation_failure']
+        self.assertEqual(row['acl_type'], 'DEFAULT')
+        self.assertEqual(row['write_effect'], 'POTENTIAL_INHERITED_WRITE')
+        self.assertEqual(row['current_object_write'], 'NOT_GRANTED_BY_DEFAULT_ACL')
+        self.assertIs(row['mask_effective_write'], True)
+
+    def test_access_acl_mask_does_not_claim_proven_current_access(self):
+        row = self.summary(default=False)['preparation_failure']
+        self.assertEqual(row['write_effect'], 'ACCESS_MASK_PERMITS_WRITE')
+        self.assertEqual(row['current_object_write'], 'NOT_ESTABLISHED')
+
+    def test_record_path_is_allowlisted_relative_path(self):
+        row = self.summary()['preparation_failure']
+        self.assertEqual((row['path_class'], row['path']), ('CONTROL_RELATIVE', 'ci/pilot-network-diagnostic'))
+        self.assertEqual(row['mode'], '0755')
+        self.assertEqual(row['file_type'], 'DIRECTORY')
+
+    def test_workspace_ancestors_are_fixed_classifications_only(self):
+        with patch.object(driver, 'CONTROL', self.control):
+            self.assertEqual(driver.preparation_path(self.workspace, self.workspace), ('WORKSPACE_ROOT', '', 0))
+            self.assertEqual(driver.preparation_path(self.workspace.parent, self.workspace), ('WORKSPACE_ANCESTOR', '', 1))
+            result = driver.preparation_path(Path('/'), self.workspace)
+            self.assertEqual(result[0:2], ('FILESYSTEM_ROOT', ''))
+            self.assertGreater(result[2], 0)
+
+    def test_unallowlisted_path_is_not_serialized(self):
+        with patch.object(driver, 'CONTROL', self.control):
+            for path in (self.control / driver.CANARY, self.workspace / driver.CANARY):
+                with self.subTest(path_kind='synthetic'), self.assertRaises(driver.Blocked):
+                    driver.preparation_path(path, self.workspace)
+
+    def test_missing_or_malformed_record_fails_schema(self):
+        for value in (None, {}, [], {'status': 'BLOCKED', 'preparation_failure': None}):
+            with self.subTest(kind=type(value).__name__), self.assertRaises(driver.Blocked):
+                driver.preparation_schema(value)
+        value = self.summary(); del value['preparation_failure']['acl_mask']
+        with self.assertRaises(driver.Blocked): driver.preparation_schema(value)
+
+    def test_invalid_principal_owner_and_mode_fields_fail_closed(self):
+        for key, bad in [('principal_id', -1), ('principal_id', True), ('principal_id', 0xffffffff),
+                         ('owner_uid', driver.CANARY), ('owner_gid', None), ('mode', '0777'),
+                         ('mode', '0755\n'), ('principal_class', 'TRUSTED_ROOT_USER')]:
+            value = self.summary(ident=24001); value['preparation_failure'][key] = bad
+            with self.subTest(key=key, bad_type=type(bad).__name__), self.assertRaises(driver.Blocked):
+                driver.preparation_schema(value)
+
+    def test_invalid_path_and_nested_sensitive_values_rejected(self):
+        for key in driver.PREPARATION_KEYS:
+            value = self.summary(); value['preparation_failure'][key] = {'secret': driver.CANARY}
+            with self.subTest(key=key), self.assertRaises(driver.Blocked): driver.export_schema(value)
+        for bad in ('../' + driver.CANARY, '/private/' + driver.CANARY, '\u202e' + driver.CANARY,
+                    'ci/pilot-network-diagnostic\n' + driver.CANARY, '\\u0050' + driver.CANARY):
+            value = self.summary(); value['preparation_failure']['path'] = bad
+            with self.subTest(kind='synthetic private path'), self.assertRaises(driver.Blocked): driver.export_schema(value)
+
+    def test_arbitrary_extra_names_and_exception_messages_rejected(self):
+        for key in ('username', 'acl_dump', 'environ', 'exception', 'absolute_path'):
+            value = self.summary(); value['preparation_failure'][key] = driver.CANARY
+            with self.subTest(key=key), self.assertRaises(driver.Blocked): driver.export_schema(value)
+        value = self.summary(); value['status'] = 'PASS'
+        with self.assertRaises(driver.Blocked): driver.export_schema(value)
+
+    def test_false_effective_write_or_masked_rejection_evidence_rejected(self):
+        for key, val in [('mask_effective_write', False), ('entry_permissions', 5), ('acl_mask', 5),
+                         ('acl_type', 'OTHER'), ('current_object_write', 'CONFIRMED')]:
+            value = self.summary(); value['preparation_failure'][key] = val
+            with self.subTest(key=key), self.assertRaises(driver.Blocked): driver.export_schema(value)
+
+    def test_valid_artifact_available_but_preparation_exit_remains_nonzero(self):
+        error = self.prepare_snapshot(ident=24001)
+        self.invoke_failure(error)
+        path = self.workspace / 'diagnostic-results/published/summary.json'
+        value = json.loads(path.read_text())
+        self.assertEqual(value, error.preparation_evidence)
+        self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+        self.assertNotIn(driver.CANARY, path.read_text())
+        driver.export_check(self.workspace)  # Safe upload eligibility, not a successful preparation.
+
+    def test_real_python_exit_nonzero_with_valid_synthetic_failure_artifact(self):
+        code = '''import importlib.util,json,sys
+s=importlib.util.spec_from_file_location("driver",sys.argv[1]);d=importlib.util.module_from_spec(s);s.loader.exec_module(d)
+e=d.Blocked("CONTROL_ACL");e.preparation_evidence=json.loads(sys.stdin.read())
+def blocked():raise e
+d.main=blocked;sys.argv=["run.py","prepare",sys.argv[2]]
+sys.exit(d.entrypoint())
+'''
+        result = subprocess.run([sys.executable, '-B', '-c', code, str(HERE / 'run.py'), str(self.workspace)],
+                                input=json.dumps(self.summary()), text=True, capture_output=True, timeout=10)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('HOSTED_NETWORK_DIAGNOSTIC: BLOCKED CONTROL_ACL', result.stderr)
+        self.assertNotIn(driver.CANARY, result.stdout + result.stderr)
+        driver.export_check(self.workspace)
+
+    def test_regular_file_snapshot_has_no_unrestricted_path(self):
+        info = types.SimpleNamespace(st_mode=stat.S_IFREG | 0o644, st_uid=os.getuid(), st_gid=os.getgid())
+        _, entries = self.entries()
+        with patch.object(driver, 'CONTROL', self.control):
+            value = driver.acl_failure_evidence(self.here / 'run.py', self.workspace, info,
+                                               'system.posix_acl_access', entries, 7)
+        self.assertEqual(value['preparation_failure']['file_type'], 'REGULAR_FILE')
+        self.assertEqual(value['preparation_failure']['mode'], '0644')
+        self.assertEqual(value['preparation_failure']['path'], 'ci/pilot-network-diagnostic/run.py')
+
+    def test_builder_rejects_unsupported_acl_source_and_file_type(self):
+        _, entries = self.entries()
+        with patch.object(driver, 'CONTROL', self.control):
+            with self.assertRaises(driver.Blocked):
+                driver.acl_failure_evidence(self.here, self.workspace, self.info, driver.CANARY, entries, 7)
+            info = types.SimpleNamespace(st_mode=stat.S_IFIFO | 0o600, st_uid=os.getuid(), st_gid=os.getgid())
+            with self.assertRaises(driver.Blocked):
+                driver.acl_failure_evidence(self.here, self.workspace, info, 'system.posix_acl_default', entries, 7)
+
+    def test_missing_evidence_never_turns_preparation_into_pass(self):
+        message = self.invoke_failure(driver.Blocked('CONTROL_ACL'))
+        self.assertIn('PREPARATION_EVIDENCE: BLOCKED', message)
+        self.assertFalse((self.workspace / 'diagnostic-results/published/summary.json').exists())
+        with self.assertRaises(driver.Blocked): driver.export_check(self.workspace)
+
+    def test_invalid_capture_never_writes_private_artifact(self):
+        error = driver.Blocked('CONTROL_ACL')
+        error.preparation_evidence = {'message': driver.CANARY}
+        message = self.invoke_failure(error)
+        self.assertIn('PREPARATION_EVIDENCE: BLOCKED', message)
+        self.assertFalse((self.workspace / 'diagnostic-results/published/summary.json').exists())
+
+    def test_tampered_artifact_prevents_export(self):
+        error = self.prepare_snapshot()
+        self.invoke_failure(error)
+        path = self.workspace / 'diagnostic-results/published/summary.json'
+        value = json.loads(path.read_text()); value['preparation_failure']['username'] = driver.CANARY
+        path.write_text(json.dumps(value))
+        with self.assertRaises(driver.Blocked): driver.export_check(self.workspace)
+
+    def test_existing_summary_is_not_overwritten(self):
+        error = self.prepare_snapshot()
+        self.invoke_failure(error)
+        path = self.workspace / 'diagnostic-results/published/summary.json'; before = path.read_bytes()
+        self.assertIn('PREPARATION_EVIDENCE: BLOCKED', self.invoke_failure(error))
+        self.assertEqual(path.read_bytes(), before)
+
+    def test_symlink_directory_cannot_redirect_capture(self):
+        elsewhere = self.workspace / 'unrelated'; elsewhere.mkdir()
+        (self.workspace / 'diagnostic-results/published').symlink_to(elsewhere, target_is_directory=True)
+        self.assertIn('PREPARATION_EVIDENCE: BLOCKED', self.invoke_failure(self.prepare_snapshot()))
+        self.assertEqual(list(elsewhere.iterdir()), [])
+
+    def test_classifier_trusted_group_requires_exclusively_trusted_members(self):
+        with patch.object(driver.os, 'getuid', return_value=1001), patch.object(driver.os, 'getgid', return_value=1001), \
+             patch.object(driver.pwd, 'getpwuid', return_value=types.SimpleNamespace(pw_gid=1001)), \
+             patch.object(driver.grp, 'getgrgid', return_value=types.SimpleNamespace(gr_mem=['PRIVATE_USERNAME'])), \
+             patch.object(driver.pwd, 'getpwnam', return_value=types.SimpleNamespace(pw_uid=1001)), \
+             patch.object(driver.pwd, 'getpwall', return_value=[types.SimpleNamespace(pw_uid=1001, pw_gid=1001)]):
+            self.assertEqual(driver.acl_principal_class(8, 1001), 'TRUSTED_APPROVED_GROUP')
+            with patch.object(driver.pwd, 'getpwnam', return_value=types.SimpleNamespace(pw_uid=24001)):
+                self.assertEqual(driver.acl_principal_class(8, 1001), 'UNTRUSTED_NAMED_GROUP')
+            with patch.object(driver.grp, 'getgrgid', side_effect=KeyError(driver.CANARY)):
+                self.assertEqual(driver.acl_principal_class(8, 1001), 'UNVERIFIED_GROUP')
+
+    def test_capture_generation_failure_does_not_change_acl_rejection(self):
+        with patch.object(driver, 'acl_failure_evidence', side_effect=ValueError(driver.CANARY)):
+            error = self.prepare_snapshot()
+        self.assertEqual(driver.failure_code(error), 'CONTROL_ACL')
+        self.assertIn('PREPARATION_EVIDENCE: BLOCKED', self.invoke_failure(error))
+
 
 
 if __name__=='__main__':

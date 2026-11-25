@@ -16,6 +16,8 @@ import sys
 import tempfile
 import time
 import contextlib
+import grp
+import pwd
 sys.dont_write_bytecode = True
 
 HERE = Path(__file__).resolve().parent
@@ -124,6 +126,152 @@ def identity(workspace):
     return verifier.verify(workspace / "carbonlite-api", approved["backend"]["expected_commit"], approved["backend"])
 
 
+PREPARATION_PATHS = {'.', '.github', '.github/workflows', 'ci', 'ci/pilot-network-diagnostic',
+                     '.github/workflows/pilot-network-attribution.yml',
+                     *{'ci/pilot-network-diagnostic/' + name for name in
+                       ('trace-connect.c', 'run.py', 'test_diagnostic.py', 'approved.json', 'README.txt')}}
+PREPARATION_KEYS = {'code', 'path_class', 'path', 'ancestor_depth', 'file_type', 'owner_uid',
+                    'owner_gid', 'mode', 'acl_type', 'entry_category', 'principal_id',
+                    'principal_class', 'entry_permissions', 'acl_mask', 'mask_effective_write',
+                    'write_effect', 'current_object_write', 'explanation'}
+
+
+def acl_principal_class(tag, ident):
+    """Metadata classification only; never changes the ACL rejection decision."""
+    if tag == 2:
+        return 'TRUSTED_ROOT_USER' if ident == 0 else 'TRUSTED_RUNNER_USER' if ident == os.getuid() else 'UNTRUSTED_NAMED_USER'
+    if ident not in {0, os.getgid()}:
+        return 'UNTRUSTED_NAMED_GROUP'
+    try:
+        if pwd.getpwuid(os.getuid()).pw_gid != os.getgid():
+            return 'UNVERIFIED_GROUP'
+        members = {pwd.getpwnam(name).pw_uid for name in grp.getgrgid(ident).gr_mem}
+        members.update(p.pw_uid for p in pwd.getpwall() if p.pw_gid == ident)
+        return 'TRUSTED_APPROVED_GROUP' if members <= {0, os.getuid()} else 'UNTRUSTED_NAMED_GROUP'
+    except Exception:
+        return 'UNVERIFIED_GROUP'  # Never serialize names or lookup exceptions.
+
+
+def preparation_path(path, workspace):
+    try:
+        relative = str(path.relative_to(CONTROL))
+    except ValueError:
+        chain = [workspace, *workspace.parents]
+        if path not in chain:
+            raise Blocked('PREPARATION_EVIDENCE')
+        return ('WORKSPACE_ROOT' if path == workspace else 'FILESYSTEM_ROOT' if path == Path('/')
+                else 'WORKSPACE_ANCESTOR', '', chain.index(path))
+    if relative not in PREPARATION_PATHS:
+        raise Blocked('PREPARATION_EVIDENCE')
+    return 'CONTROL_RELATIVE', relative, 0
+
+
+def preparation_schema(value):
+    """Exact one-record schema; no free text, arbitrary paths, names or nested values."""
+    if (type(value) is not dict or set(value) != {'status', 'reason', 'error_code', 'no_retry', 'preparation_failure'}
+            or value['status'] != 'BLOCKED' or value['reason'] != 'PREPARATION_FAILURE'
+            or value['error_code'] != 'CONTROL_ACL' or value['no_retry'] is not True):
+        raise Blocked('PREPARATION_EVIDENCE')
+    row = value['preparation_failure']
+    if type(row) is not dict or set(row) != PREPARATION_KEYS:
+        raise Blocked('PREPARATION_EVIDENCE')
+    strings = PREPARATION_KEYS - {'ancestor_depth', 'owner_uid', 'owner_gid', 'principal_id',
+                                  'entry_permissions', 'acl_mask', 'mask_effective_write'}
+    if any(type(row[k]) is not str for k in strings):
+        raise Blocked('PREPARATION_EVIDENCE')
+    for key in ('owner_uid', 'owner_gid', 'principal_id'):
+        if type(row[key]) is not int or not 0 <= row[key] < 0xffffffff:
+            raise Blocked('PREPARATION_EVIDENCE')
+    if type(row['ancestor_depth']) is not int or not 0 <= row['ancestor_depth'] <= 64:
+        raise Blocked('PREPARATION_EVIDENCE')
+    if row['path_class'] == 'CONTROL_RELATIVE':
+        if row['path'] not in PREPARATION_PATHS or row['ancestor_depth'] != 0:
+            raise Blocked('PREPARATION_EVIDENCE')
+    elif (row['path_class'] not in {'WORKSPACE_ROOT', 'WORKSPACE_ANCESTOR', 'FILESYSTEM_ROOT'}
+          or row['path'] != '' or (row['ancestor_depth'] == 0) != (row['path_class'] == 'WORKSPACE_ROOT')):
+        raise Blocked('PREPARATION_EVIDENCE')
+    if row['code'] != 'CONTROL_ACL' or row['file_type'] not in {'DIRECTORY', 'REGULAR_FILE'}:
+        raise Blocked('PREPARATION_EVIDENCE')
+    if not re.fullmatch(r'[0-7]{4}', row['mode']) or int(row['mode'], 8) & 0o022:
+        raise Blocked('PREPARATION_EVIDENCE')
+    if row['owner_uid'] not in {0, os.getuid()}:
+        raise Blocked('PREPARATION_EVIDENCE')
+    for key in ('entry_permissions', 'acl_mask'):
+        if type(row[key]) is not int or not 0 <= row[key] <= 7:
+            raise Blocked('PREPARATION_EVIDENCE')
+    if row['mask_effective_write'] is not True or not row['entry_permissions'] & row['acl_mask'] & 2:
+        raise Blocked('PREPARATION_EVIDENCE')
+    if row['entry_category'] not in {'NAMED_USER', 'NAMED_GROUP'}:
+        raise Blocked('PREPARATION_EVIDENCE')
+    tag = 2 if row['entry_category'] == 'NAMED_USER' else 8
+    if row['principal_class'] != acl_principal_class(tag, row['principal_id']):
+        raise Blocked('PREPARATION_EVIDENCE')
+    if row['acl_type'] not in {'ACCESS', 'DEFAULT'}:
+        raise Blocked('PREPARATION_EVIDENCE')
+    default = row['acl_type'] == 'DEFAULT'
+    if (default and row['file_type'] != 'DIRECTORY'
+            or row['write_effect'] != ('POTENTIAL_INHERITED_WRITE' if default else 'ACCESS_MASK_PERMITS_WRITE')
+            or row['current_object_write'] != ('NOT_GRANTED_BY_DEFAULT_ACL' if default else 'NOT_ESTABLISHED')
+            or row['explanation'] != 'NAMED_WRITE_SURVIVES_MASK_REGARDLESS_OF_TRUST'):
+        raise Blocked('PREPARATION_EVIDENCE')
+    if len(json.dumps(value).encode()) > 8192:
+        raise Blocked('PREPARATION_EVIDENCE')
+
+
+def acl_failure_evidence(path, workspace, info, key, entries, mask):
+    if (key not in {'system.posix_acl_access', 'system.posix_acl_default'}
+            or not (stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode))):
+        raise Blocked('PREPARATION_EVIDENCE')
+    tag, perms, ident = next(e for e in entries if e[0] in {2, 8} and e[1] & mask & 2)
+    path_class, relative, depth = preparation_path(path, workspace)
+    default = key == 'system.posix_acl_default'
+    record = {'code': 'CONTROL_ACL', 'path_class': path_class, 'path': relative, 'ancestor_depth': depth,
+              'file_type': 'DIRECTORY' if stat.S_ISDIR(info.st_mode) else 'REGULAR_FILE',
+              'owner_uid': info.st_uid, 'owner_gid': info.st_gid, 'mode': format(stat.S_IMODE(info.st_mode), '04o'),
+              'acl_type': 'DEFAULT' if default else 'ACCESS',
+              'entry_category': 'NAMED_USER' if tag == 2 else 'NAMED_GROUP',
+              'principal_id': ident, 'principal_class': acl_principal_class(tag, ident),
+              'entry_permissions': perms, 'acl_mask': mask, 'mask_effective_write': True,
+              'write_effect': 'POTENTIAL_INHERITED_WRITE' if default else 'ACCESS_MASK_PERMITS_WRITE',
+              'current_object_write': 'NOT_GRANTED_BY_DEFAULT_ACL' if default else 'NOT_ESTABLISHED',
+              'explanation': 'NAMED_WRITE_SURVIVES_MASK_REGARDLESS_OF_TRUST'}
+    summary = {'status': 'BLOCKED', 'reason': 'PREPARATION_FAILURE', 'error_code': 'CONTROL_ACL',
+               'no_retry': True, 'preparation_failure': record}
+    preparation_schema(summary)
+    return summary
+
+
+def persist_preparation_failure(workspace, error):
+    """New owner-only artifact only; never chmod/repair existing paths or ACLs."""
+    if failure_code(error) != 'CONTROL_ACL':
+        raise Blocked('PREPARATION_EVIDENCE')
+    summary = getattr(error, 'preparation_evidence', None)
+    preparation_schema(summary)
+    if not workspace.is_absolute() or workspace.resolve(strict=True) != workspace:
+        raise Blocked('PREPARATION_EVIDENCE')
+    with contextlib.ExitStack() as stack:
+        def directory(name, parent=None):
+            fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+            stack.callback(os.close, fd)
+            info = os.fstat(fd)
+            if info.st_uid != os.getuid() or info.st_mode & 0o022:
+                raise Blocked('PREPARATION_EVIDENCE')
+            return fd
+        root = directory(workspace)
+        results = directory('diagnostic-results', root)  # Created by the reviewed workflow.
+        try:
+            os.mkdir('published', 0o700, dir_fd=results)
+        except FileExistsError:
+            pass
+        published = directory('published', results)
+        if os.fstat(published).st_mode & 0o077:
+            raise Blocked('PREPARATION_EVIDENCE')
+        fd = os.open('summary.json', os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                     0o600, dir_fd=published)
+        with os.fdopen(fd, 'w') as stream:
+            stream.write(json.dumps(summary, sort_keys=True, indent=2) + '\n')
+
+
 def prepare(workspace):
     """Normal trusted runner only; no privilege/ACL repair in this helper."""
     if sys.platform != "linux" or os.getuid() in {0, 24001}:
@@ -148,7 +296,12 @@ def prepare(workspace):
                 entries = guard.acl_entries(os.getxattr(p, key, follow_symlinks=False))
                 mask = next((e[1] for e in entries if e[0] == 16), 7)
                 if any(tag in {2, 8} and perms & mask & 2 for tag, perms, _ in entries):
-                    raise Blocked("CONTROL_ACL")
+                    error = Blocked("CONTROL_ACL")
+                    try:
+                        error.preparation_evidence = acl_failure_evidence(p, workspace, s, key, entries, mask)
+                    except Exception:
+                        pass  # The original ACL failure remains authoritative.
+                    raise error
     output = workspace / "diagnostic-bin"
     output.mkdir(mode=0o755, exist_ok=False)
     if command(["gcc", "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", str(HERE / "trace-connect.c"), "-o", str(output / "trace-connect")], env={"PATH": os.environ["PATH"]}):
@@ -553,6 +706,9 @@ def export_check(workspace):
 
 def export_schema(value):
     """Second privacy boundary: no unrestricted string/key or scalar output."""
+    if type(value) is dict and ('preparation_failure' in value or value.get('reason') == 'PREPARATION_FAILURE'):
+        preparation_schema(value)
+        return
     approved = json.loads((HERE / 'approved.json').read_text())['backend']
     words = set()
     def collect(x):
@@ -762,13 +918,18 @@ def main():
     return experiment(workspace)
 
 
-if __name__ == "__main__":
+def entrypoint():
     try:
-        sys.exit(main())
+        return main()
     except Exception as error:
         # Never stringify exceptions, paths, argv, environment or database errors.
         code = failure_code(error)
         print("HOSTED_NETWORK_DIAGNOSTIC: BLOCKED " + code, file=sys.stderr)
+        if len(sys.argv) == 3 and sys.argv[1] == 'prepare' and code == 'CONTROL_ACL':
+            try:
+                persist_preparation_failure(Path(sys.argv[2]), error)
+            except Exception:
+                print('PREPARATION_EVIDENCE: BLOCKED', file=sys.stderr)
         if len(sys.argv) == 3 and sys.argv[1] == "experiment":
             try:
                 target = Path(sys.argv[2]).resolve() / "diagnostic-results/published/summary.json"
@@ -776,4 +937,8 @@ if __name__ == "__main__":
                     write(target, {"status": "BLOCKED", "reason": "TRACE_OR_DIAGNOSTIC_FAILURE", "error_code": code, "no_retry": True,'cleanup':CLEANUP_REPORTS})
             except Exception:
                 pass  # Primary failure remains nonzero; no unsafe fallback text.
-        sys.exit(1)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(entrypoint())

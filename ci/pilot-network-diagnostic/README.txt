@@ -198,3 +198,79 @@ Regression evidence distinguishes mocked signal/acknowledgement tests and parser
 counterexamples from the compiled portable C root-latch self-test. No Linux kernel
 tracing, real cancellation forwarding or live journal/firewall regression is
 claimed from those local tests. No historical destinations are contacted.
+
+CONTROL_ACL PREPARATION EVIDENCE — LOCAL-ONLY CORRECTION, 2026-11-25
+Baseline: published source D 48d41a7958666c27283aa1d9588a3205ca529764,
+index ea094ad9c0f758b7e4a853f4d102682a95947c9e0c618cde6dfc5a8e3f0910fa.
+The original published source overlay remains unchanged. This separate candidate
+changes run.py, test_diagnostic.py, this README and the diagnostic checksum index.
+No workflow, tracer C, approval pins, Entry W or Exact-Pair file changes.
+
+Before: prepare printed only CONTROL_ACL, and the experiment-only failure
+handler could not retain a preparation-failure artifact. Run 45687359144 therefore
+contains no offending path, principal or ACL entry. This correction does not
+reconstruct that missing historical evidence or establish the hosted ACL cause.
+
+After: at the SAME rejection predicate, prepare attaches one validated failure
+record to the original CONTROL_ACL exception. Named writes to trusted principals
+still reject. Owner-only and masked-write decisions also remain as before; no
+ACL policy alignment or relaxation is performed. If record construction fails,
+the original CONTROL_ACL exception still exits nonzero. No trust classification
+is used to change acceptance. The group metadata classifier mirrors the existing
+role-bound root/runner-primary-group whitelist and checks that membership is
+exclusively trusted; unavailable account lookup is explicitly UNVERIFIED_GROUP.
+Account names are used internally for lookup only and are never serialized.
+
+Record fields are exact and closed: code; allowlisted CONTROL_RELATIVE path or
+WORKSPACE_ROOT/WORKSPACE_ANCESTOR/FILESYSTEM_ROOT plus bounded ancestor depth;
+DIRECTORY/REGULAR_FILE; numeric owner UID/GID; four-digit octal mode; ACCESS or
+DEFAULT; NAMED_USER/NAMED_GROUP; numeric principal ID and fixed trust class;
+entry permission bits and mask; mask_effective_write; fixed write-effect/current
+access classifications; and NAMED_WRITE_SURVIVES_MASK_REGARDLESS_OF_TRUST.
+No arbitrary paths, user/group names, ACL dump, exception, environment or payload.
+UID/GID fields reject booleans, negative IDs and the undefined-ID sentinel.
+
+mask_effective_write means ONLY that the named entry's write bit survives its
+ACL mask. ACCESS_MASK_PERMITS_WRITE records that fact without establishing
+current-object access, which remains NOT_ESTABLISHED (owner precedence/group
+membership can matter). DEFAULT uses POTENTIAL_INHERITED_WRITE and
+NOT_GRANTED_BY_DEFAULT_ACL: a default ACL does not grant current-object access,
+and creation modes can remove inherited write. These are diagnostic distinctions,
+not changes to the existing acceptance decision. A snapshot mismatch can reflect
+racing metadata; this task does not claim an atomic Linux ACL/mode snapshot.
+
+Safe persistence and export
+The prepare error handler writes status BLOCKED, reason PREPARATION_FAILURE,
+error_code CONTROL_ACL, no_retry true and preparation_failure to the existing
+summary.json path. It preserves exit status 1; artifact eligibility is NOT a
+successful preparation. The summary has an exact schema and an additional
+8192-byte bound, within existing 512-KiB/file and 2-MiB total bounds. Other artifact
+schemas remain unchanged. Unsupported, nested, duplicated JSON fields, arbitrary
+strings, invalid principal/path metadata and contradictory evidence fail closed.
+Preparation records use their own strict schema, never the general string allowlist.
+
+The existing reviewed workflow already creates diagnostic-results before prepare.
+Persistence anchors directory/file operations with directory FDs and NOFOLLOW,
+requires canonical workspace and safe existing directory ownership/modes, creates
+only a new owner-only published directory and 0600 summary, and never overwrites
+an existing summary. No chmod, ACL repair, sudo or subprocess is added. Unsafe or
+unavailable output paths leave the original failure and fixed PREPARATION_EVIDENCE:
+BLOCKED marker; missing/invalid artifacts cannot turn the run into PASS.
+The existing summary.json upload allowlist and seven-day retention require no
+workflow changes. Raw logs remain excluded. No network deny/counter logic changes.
+
+Local verification
+82 diagnostic tests: 81 PASS / 1 Linux-only SKIP. This includes 27 new tests for
+ACL decisions, metadata/privacy, missing/invalid records, trust classification,
+path/symlink restrictions, non-overwrite, safe artifact I/O and a real Python
+subprocess exiting 1 with a valid synthetic preparation-failure artifact.
+ACL snapshots are mocked parsed POSIX ACLs; no host ACL was installed or changed.
+Temporary artifact I/O and the Python exit test are real local checks. They do
+not establish actual hosted Linux ACL layout, observer availability or tracing.
+
+Publication/execution boundary
+This is unpublished local diagnostic source only. The published D and Entry W
+330d5a70d53505b589916c19efda5951034a4ed2 remain unchanged. W intentionally pins
+old D and its old bytes and WILL reject this modified source. Independent review,
+separate source publication and immutable Entry rebinding approvals are required
+before any separately authorized hosted run. No commit, push or dispatch here.
