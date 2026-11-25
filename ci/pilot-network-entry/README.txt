@@ -144,3 +144,39 @@ ci/pilot-network-entry/SHA256SUMS.txt and independently approved W commit/tree.
 The original Exact-Pair index and all payloads are checked in control D, where
 that original workflow remains byte-identical, and on the unchanged existing
 ci/pilot-exact-pair-validation branch. Neither main nor release is changed.
+
+D2 IDENTITY REBINDING — LOCAL ONLY, 2026-11-25
+--------------------------------------------
+This section supersedes all previous D publication/binding statements above.
+Baseline Entry W is the published commit 330d5a70d53505b589916c19efda5951034a4ed2,
+tree 3dff30401f37f07b40341db6676e88f2504780a1; its index is ee68336b...88197a.
+W remains published unchanged; this separate local candidate has no future Entry
+commit SHA or tree identity invented, embedded or precomputed.
+
+The sole active Source approval is now published immutable D2:
+commit 1c81536c44612d02aeb1e79d5e216ab0420f9b2e
+tree ad8693a2fd66733f36d5197bfa5655266c3642ef
+index 63ed0fc0e82fa2565bf46b40fa85782dbdc12c0e6c3456cb22a5a56972660444.
+All seven files and their six payload hashes/index were freshly read back from
+GitHub and matched before this rebinding. approved.json updates only Source
+commit/tree and the four changed Source-file hashes. The backend approval and
+all other metadata remain byte-equivalent. The workflow changes only its two
+Source guard literals and literal control checkout ref. No source branch HEAD
+is substituted for the immutable commit. Required diagnostic inputs are still
+confirmations; old D, mixed D2/old-tree and malformed identities fail closed.
+
+verify.py is BYTE-IDENTICAL to W. The same verifier enforces the new metadata,
+entry/source/backend checkouts stay separate, and SHA/tree/ancestry/cleanliness/
+manifest/file checks run before dependencies and at the existing later gates.
+All runtime/security steps are unchanged: no ACL, firewall, ptrace, privacy,
+cleanup, deployment, artifact allowlist or retention changes. D2's reviewed
+preparation-failure evidence reaches the existing summary.json upload path.
+
+Tests include explicit D2 acceptance using simulated Git checkout evidence and
+old-D rejection even when that simulated checkout matches the old identity.
+They are separate from real GitHub commit/tree/seven-file verification, and do
+not establish a new hosted run or actual Linux behavior. After separately
+authorized publication, independently read back the actual new Entry commit/tree
+and checksum outside its own tree; obtain separate immutable dispatch approval.
+This preserves external Entry identity verification without circular self-hashing.
+No publication or dispatch occurs as part of local rebinding.
