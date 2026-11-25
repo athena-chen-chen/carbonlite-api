@@ -152,7 +152,99 @@ def acl_principal_class(tag, ident):
         return 'UNVERIFIED_GROUP'  # Never serialize names or lookup exceptions.
 
 
+
+def runner_trust():
+    """Role-bound identity, matching the reviewed permission gate; never a fixed hosted UID."""
+    uid, gid = os.getuid(), os.getgid()
+    try:
+        if (uid in {0, 24001} or os.geteuid() != uid or
+                pwd.getpwuid(uid).pw_gid != gid or pwd.getpwuid(0).pw_gid != 0):
+            raise Blocked('RUNNER_IDENTITY')
+    except Exception:
+        raise Blocked('RUNNER_IDENTITY') from None
+    return {0, uid}
+
+
+def trusted_acl_group(gid):
+    # Same role whitelist and complete primary/supplementary membership proof as Exact-Pair.
+    trusted = runner_trust()
+    if gid not in {0, os.getgid()}:
+        return False
+    try:
+        group = grp.getgrgid(gid)
+        members = {pwd.getpwnam(name).pw_uid for name in group.gr_mem}
+        members.update(p.pw_uid for p in pwd.getpwall() if p.pw_gid == gid)
+        return members <= trusted
+    except Exception:
+        raise Blocked('CONTROL_ACL') from None
+
+
+def rejected_acl_entry(entries, info):
+    trusted = runner_trust()
+    for tag, perms, ident in entries:
+        if not perms & 2 or tag == 16:
+            continue
+        allowed = (info.st_uid in trusted if tag == 1 else
+                   ident in trusted if tag == 2 else
+                   trusted_acl_group(info.st_gid) if tag == 4 else
+                   trusted_acl_group(ident) if tag == 8 else False)
+        # Do not consult the mask: latent untrusted write is rejected too.
+        if not allowed:
+            return tag, perms, ident
+    return None
+
+
+def check_control_path(path, workspace, guard):
+    info = path.lstat()
+    trusted = runner_trust()
+    if (stat.S_ISLNK(info.st_mode) or info.st_uid not in trusted or
+            info.st_mode & stat.S_IWOTH or
+            info.st_mode & stat.S_IWGRP and not trusted_acl_group(info.st_gid)):
+        raise Blocked('CONTROL_PERMISSIONS')
+    if not (stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode)):
+        raise Blocked('CONTROL_TYPE')
+    names = os.listxattr(path, follow_symlinks=False)
+    if any('acl' in name.lower() and name not in
+           {'system.posix_acl_access', 'system.posix_acl_default'} for name in names):
+        raise Blocked('CONTROL_ACL')
+    for key in ('system.posix_acl_access', 'system.posix_acl_default'):
+        if key not in names:
+            continue  # Successful authoritative xattr enumeration, not an inspection fallback.
+        if key.endswith('default') and not stat.S_ISDIR(info.st_mode):
+            raise Blocked('CONTROL_ACL')
+        try:
+            entries = guard.acl_entries(os.getxattr(path, key, follow_symlinks=False))
+        except Exception:
+            raise Blocked('CONTROL_ACL') from None
+        if rejected_acl_entry(entries, info) is not None:
+            error = Blocked('CONTROL_ACL')
+            try:
+                mask = next((e[1] for e in entries if e[0] == 16), 7)
+                error.preparation_evidence = acl_failure_evidence(path, workspace, info, key, entries, mask)
+            except Exception:
+                pass  # Missing evidence never changes the nonzero security decision.
+            raise error
+
 def preparation_path(path, workspace):
+    # Only internally constructed Path objects anchored to the already verified workspace.
+    if not isinstance(path, Path) or not isinstance(workspace, Path):
+        raise Blocked('PREPARATION_EVIDENCE')
+    output = workspace / 'diagnostic-bin'
+    observer = output / 'trace-connect'
+    if path in (output, observer):
+        if (not workspace.is_absolute() or '..' in workspace.parts or
+                workspace.resolve(strict=True) != workspace or
+                not stat.S_ISDIR(workspace.lstat().st_mode) or
+                path.resolve(strict=True) != path or
+                output.parent != workspace or observer.parent != output or
+                not stat.S_ISDIR(output.lstat().st_mode)):
+            raise Blocked('PREPARATION_EVIDENCE')
+        mode = path.lstat().st_mode
+        if path == output and stat.S_ISDIR(mode):
+            return 'OBSERVER_OUTPUT_DIRECTORY', '', 0
+        if path == observer and stat.S_ISREG(mode):
+            return 'OBSERVER_OUTPUT_FILE', '', 0
+        raise Blocked('PREPARATION_EVIDENCE')
     try:
         relative = str(path.relative_to(CONTROL))
     except ValueError:
@@ -180,39 +272,56 @@ def preparation_schema(value):
     if any(type(row[k]) is not str for k in strings):
         raise Blocked('PREPARATION_EVIDENCE')
     for key in ('owner_uid', 'owner_gid', 'principal_id'):
-        if type(row[key]) is not int or not 0 <= row[key] < 0xffffffff:
+        if type(row[key]) is not int or not 0 <= row[key] <= 0xffffffff:
             raise Blocked('PREPARATION_EVIDENCE')
     if type(row['ancestor_depth']) is not int or not 0 <= row['ancestor_depth'] <= 64:
         raise Blocked('PREPARATION_EVIDENCE')
     if row['path_class'] == 'CONTROL_RELATIVE':
         if row['path'] not in PREPARATION_PATHS or row['ancestor_depth'] != 0:
             raise Blocked('PREPARATION_EVIDENCE')
+    elif row['path_class'] in {'OBSERVER_OUTPUT_DIRECTORY', 'OBSERVER_OUTPUT_FILE'}:
+        expected_type = 'DIRECTORY' if row['path_class'] == 'OBSERVER_OUTPUT_DIRECTORY' else 'REGULAR_FILE'
+        if row['path'] != '' or row['ancestor_depth'] != 0 or row['file_type'] != expected_type:
+            raise Blocked('PREPARATION_EVIDENCE')
     elif (row['path_class'] not in {'WORKSPACE_ROOT', 'WORKSPACE_ANCESTOR', 'FILESYSTEM_ROOT'}
           or row['path'] != '' or (row['ancestor_depth'] == 0) != (row['path_class'] == 'WORKSPACE_ROOT')):
         raise Blocked('PREPARATION_EVIDENCE')
     if row['code'] != 'CONTROL_ACL' or row['file_type'] not in {'DIRECTORY', 'REGULAR_FILE'}:
         raise Blocked('PREPARATION_EVIDENCE')
-    if not re.fullmatch(r'[0-7]{4}', row['mode']) or int(row['mode'], 8) & 0o022:
+    if (not re.fullmatch(r'[0-7]{4}', row['mode']) or int(row['mode'], 8) & 0o002
+            or int(row['mode'], 8) & 0o020 and not trusted_acl_group(row['owner_gid'])):
         raise Blocked('PREPARATION_EVIDENCE')
-    if row['owner_uid'] not in {0, os.getuid()}:
+    if row['owner_uid'] not in {0, os.getuid()} or row['owner_gid'] == 0xffffffff:
         raise Blocked('PREPARATION_EVIDENCE')
     for key in ('entry_permissions', 'acl_mask'):
         if type(row[key]) is not int or not 0 <= row[key] <= 7:
             raise Blocked('PREPARATION_EVIDENCE')
-    if row['mask_effective_write'] is not True or not row['entry_permissions'] & row['acl_mask'] & 2:
+    categories = {'OWNER': 1, 'NAMED_USER': 2, 'OWNING_GROUP': 4, 'NAMED_GROUP': 8, 'OTHER': 32}
+    tag = categories.get(row['entry_category'])
+    if tag is None or not row['entry_permissions'] & 2:
         raise Blocked('PREPARATION_EVIDENCE')
-    if row['entry_category'] not in {'NAMED_USER', 'NAMED_GROUP'}:
+    if tag == 32:
+        principal_class = 'UNTRUSTED_OTHER'
+        if row['principal_id'] != 0xffffffff:
+            raise Blocked('PREPARATION_EVIDENCE')
+    else:
+        if row['principal_id'] == 0xffffffff:
+            raise Blocked('PREPARATION_EVIDENCE')
+        if tag == 1 and row['principal_id'] != row['owner_uid'] or tag == 4 and row['principal_id'] != row['owner_gid']:
+            raise Blocked('PREPARATION_EVIDENCE')
+        principal_class = acl_principal_class(2 if tag in {1, 2} else 8, row['principal_id'])
+    if row['principal_class'] != principal_class or principal_class.startswith('TRUSTED_'):
         raise Blocked('PREPARATION_EVIDENCE')
-    tag = 2 if row['entry_category'] == 'NAMED_USER' else 8
-    if row['principal_class'] != acl_principal_class(tag, row['principal_id']):
+    effective = bool(row['entry_permissions'] & (row['acl_mask'] if tag in {2, 4, 8} else 7) & 2)
+    if type(row['mask_effective_write']) is not bool or row['mask_effective_write'] != effective:
         raise Blocked('PREPARATION_EVIDENCE')
     if row['acl_type'] not in {'ACCESS', 'DEFAULT'}:
         raise Blocked('PREPARATION_EVIDENCE')
     default = row['acl_type'] == 'DEFAULT'
     if (default and row['file_type'] != 'DIRECTORY'
-            or row['write_effect'] != ('POTENTIAL_INHERITED_WRITE' if default else 'ACCESS_MASK_PERMITS_WRITE')
+            or row['write_effect'] != ('POTENTIAL_INHERITED_WRITE' if default else 'ACCESS_MASK_PERMITS_WRITE' if effective else 'ACCESS_WRITE_MASKED')
             or row['current_object_write'] != ('NOT_GRANTED_BY_DEFAULT_ACL' if default else 'NOT_ESTABLISHED')
-            or row['explanation'] != 'NAMED_WRITE_SURVIVES_MASK_REGARDLESS_OF_TRUST'):
+            or row['explanation'] != 'UNTRUSTED_WRITE_ENTRY_REGARDLESS_OF_MASK'):
         raise Blocked('PREPARATION_EVIDENCE')
     if len(json.dumps(value).encode()) > 8192:
         raise Blocked('PREPARATION_EVIDENCE')
@@ -222,19 +331,25 @@ def acl_failure_evidence(path, workspace, info, key, entries, mask):
     if (key not in {'system.posix_acl_access', 'system.posix_acl_default'}
             or not (stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode))):
         raise Blocked('PREPARATION_EVIDENCE')
-    tag, perms, ident = next(e for e in entries if e[0] in {2, 8} and e[1] & mask & 2)
+    rejected = rejected_acl_entry(entries, info)
+    if rejected is None:
+        raise Blocked('PREPARATION_EVIDENCE')
+    tag, perms, ident = rejected
+    ident = info.st_uid if tag == 1 else info.st_gid if tag == 4 else ident
+    effective = bool(perms & (mask if tag in {2, 4, 8} else 7) & 2)
     path_class, relative, depth = preparation_path(path, workspace)
     default = key == 'system.posix_acl_default'
     record = {'code': 'CONTROL_ACL', 'path_class': path_class, 'path': relative, 'ancestor_depth': depth,
               'file_type': 'DIRECTORY' if stat.S_ISDIR(info.st_mode) else 'REGULAR_FILE',
               'owner_uid': info.st_uid, 'owner_gid': info.st_gid, 'mode': format(stat.S_IMODE(info.st_mode), '04o'),
               'acl_type': 'DEFAULT' if default else 'ACCESS',
-              'entry_category': 'NAMED_USER' if tag == 2 else 'NAMED_GROUP',
-              'principal_id': ident, 'principal_class': acl_principal_class(tag, ident),
-              'entry_permissions': perms, 'acl_mask': mask, 'mask_effective_write': True,
-              'write_effect': 'POTENTIAL_INHERITED_WRITE' if default else 'ACCESS_MASK_PERMITS_WRITE',
+              'entry_category': {1: 'OWNER', 2: 'NAMED_USER', 4: 'OWNING_GROUP', 8: 'NAMED_GROUP', 32: 'OTHER'}[tag],
+              'principal_id': ident, 'principal_class': ('UNTRUSTED_OTHER' if tag == 32 else
+                   acl_principal_class(2 if tag in {1, 2} else 8, ident)),
+              'entry_permissions': perms, 'acl_mask': mask, 'mask_effective_write': effective,
+              'write_effect': 'POTENTIAL_INHERITED_WRITE' if default else 'ACCESS_MASK_PERMITS_WRITE' if effective else 'ACCESS_WRITE_MASKED',
               'current_object_write': 'NOT_GRANTED_BY_DEFAULT_ACL' if default else 'NOT_ESTABLISHED',
-              'explanation': 'NAMED_WRITE_SURVIVES_MASK_REGARDLESS_OF_TRUST'}
+              'explanation': 'UNTRUSTED_WRITE_ENTRY_REGARDLESS_OF_MASK'}
     summary = {'status': 'BLOCKED', 'reason': 'PREPARATION_FAILURE', 'error_code': 'CONTROL_ACL',
                'no_retry': True, 'preparation_failure': record}
     preparation_schema(summary)
@@ -284,30 +399,18 @@ def prepare(workspace):
     for rel in json.loads((HERE / "approved.json").read_text())["payloads"]:
         p=CONTROL/rel
         paths.update({p,*p.parents})
+    runner_trust()
     for p in paths:
-        s = p.lstat()
-        if stat.S_ISLNK(s.st_mode) or s.st_uid not in {0, os.getuid()} or s.st_mode & 0o022:
-            raise Blocked("CONTROL_PERMISSIONS")
-        if not (stat.S_ISREG(s.st_mode) or stat.S_ISDIR(s.st_mode)):
-            raise Blocked("CONTROL_TYPE")
-        names = os.listxattr(p, follow_symlinks=False)  # Unsupported inspection fails closed.
-        for key in ("system.posix_acl_access", "system.posix_acl_default"):
-            if key in names:
-                entries = guard.acl_entries(os.getxattr(p, key, follow_symlinks=False))
-                mask = next((e[1] for e in entries if e[0] == 16), 7)
-                if any(tag in {2, 8} and perms & mask & 2 for tag, perms, _ in entries):
-                    error = Blocked("CONTROL_ACL")
-                    try:
-                        error.preparation_evidence = acl_failure_evidence(p, workspace, s, key, entries, mask)
-                    except Exception:
-                        pass  # The original ACL failure remains authoritative.
-                    raise error
+        check_control_path(p, workspace, guard)
     output = workspace / "diagnostic-bin"
     output.mkdir(mode=0o755, exist_ok=False)
     if command(["gcc", "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", str(HERE / "trace-connect.c"), "-o", str(output / "trace-connect")], env={"PATH": os.environ["PATH"]}):
         raise Blocked("COMPILER")
     output.chmod(0o755)
     (output / 'trace-connect').chmod(0o755)
+    # Validate actual inherited ACLs on newly created controls, not only ancestor intent.
+    for child in (output, output / 'trace-connect'):
+        check_control_path(child, workspace, guard)
     for p in [HERE / "run.py", HERE / "approved.json", output / "trace-connect"]:
         if command(["sudo", "-u", "clpairtest", "test", "-r", str(p)]) or command(["sudo", "-u", "clpairtest", "test", "-w", str(p)]) == 0:
             raise Blocked("ACTUAL_USER_ACCESS")

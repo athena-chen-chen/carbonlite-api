@@ -1,5 +1,6 @@
 """Local contract/privacy tests. Linux runtime coverage is explicitly separate."""
 import copy
+import ast
 import contextlib
 import io
 import stat
@@ -450,13 +451,13 @@ class PreparationEvidenceTests(unittest.TestCase):
         data = struct.pack('<I', 2) + b''.join(struct.pack('<HHI', *v) for v in values)
         return data, self.guard.acl_entries(data)
 
-    def summary(self, tag=2, ident=None, default=True):
+    def summary(self, tag=2, ident=24001, default=True):
         _, entries = self.entries(tag, ident)
         with patch.object(driver, 'CONTROL', self.control):
             return driver.acl_failure_evidence(self.here, self.workspace, self.info,
                 'system.posix_acl_default' if default else 'system.posix_acl_access', entries, 7)
 
-    def prepare_snapshot(self, tag=2, ident=None, mask=7, default=True):
+    def prepare_snapshot(self, tag=2, ident=24001, mask=7, default=True):
         data, _ = self.entries(tag, ident, mask=mask)
         attr = 'system.posix_acl_default' if default else 'system.posix_acl_access'
         class CompilerReached(Exception): pass
@@ -490,19 +491,18 @@ class PreparationEvidenceTests(unittest.TestCase):
     def test_trusted_owner_only_acl_still_not_rejected(self):
         self.assertIsNone(self.prepare_snapshot(tag=None))
 
-    def test_trusted_named_user_still_blocked_with_evidence(self):
+    def test_trusted_named_users_allowed_for_access_and_default(self):
         for uid in (0, os.getuid()):
-            with self.subTest(uid=uid):
-                error = self.prepare_snapshot(ident=uid)
-                self.assertIsNotNone(error)
-                row = error.preparation_evidence['preparation_failure']
-                self.assertEqual(row['principal_id'], uid)
-                self.assertTrue(row['principal_class'].startswith('TRUSTED_'))
+            for default in (True, False):
+                with self.subTest(uid=uid, default=default):
+                    # Each successful sentinel creates diagnostic-bin; use a fresh snapshot directory.
+                    out = self.workspace / 'diagnostic-bin'
+                    if out.exists(): out.rmdir()
+                    self.assertIsNone(self.prepare_snapshot(ident=uid, default=default))
 
-    def test_approved_named_group_still_blocked(self):
-        with patch.object(driver, 'acl_principal_class', return_value='TRUSTED_APPROVED_GROUP'):
-            error = self.prepare_snapshot(tag=8, ident=os.getgid())
-            self.assertEqual(error.preparation_evidence['preparation_failure']['principal_class'], 'TRUSTED_APPROVED_GROUP')
+    def test_approved_named_group_allowed(self):
+        with patch.object(driver, 'trusted_acl_group', return_value=True):
+            self.assertIsNone(self.prepare_snapshot(tag=8, ident=os.getgid()))
 
     def test_untrusted_named_user_still_blocked(self):
         error = self.prepare_snapshot(ident=24001)
@@ -512,8 +512,12 @@ class PreparationEvidenceTests(unittest.TestCase):
         error = self.prepare_snapshot(tag=8, ident=24001)
         self.assertEqual(error.preparation_evidence['preparation_failure']['principal_class'], 'UNTRUSTED_NAMED_GROUP')
 
-    def test_masked_write_acl_decision_unchanged(self):
-        self.assertIsNone(self.prepare_snapshot(ident=24001, mask=5))
+    def test_masked_untrusted_write_is_rejected_with_accurate_evidence(self):
+        for tag in (2, 8):
+            error = self.prepare_snapshot(tag=tag, ident=24001, mask=5)
+            row = error.preparation_evidence['preparation_failure']
+            self.assertFalse(row['mask_effective_write'])
+            self.assertEqual(row['acl_mask'], 5)
 
     def test_default_acl_records_only_inheritance_potential(self):
         row = self.summary()['preparation_failure']
@@ -578,7 +582,7 @@ class PreparationEvidenceTests(unittest.TestCase):
         value = self.summary(); value['status'] = 'PASS'
         with self.assertRaises(driver.Blocked): driver.export_schema(value)
 
-    def test_false_effective_write_or_masked_rejection_evidence_rejected(self):
+    def test_inconsistent_effective_write_and_metadata_rejected(self):
         for key, val in [('mask_effective_write', False), ('entry_permissions', 5), ('acl_mask', 5),
                          ('acl_type', 'OTHER'), ('current_object_write', 'CONFIRMED')]:
             value = self.summary(); value['preparation_failure'][key] = val
@@ -611,7 +615,7 @@ sys.exit(d.entrypoint())
 
     def test_regular_file_snapshot_has_no_unrestricted_path(self):
         info = types.SimpleNamespace(st_mode=stat.S_IFREG | 0o644, st_uid=os.getuid(), st_gid=os.getgid())
-        _, entries = self.entries()
+        _, entries = self.entries(ident=24001)
         with patch.object(driver, 'CONTROL', self.control):
             value = driver.acl_failure_evidence(self.here / 'run.py', self.workspace, info,
                                                'system.posix_acl_access', entries, 7)
@@ -620,7 +624,7 @@ sys.exit(d.entrypoint())
         self.assertEqual(value['preparation_failure']['path'], 'ci/pilot-network-diagnostic/run.py')
 
     def test_builder_rejects_unsupported_acl_source_and_file_type(self):
-        _, entries = self.entries()
+        _, entries = self.entries(ident=24001)
         with patch.object(driver, 'CONTROL', self.control):
             with self.assertRaises(driver.Blocked):
                 driver.acl_failure_evidence(self.here, self.workspace, self.info, driver.CANARY, entries, 7)
@@ -679,6 +683,317 @@ sys.exit(d.entrypoint())
             error = self.prepare_snapshot()
         self.assertEqual(driver.failure_code(error), 'CONTROL_ACL')
         self.assertIn('PREPARATION_EVIDENCE: BLOCKED', self.invoke_failure(error))
+
+
+class ACLPolicyTests(unittest.TestCase):
+    setUp = PreparationEvidenceTests.setUp
+
+    def raw(self, entries):
+        return struct.pack('<I', 2) + b''.join(struct.pack('<HHI', *e) for e in entries)
+
+    def entries(self, tag=2, ident=24001, mask=7):
+        return [(1, 7, 0xffffffff), (tag, 7, ident), (4, 5, 0xffffffff),
+                (16, mask, 0xffffffff), (32, 5, 0xffffffff)]
+
+    def check(self, entries=None, default=True, info=None, names=None):
+        attr = 'system.posix_acl_default' if default else 'system.posix_acl_access'
+        with patch.object(Path, 'lstat', return_value=info or self.info), \
+             patch.object(driver, 'CONTROL', self.control), \
+             patch.object(driver.os, 'listxattr', return_value=[attr] if names is None else names, create=True), \
+             patch.object(driver.os, 'getxattr', return_value=self.raw(entries or self.entries()), create=True):
+            return driver.check_control_path(self.here, self.workspace, self.guard)
+
+    def test_hosted_counterexample_accepts_verified_runner_not_fixed_uid(self):
+        for uid in (1001, 1201):
+            with patch.object(driver.os, 'getuid', return_value=uid), \
+                 patch.object(driver.os, 'geteuid', return_value=uid), \
+                 patch.object(driver.os, 'getgid', return_value=uid), \
+                 patch.object(driver.pwd, 'getpwuid', side_effect=lambda x: types.SimpleNamespace(pw_gid=0 if x==0 else uid)):
+                info = types.SimpleNamespace(st_mode=stat.S_IFDIR|0o755,st_uid=0,st_gid=0)
+                self.check(self.entries(ident=uid), info=info)
+                with self.assertRaises(driver.Blocked): self.check(self.entries(ident=24001), info=info)
+
+    def test_runner_binding_mismatch_and_test_uid_rejected(self):
+        for uid in (0, 24001):
+            with patch.object(driver.os, 'getuid', return_value=uid), self.assertRaises(driver.Blocked):
+                driver.runner_trust()
+        with patch.object(driver.os, 'geteuid', return_value=24001), self.assertRaises(driver.Blocked):
+            driver.runner_trust()
+        with patch.object(driver.pwd, 'getpwuid', return_value=types.SimpleNamespace(pw_gid=424242)), self.assertRaises(driver.Blocked):
+            driver.runner_trust()
+
+    def test_untrusted_named_writes_rejected_even_masked_both_acl_types(self):
+        for default in (True,False):
+            for tag in (2,8):
+                for mask in (0,5,7):
+                    with self.subTest(default=default,tag=tag,mask=mask), self.assertRaises(driver.Blocked) as caught:
+                        self.check(self.entries(tag,24001,mask),default)
+                    record=caught.exception.preparation_evidence
+                    self.assertEqual(record['status'],'BLOCKED')
+                    self.assertEqual(record['preparation_failure']['mask_effective_write'],bool(mask & 2))
+                    driver.preparation_schema(record)
+
+    def test_default_other_write_rejected_with_safe_evidence(self):
+        entries=[(1,7,0xffffffff),(4,5,0xffffffff),(32,7,0xffffffff)]
+        with self.assertRaises(driver.Blocked) as caught: self.check(entries)
+        row=caught.exception.preparation_evidence['preparation_failure']
+        self.assertEqual(row['entry_category'],'OTHER')
+        self.assertEqual(row['principal_class'],'UNTRUSTED_OTHER')
+        self.assertEqual(row['principal_id'],0xffffffff)
+        driver.preparation_schema(caught.exception.preparation_evidence)
+
+    def test_default_owning_group_write_needs_trust_even_when_masked(self):
+        info=types.SimpleNamespace(st_mode=stat.S_IFDIR|0o755,st_uid=os.getuid(),st_gid=24001)
+        entries=[(1,7,0xffffffff),(4,7,0xffffffff),(16,5,0xffffffff),(32,5,0xffffffff)]
+        with self.assertRaises(driver.Blocked) as caught: self.check(entries,info=info)
+        row=caught.exception.preparation_evidence['preparation_failure']
+        self.assertEqual(row['entry_category'],'OWNING_GROUP')
+        self.assertEqual(row['principal_id'],24001)
+        self.assertFalse(row['mask_effective_write'])
+
+    def test_untrusted_owner_world_write_and_symlink_modes_rejected(self):
+        for uid,mode in [(24001,stat.S_IFDIR|0o755),(os.getuid(),stat.S_IFDIR|0o757),
+                         (os.getuid(),stat.S_IFREG|0o666),(os.getuid(),stat.S_IFLNK|0o755)]:
+            info=types.SimpleNamespace(st_mode=mode,st_uid=uid,st_gid=os.getgid())
+            with self.assertRaises(driver.Blocked): self.check(info=info,names=[])
+
+    def test_group_mode_alignment_requires_verified_approved_group(self):
+        info=types.SimpleNamespace(st_mode=stat.S_IFDIR|0o775,st_uid=os.getuid(),st_gid=os.getgid())
+        with patch.object(driver,'trusted_acl_group',return_value=True): self.check(info=info,names=[])
+        with patch.object(driver,'trusted_acl_group',return_value=False),self.assertRaises(driver.Blocked):
+            self.check(info=info,names=[])
+
+    def test_real_group_lookup_whitelist_and_exclusive_membership(self):
+        uid=os.getuid();gid=os.getgid()
+        with patch.object(driver.grp,'getgrgid',return_value=types.SimpleNamespace(gr_mem=['SYNTHETIC'])), \
+             patch.object(driver.pwd,'getpwnam',return_value=types.SimpleNamespace(pw_uid=uid)), \
+             patch.object(driver.pwd,'getpwall',return_value=[types.SimpleNamespace(pw_uid=uid,pw_gid=gid)]):
+            self.assertTrue(driver.trusted_acl_group(gid))
+            self.assertFalse(driver.trusted_acl_group(24001))
+            with patch.object(driver.pwd,'getpwnam',return_value=types.SimpleNamespace(pw_uid=24001)):
+                self.assertFalse(driver.trusted_acl_group(gid))
+            with patch.object(driver.pwd,'getpwall',return_value=[types.SimpleNamespace(pw_uid=24001,pw_gid=gid)]):
+                self.assertFalse(driver.trusted_acl_group(gid))
+            with patch.object(driver.grp,'getgrgid',side_effect=KeyError(driver.CANARY)), self.assertRaises(driver.Blocked):
+                driver.trusted_acl_group(gid)
+
+    def test_unknown_acl_mechanism_rejected(self):
+        with self.assertRaises(driver.Blocked): self.check(names=['user.unknown_acl'])
+
+    def test_malformed_and_unavailable_acl_rejected(self):
+        for raw in (b'', b'PRIVATE', self.raw([(2,7,24001)])):
+            with patch.object(driver.os,'getxattr',return_value=raw,create=True):
+                with patch.object(Path,'lstat',return_value=self.info), \
+                     patch.object(driver.os,'listxattr',return_value=['system.posix_acl_default'],create=True), \
+                     self.assertRaises(driver.Blocked):
+                    driver.check_control_path(self.here,self.workspace,self.guard)
+        with patch.object(driver.os,'listxattr',side_effect=OSError(driver.CANARY),create=True), self.assertRaises(OSError):
+            driver.check_control_path(self.here,self.workspace,self.guard)
+        with patch.object(driver.os,'listxattr',return_value=['system.posix_acl_access'],create=True), \
+             patch.object(driver.os,'getxattr',side_effect=OSError(driver.CANARY),create=True), self.assertRaises(driver.Blocked):
+            driver.check_control_path(self.here,self.workspace,self.guard)
+
+    def test_default_acl_on_regular_file_rejected(self):
+        info=types.SimpleNamespace(st_mode=stat.S_IFREG|0o644,st_uid=os.getuid(),st_gid=os.getgid())
+        with self.assertRaises(driver.Blocked): self.check(info=info)
+
+    def test_acl_entry_decisions_match_published_exact_pair_policy(self):
+        # Execute the actual reviewed reference loop, not a rewritten expectation table.
+        tree=ast.parse(self.guard_path.read_text())
+        verify=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=='verify')
+        loop=next(n for n in ast.walk(verify) if isinstance(n,ast.For) and isinstance(n.iter,ast.Call)
+                  and isinstance(n.iter.func,ast.Name) and n.iter.func.id=='acl_entries')
+        code=compile(ast.fix_missing_locations(ast.Module(body=[loop],type_ignores=[])), 'reviewed-acl-policy', 'exec')
+        uid=os.getuid();gid=os.getgid()
+        for tag in (1,2,4,8,32):
+            for ident in (0,uid,24001):
+                for mask in (0,5,7):
+                    entries=[(1,7,0xffffffff),(4,5,0xffffffff),(32,5,0xffffffff)]
+                    if tag in (2,8): entries += [(tag,7,ident),(16,mask,0xffffffff)]
+                    else: entries=[(t,7 if t==tag else p,i) for t,p,i in entries]
+                    info=types.SimpleNamespace(st_uid=ident if tag==1 else uid,st_gid=ident if tag==4 else gid)
+                    allowed_group=lambda g:g in {0,gid}
+                    scope={'acl_entries':lambda data:entries,'data':None,'info':info,'trusted_uids':{0,uid},
+                           'trusted_group':allowed_group,'Unsafe':self.guard.Unsafe,'path':'synthetic'}
+                    try: exec(code,scope);reference_allowed=True
+                    except self.guard.Unsafe: reference_allowed=False
+                    with patch.object(driver,'trusted_acl_group',side_effect=allowed_group):
+                        self.assertEqual(driver.rejected_acl_entry(entries,info) is None,reference_allowed,
+                                         (tag,ident,mask))
+
+    def test_prepare_checks_new_output_controls_and_retains_actual_user_nonwrite(self):
+        seen=[];commands=[]
+        def command(args,**kw):
+            commands.append(args)
+            if args[0]=='gcc': Path(args[-1]).write_bytes(b'synthetic observer')
+            return int('-w' in args)
+        with patch.object(driver,'CONTROL',self.control),patch.object(driver,'HERE',self.here), \
+             patch.object(driver,'identity',return_value={}),patch.object(driver.sys,'platform','linux'), \
+             patch.object(driver.importlib.util,'spec_from_file_location',return_value=self.guard_spec), \
+             patch.object(driver,'check_control_path',side_effect=lambda p,*args:seen.append(p)), \
+             patch.object(driver,'command',side_effect=command):
+            driver.prepare(self.workspace)
+        self.assertIn(self.workspace/'diagnostic-bin',seen)
+        self.assertIn(self.workspace/'diagnostic-bin/trace-connect',seen)
+        self.assertEqual(sum('-w' in args for args in commands),3)
+        self.assertTrue(all(args[:3]==['sudo','-u','clpairtest'] for args in commands if '-w' in args))
+
+    def test_prepare_blocks_unsafe_inherited_output_before_test_execution(self):
+        commands=[]
+        def command(args,**kw):
+            commands.append(args)
+            if args[0]=='gcc': Path(args[-1]).write_bytes(b'synthetic observer')
+            return 0
+        def check(path,*args):
+            if path==self.workspace/'diagnostic-bin/trace-connect': raise driver.Blocked('CONTROL_ACL')
+        with patch.object(driver,'CONTROL',self.control),patch.object(driver,'HERE',self.here), \
+             patch.object(driver,'identity',return_value={}),patch.object(driver.sys,'platform','linux'), \
+             patch.object(driver.importlib.util,'spec_from_file_location',return_value=self.guard_spec), \
+             patch.object(driver,'check_control_path',side_effect=check), \
+             patch.object(driver,'command',side_effect=command),self.assertRaises(driver.Blocked):
+            driver.prepare(self.workspace)
+        self.assertEqual(len(commands),1)  # Compiler stub only; no observer or migration launched.
+
+    def test_inherited_child_snapshot_cannot_introduce_untrusted_writer(self):
+        # Deterministic inheritance model; kernel inheritance is a separate Linux test below.
+        for named_uid in (os.getuid(),24001):
+            inherited=self.entries(ident=named_uid)
+            inherited=[(t,(p & 5 if t==16 else p),i) for t,p,i in inherited]
+            for default in (True,False):
+                if named_uid==24001:
+                    with self.assertRaises(driver.Blocked): self.check(inherited,default)
+                else: self.check(inherited,default)
+
+    @unittest.skipUnless(sys.platform=='linux', 'Real Linux ACL inheritance NOT RUN on this platform')
+    def test_linux_kernel_inherited_children_checked_without_host_acl_changes(self):
+        # ACLs are installed only on this test-owned disposable directory, never host ancestors.
+        parent=self.workspace/'inheritance';parent.mkdir(mode=0o700)
+        entries=[(1,7,0xffffffff),(2,7,os.getuid()),(4,0,0xffffffff),(16,7,0xffffffff),(32,0,0xffffffff)]
+        os.setxattr(parent,'system.posix_acl_default',self.raw(entries))
+        child=parent/'control.py'
+        fd=os.open(child,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600);os.close(fd)
+        info=child.lstat()
+        access=self.guard.acl_entries(os.getxattr(child,'system.posix_acl_access'))
+        self.assertIsNone(driver.rejected_acl_entry(access,info))
+        self.assertFalse(stat.S_IMODE(info.st_mode)&0o022)
+        # Named user 24001 is not trusted even if a child creation mask removes its write.
+        entries[1]=(2,7,24001)
+        os.setxattr(parent,'system.posix_acl_default',self.raw(entries))
+        bad=parent/'untrusted.py';bad.touch(mode=0o600)
+        bad_acl=self.guard.acl_entries(os.getxattr(bad,'system.posix_acl_access'))
+        self.assertIsNotNone(driver.rejected_acl_entry(bad_acl,bad.lstat()))
+
+
+class ObserverOutputEvidenceTests(unittest.TestCase):
+    setUp = PreparationEvidenceTests.setUp
+    invoke_failure = PreparationEvidenceTests.invoke_failure
+
+    def output(self, file=False):
+        out=self.workspace/'diagnostic-bin'
+        out.mkdir(mode=0o755,exist_ok=True)
+        target=out/'trace-connect'
+        if file and not target.exists(): target.write_bytes(b'synthetic observer')
+        return target if file else out
+
+    def rejection(self, file=False):
+        target=self.output(file)
+        attr='system.posix_acl_access' if file else 'system.posix_acl_default'
+        entries=[(1,7,0xffffffff),(2,7,24001),(4,5,0xffffffff),(16,5,0xffffffff),(32,5,0xffffffff)]
+        raw=struct.pack('<I',2)+b''.join(struct.pack('<HHI',*e) for e in entries)
+        with patch.object(driver,'CONTROL',self.control), \
+             patch.object(driver.os,'listxattr',return_value=[attr],create=True), \
+             patch.object(driver.os,'getxattr',return_value=raw,create=True):
+            with self.assertRaises(driver.Blocked) as caught:
+                driver.check_control_path(target,self.workspace,self.guard)
+        return caught.exception
+
+    def test_output_directory_acl_retains_fixed_sanitized_record(self):
+        error=self.rejection();row=error.preparation_evidence['preparation_failure']
+        self.assertEqual(driver.failure_code(error),'CONTROL_ACL')
+        self.assertEqual((row['path_class'],row['path'],row['file_type']),('OBSERVER_OUTPUT_DIRECTORY','','DIRECTORY'))
+        self.assertEqual(row['acl_type'],'DEFAULT')
+        self.assertEqual(row['principal_id'],24001)
+        self.assertFalse(row['mask_effective_write'])
+        driver.preparation_schema(error.preparation_evidence)
+
+    def test_observer_file_acl_retains_fixed_sanitized_record(self):
+        error=self.rejection(True);row=error.preparation_evidence['preparation_failure']
+        self.assertEqual((row['path_class'],row['path'],row['file_type']),('OBSERVER_OUTPUT_FILE','','REGULAR_FILE'))
+        self.assertEqual(row['acl_type'],'ACCESS')
+        self.assertEqual(row['write_effect'],'ACCESS_WRITE_MASKED')
+        driver.preparation_schema(error.preparation_evidence)
+
+    def test_both_failures_keep_exit_one_and_owner_only_uploadable_artifact(self):
+        for file in (False,True):
+            error=self.rejection(file)
+            self.invoke_failure(error)
+            artifact=self.workspace/'diagnostic-results/published/summary.json'
+            value=json.loads(artifact.read_text())
+            self.assertEqual(value['status'],'BLOCKED')
+            self.assertEqual(value['preparation_failure']['principal_id'],24001)
+            self.assertEqual(stat.S_IMODE(artifact.stat().st_mode),0o600)
+            self.assertLessEqual(artifact.stat().st_size,8192)
+            self.assertNotIn(str(self.workspace),artifact.read_text())
+            self.assertNotIn(driver.CANARY,artifact.read_text())
+            driver.export_check(self.workspace)
+            artifact.unlink()  # Only this test-created synthetic artifact.
+
+    def test_unknown_output_paths_and_traversal_rejected(self):
+        self.output(True)
+        targets=[self.workspace/'diagnostic-bin/unknown',self.workspace/'diagnostic-bin/trace-connect/extra',
+                 self.workspace/'diagnostic-bin/../diagnostic-bin/trace-connect',
+                 self.workspace/'diagnostic-bin/TRACE-CONNECT',Path('/unapproved/trace-connect')]
+        with patch.object(driver,'CONTROL',self.control):
+            for path in targets:
+                with self.subTest(kind='unapproved'),self.assertRaises(driver.Blocked):
+                    driver.preparation_path(path,self.workspace)
+            for text in (str(self.workspace/'diagnostic-bin'),str(self.workspace/'diagnostic-bin//trace-connect'),
+                         str(self.workspace/'diagnostic-bin/./trace-connect')):
+                with self.assertRaises(driver.Blocked):driver.preparation_path(text,self.workspace)
+
+    def test_symlink_output_directory_and_file_rejected(self):
+        elsewhere=self.workspace/'elsewhere';elsewhere.mkdir()
+        out=self.workspace/'diagnostic-bin';out.symlink_to(elsewhere,target_is_directory=True)
+        with self.assertRaises(driver.Blocked):driver.preparation_path(out,self.workspace)
+        out.unlink();out.mkdir();target=out/'trace-connect';target.symlink_to(elsewhere)
+        with self.assertRaises(driver.Blocked):driver.preparation_path(target,self.workspace)
+
+    def test_symlink_workspace_and_noncanonical_workspace_rejected(self):
+        self.output(True)
+        alias=self.workspace/'workspace-alias';alias.symlink_to(self.workspace,target_is_directory=True)
+        with self.assertRaises(driver.Blocked):driver.preparation_path(alias/'diagnostic-bin',alias)
+        uncanonical=self.workspace/'diagnostic-bin/..'
+        with self.assertRaises(driver.Blocked):driver.preparation_path(uncanonical/'diagnostic-bin',uncanonical)
+        with self.assertRaises(driver.Blocked):driver.preparation_path(Path('diagnostic-bin'),Path('.'))
+
+    def test_wrong_actual_file_type_rejected(self):
+        out=self.workspace/'diagnostic-bin';out.write_bytes(b'synthetic')
+        with self.assertRaises(driver.Blocked):driver.preparation_path(out,self.workspace)
+        out.unlink();out.mkdir();target=out/'trace-connect';target.mkdir()
+        with self.assertRaises(driver.Blocked):driver.preparation_path(target,self.workspace)
+
+    def test_malformed_record_type_depth_path_and_private_metadata_rejected(self):
+        for file in (False,True):
+            original=self.rejection(file).preparation_evidence
+            for key,value in [('file_type','DIRECTORY' if file else 'REGULAR_FILE'),('ancestor_depth',1),
+                              ('path',str(self.workspace)),('path_class','OBSERVER_OUTPUT_UNKNOWN'),
+                              ('principal_id',driver.CANARY),('entry_permissions',{'secret':driver.CANARY})]:
+                row=copy.deepcopy(original);row['preparation_failure'][key]=value
+                with self.assertRaises(driver.Blocked):driver.export_schema(row)
+
+    def test_classification_failure_preserves_original_block_without_artifact(self):
+        with patch.object(driver,'preparation_path',side_effect=driver.Blocked('PREPARATION_EVIDENCE')):
+            error=self.rejection(True)
+        self.assertEqual(driver.failure_code(error),'CONTROL_ACL')
+        self.assertFalse(hasattr(error,'preparation_evidence'))
+        self.assertIn('PREPARATION_EVIDENCE: BLOCKED',self.invoke_failure(error))
+        self.assertFalse((self.workspace/'diagnostic-results/published/summary.json').exists())
+
+    def test_parent_failure_record_is_not_replaced_by_later_observer_rejection(self):
+        first=self.rejection(False);self.invoke_failure(first)
+        path=self.workspace/'diagnostic-results/published/summary.json';before=path.read_bytes()
+        self.assertIn('PREPARATION_EVIDENCE: BLOCKED',self.invoke_failure(self.rejection(True)))
+        self.assertEqual(path.read_bytes(),before)
 
 
 

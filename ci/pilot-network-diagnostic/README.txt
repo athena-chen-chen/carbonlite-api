@@ -274,3 +274,76 @@ This is unpublished local diagnostic source only. The published D and Entry W
 old D and its old bytes and WILL reject this modified source. Independent review,
 separate source publication and immutable Entry rebinding approvals are required
 before any separately authorized hosted run. No commit, push or dispatch here.
+
+
+ACL TRUST POLICY ALIGNMENT — LOCAL-ONLY CORRECTION
+Supersedes the historical evidence-only description above: trusted named writes
+are no longer rejected solely because their mask allows write. Trust is bound to
+root and the normal Runner's verified real/effective UID and primary GID, never
+hard-coded UID 1001. Approved groups are only GID 0 and the Runner primary group,
+and all primary/supplementary members must be root or that Runner. Unknown lookup
+results fail closed. This mirrors the reviewed runner-permissions.py trust model.
+
+Both access and default ACLs inspect every write-bearing owner, named-user,
+owning-group, named-group and other entry. Untrusted write is rejected even if
+masked off. Unknown ACL mechanisms, malformed entries and failed inspection block.
+World write, unsafe owners, symlinks and unexpected types still block; group mode
+write is permitted only for verified exclusively trusted groups. Existing actual
+UID 24001 read/nonwrite checks remain in prepare. No host permission repair added.
+
+Preparation evidence retains the strict bounded fixed-field owner-only format.
+It now represents masked untrusted entries and default owning-group/other writes:
+OTHER uses fixed principal sentinel 4294967295 and UNTRUSTED_OTHER; owning-group
+uses the numeric object GID. mask_effective_write can be false for rejected latent
+writes; ACCESS_WRITE_MASKED does not claim current access. Fixed explanation is
+UNTRUSTED_WRITE_ENTRY_REGARDLESS_OF_MASK. No arbitrary strings or raw ACLs exported.
+A failed capture or lookup never permits preparation. Other evidence limitations,
+8 KiB bound, no-overwrite behavior and seven-day workflow retention are unchanged.
+
+Tests include deterministic parsed ACL snapshots and an explicitly Linux-only
+kernel inheritance test on test-owned disposable paths. Snapshot tests do not
+establish hosted ACL or kernel execution. This macOS environment cannot reach its
+Docker socket; actual Linux inheritance and unprivileged UID enforcement are NOT
+RUN locally. Existing workflow, approved.json, C observer, network deny/calibration,
+Prisma A/B logic, Entry W2, Exact-Pair and application candidates are unchanged.
+No publication or workflow dispatch is authorized by this local correction.
+
+Local validation for this correction:
+- Diagnostic regression suite: 96 PASS / 2 Linux-only SKIP (98 total).
+- Unchanged Exact-Pair identity/bundle: 38/38 PASS.
+- Unchanged diagnostic privacy: 43/43 PASS (expected synthetic failure text is not
+  an actual suite failure).
+- Python AST, workflow YAML/manual-only/read-only checks, C syntax: PASS.
+- Checksums: six payloads and index verified; Exact-Pair index/payloads unchanged.
+- Newly compiled observer and its output directory undergo the same control-path
+  check, verifying actual inherited ACL metadata before unprivileged execution.
+  Deterministic tests also prove unsafe output stops before observer/migration.
+- Docker denied by the existing sandbox; 25 Linux permission regressions and
+  actual kernel inheritance/UID execution are NOT RUN, not counted as passing.
+
+
+OBSERVER OUTPUT ACL EVIDENCE P2 — LOCAL-ONLY CORRECTION
+Baseline index: 7d86c77fc3d0a712469ae6bf6ef6957a26b05f990a11fd96b544aaf454d13844.
+Only preparation_path and preparation_schema change in the driver. ACL acceptance,
+permissions, tracing, firewall, calibration, cleanup and Prisma functions are unchanged.
+
+The two internally constructed workspace paths diagnostic-bin and
+diagnostic-bin/trace-connect use fixed OBSERVER_OUTPUT_DIRECTORY and
+OBSERVER_OUTPUT_FILE classifications. The exported path is empty; depth is zero.
+Classification requires canonical absolute workspace and target locations, an
+actual directory parent and the expected directory/regular-file type. Symlinks,
+traversal, raw string inputs, unknown output files and unapproved paths fail closed.
+No arbitrary path is serialized. Existing control-relative and ancestor classes
+remain unchanged. The schema binds each new category to its file type; all prior
+fixed-field, 8 KiB, owner-only, exclusive-create and nonzero-exit protections remain.
+The record describes the first rejection; later evidence cannot overwrite it.
+
+Focused before/after mocked counterexamples: both output ACLs remain CONTROL_ACL.
+Before: no preparation_evidence attached. After: valid fixed-class records for the
+output directory and observer file. Actual ACLs were not installed or changed.
+Validation: diagnostic suite 106 PASS / 2 Linux-only SKIP (108 total); Exact-Pair
+38/38 PASS; privacy 43/43 PASS. Expected fault-injection output is not a suite failure.
+Python syntax, six payload hashes, checksum index and four-file scope verified.
+Actual Linux ACL inheritance/UID behavior remains NOT RUN; no hosted claim is made.
+Existing Entry W2, Exact-Pair bundle, workflow, approved identities and C observer
+remain unchanged. No publication, dispatch or application edits occurred.
