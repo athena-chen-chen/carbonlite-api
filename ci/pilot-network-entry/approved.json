@@ -14,11 +14,11 @@
   "source_files": {
     ".github/workflows/pilot-network-attribution.yml": "4149fcbe304e5e1687eb3f0f65b77c20739996fe1b15591891b005400dd2c472",
     "ci/pilot-network-diagnostic/trace-connect.c": "3cebc1a5be7fd147e41edf0727acc081217f60d29328f43aca8af521b7c49d90",
-    "ci/pilot-network-diagnostic/run.py": "11615029dbb66da691a82bb372c75d85d2a69562fcf0032c6bd367e97fd86e1a",
-    "ci/pilot-network-diagnostic/test_diagnostic.py": "e2f5f51aa576ce3b684ad88699d0c932b8ed97837ff87a875772fcb21cbfb86a",
+    "ci/pilot-network-diagnostic/run.py": "73cf62f54f727ee94c28a6c61152e24afe02f74d1a788952426b21b6da82d411",
+    "ci/pilot-network-diagnostic/test_diagnostic.py": "980d7f2d0ff170944f343f06be31b8a4e15d0c2189981374da8ccfda35a78c36",
     "ci/pilot-network-diagnostic/approved.json": "ef75dce1d125c0c43144b12fea14dabf93776c3f75d7b6512150e9ee13cff427",
-    "ci/pilot-network-diagnostic/README.txt": "459789a24cbb7a6b14018ab51398549dfe9ac2f4a95d6c913bd40370e5579307",
-    "ci/pilot-network-diagnostic/SHA256SUMS.txt": "da6c8f05752637c967726568e85b12cb9e42627bc912e52e8af448e3bbe29c65"
+    "ci/pilot-network-diagnostic/README.txt": "e0bf704d4ce710327c67802c3d27b057ba413dc0d2c564da83bf8884b93c9010",
+    "ci/pilot-network-diagnostic/SHA256SUMS.txt": "39cc5aa0acf71b0db33a3a26d6f796e47cd8804b29d19e588522ae49c1795a0b"
   },
   "exact_pair_index_sha256": "7c2fcda616101ccd1296544743145e4b3ec1a95e5627eea408acda94dc530ed5",
   "backend": {
@@ -38,6 +38,6 @@
     },
     "expected_commit": "e424c567d43c0086e0dc01b86e48cb648c114078"
   },
-  "source_commit": "0cb2c241a7f260c5c71156c01d11b0fc4d53d739",
-  "source_tree": "a9c2057d29435de47b805a9ea2f3618daac5f883"
+  "source_commit": "0f7131300c3be37692bc55453fd7af7faad45599",
+  "source_tree": "66a771505ec092f71247b43e50d5339891da25db"
 }

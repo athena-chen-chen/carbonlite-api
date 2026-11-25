@@ -206,3 +206,27 @@ The manual-only registered-path workflow, read-only permissions, separate checko
 UID 24001 safeguards, firewall, ACL/tracing/cleanup/Prisma behavior, diagnostic-only
 scope, sanitized artifact restrictions and seven-day retention remain unchanged.
 No publication, dispatch, Source D3 or application modification occurred.
+
+
+D4 IMMUTABLE REBINDING — LOCAL ONLY
+This section supersedes earlier active D3 source references in historical notes.
+Published Source D4: 0f7131300c3be37692bc55453fd7af7faad45599
+Git tree: 66a771505ec092f71247b43e50d5339891da25db
+Source index: 39cc5aa0acf71b0db33a3a26d6f796e47cd8804b29d19e588522ae49c1795a0b
+All seven published D4 files and the six payload hashes were independently read
+and matched before changing the Entry. The Source itself is unchanged.
+
+Only workflow source pins, approval metadata, corresponding regression expectations,
+this review documentation and Entry checksums change. verify.py remains byte-identical.
+The Entry accepts immutable D4 and rejects superseded D3 before checkout verification,
+even when a synthetic checkout agrees with old D3. The shell guard also rejects D3.
+Existing independently supplied Entry SHA/tree/index checks, invocation SHA binding,
+separate entry/control/backend checkouts and cleanliness/manifests remain unchanged.
+No future Entry SHA or tree is invented or self-hashed.
+
+Backend remains e424c567d43c0086e0dc01b86e48cb648c114078 with tree
+f4e02d756dc14c0df638d7086b483566e7efeca5 and the same eight reviewed files.
+Manual-only/read-only execution, firewall, ACL, calibration, tracing, cleanup and
+Prisma behavior, bounded sanitized upload paths and seven-day retention are unchanged.
+D4's reviewed calibration-evidence behavior is selected solely by immutable identity.
+Actual Linux execution is NOT RUN by this local rebinding. No publication or dispatch.
