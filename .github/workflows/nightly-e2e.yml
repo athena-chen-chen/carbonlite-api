@@ -1,24 +1,24 @@
-name: Nightly E2E
-
-on:
-  schedule:
-    - cron: '30 2 * * *'
-      timezone: America/Edmonton
+name: Founder Pilot exact-pair validation (manual only)
+'on':
   workflow_dispatch:
-
+    inputs:
+      frontend_sha:
+        description: Reviewed frontend candidate commit (40 lowercase hex characters)
+        required: true
+        type: string
+      backend_sha:
+        description: Reviewed backend candidate commit (40 lowercase hex characters)
+        required: true
+        type: string
 permissions:
   contents: read
-
 concurrency:
-  group: nightly-e2e-${{ github.ref }}
+  group: founder-pilot-exact-pair
   cancel-in-progress: false
-
 jobs:
-  backend-validation:
-    name: Backend unit, E2E, typecheck, and build
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-
+  exact-pair:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
     services:
       postgres:
         image: postgres:16
@@ -33,7 +33,6 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
-
       pgbouncer:
         image: edoburu/pgbouncer@sha256:53d98b3174b0842c475b9842fb0a733b2d9f7ec9da834ec42252aa553f48c628
         env:
@@ -48,70 +47,142 @@ jobs:
           ADMIN_USERS: postgres
         ports:
           - 55448:5432
-
-    env:
-      APP_ENV: test
-      DATABASE_URL: postgresql://postgres:postgres@localhost:55447/carbonlite_ci_test
-      CONTROL_POOL_PGBOUNCER_TEST_URL: postgresql://postgres:postgres@localhost:55448/carbonlite_ci_test
-      CONTROL_POOL_TEST_POOLER_HOST: pgbouncer
-      FRONTEND_URL: http://127.0.0.1:4173
-      JWT_SECRET: carbonlite-nightly-ci-only
-      NODE_ENV: test
-      # Disposable PostgreSQL fixtures only; application defaults remain fail-closed.
-      PUBLIC_REGISTRATION_ENABLED: 'true'
-      REAL_DATA_EVIDENCE_HMAC_ACTIVE_VERSION: ci-v1
-      # Public deterministic test material: CARBONLITE_DISPOSABLE_CI_ONLY_KEY_V1.
-      REAL_DATA_EVIDENCE_HMAC_ADDITIONAL_KEYS: '{"ci-v1":"base64:Q0FSQk9OTElURV9ESVNQT1NBQkxFX0NJX09OTFlfS0VZX1Yx"}'
-      # Deterministic tests mock the provider; this only permits module initialization.
-      OPENAI_API_KEY: ci-mocked-not-a-real-key
-
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
+      - name: Require the approved repository, manual event and full commit inputs
+        shell: bash
+        env:
+          FRONTEND_SHA: ${{ inputs.frontend_sha }}
+          BACKEND_SHA: ${{ inputs.backend_sha }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = athena-chen-chen/carbonlite-api
+          test "$GITHUB_EVENT_NAME" = workflow_dispatch
+          test "$GITHUB_REF" = refs/heads/ci/pilot-exact-pair-validation
+          [[ "$FRONTEND_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$BACKEND_SHA" =~ ^[0-9a-f]{40}$ ]]
+      - name: Check out the exact validation workflow revision
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # reviewed v4 revision
         with:
+          repository: athena-chen-chen/carbonlite-api
+          ref: ${{ github.workflow_sha }}
+          path: control
+          persist-credentials: false
+      - name: Check out exact frontend candidate
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # reviewed v4 revision
+        with:
+          repository: athena-chen-chen/carbonlite-web
+          ref: ${{ inputs.frontend_sha }}
+          path: carbonlite-web
           fetch-depth: 0
-
+          persist-credentials: false
+      - name: Check out exact backend candidate
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # reviewed v4 revision
+        with:
+          repository: athena-chen-chen/carbonlite-api
+          ref: ${{ inputs.backend_sha }}
+          path: carbonlite-api
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify both complete trees and reviewed file manifests before installing
+        env:
+          FRONTEND_SHA: ${{ inputs.frontend_sha }}
+          BACKEND_SHA: ${{ inputs.backend_sha }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+        run: python3 control/ci/pilot-exact-pair/verify.py
       - name: Set up pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # reviewed v4 revision
         with:
           version: 10.17.0
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
+          run_install: false
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # reviewed v4 revision
         with:
-          node-version: 20
-          cache: pnpm
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Generate Prisma client
-        run: pnpm prisma:generate
-
-      - name: Apply Prisma migrations
-        run: pnpm exec prisma migrate deploy
-
-      - name: Seed isolated CI database
-        run: pnpm seed
-
-      # Keep routine full validation here; local development should prefer focused tests.
-      - name: Run backend unit tests
-        run: pnpm test:unit
-
-      - name: Build production application
-        run: pnpm build
-
-      - name: Build immutable prior artifact for local rollback validation
+          node-version: '20'
+      - name: Install unchanged lockfiles (no deployment credentials)
+        shell: bash
         run: |
-          rollback_artifact="$(node scripts/phase-e-rollback-artifact.mjs)"
-          printf 'CARBONLITE_PHASE_E_ROLLBACK_ARTIFACT=%s\n' "$rollback_artifact" >> "$GITHUB_ENV"
-
-      - name: Run full backend E2E suite
+          set -euo pipefail
+          pnpm --dir carbonlite-api install --frozen-lockfile
+          pnpm --dir carbonlite-web install --frozen-lockfile
+      - name: Recheck source identity after dependency installation
         env:
-          CONTROL_POOL_TEST_POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
-        run: pnpm test:e2e
-
-      - name: Typecheck
-        run: pnpm exec tsc --noEmit -p tsconfig.json
-
-      # GitHub Actions removes the disposable PostgreSQL service with the job.
+          FRONTEND_SHA: ${{ inputs.frontend_sha }}
+          BACKEND_SHA: ${{ inputs.backend_sha }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+        run: python3 control/ci/pilot-exact-pair/verify.py
+      - name: Prepare the disposable test account and generated client
+        env:
+          POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ! id clpairtest >/dev/null 2>&1
+          ! getent passwd 24001 >/dev/null
+          sudo useradd --create-home --uid 24001 clpairtest
+          # Existing Control E2E uses docker exec against the disposable services.
+          sudo usermod -aG docker clpairtest
+          mkdir -p pair-results/validation
+          sudo chown -R clpairtest:clpairtest carbonlite-api carbonlite-web pair-results/validation
+          sudo -H -u clpairtest env -i PATH="$PATH" POSTGRES_CONTAINER="$POSTGRES_CONTAINER" \
+            python3 "$GITHUB_WORKSPACE/control/ci/pilot-exact-pair/run.py" "$GITHUB_WORKSPACE" generate
+      - name: Close and verify test-process outbound networking
+        id: network
+        env:
+          POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
+          POOLER_CONTAINER: ${{ job.services.pgbouncer.id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash control/ci/pilot-exact-pair/network.sh enable
+          # Reserved documentation address; packets must be locally rejected.
+          sudo -H -u clpairtest env -i PATH="$PATH" python3 - <<'PY'
+          import socket
+          try:
+              socket.create_connection(('192.0.2.1', 443), timeout=2)
+          except OSError:
+              pass
+          else:
+              raise SystemExit('Outbound isolation failed')
+          PY
+          blocked="$(sudo iptables -L CLPAIR_EGRESS -n -v -x | awk '$3=="REJECT" {print $1}')"
+          test "$blocked" -gt 0
+          sudo iptables -Z CLPAIR_EGRESS
+          sudo ip6tables -Z CLPAIR_EGRESS
+          echo 'OUTBOUND_GUARD_PREFLIGHT: PASS' | tee pair-results/network-preflight.txt
+          echo 'enabled=true' >> "$GITHUB_OUTPUT"
+      - name: Run exact-pair synthetic validation with no inherited credentials
+        env:
+          POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo -H -u clpairtest env -i PATH="$PATH" POSTGRES_CONTAINER="$POSTGRES_CONTAINER" \
+            python3 "$GITHUB_WORKSPACE/control/ci/pilot-exact-pair/run.py" "$GITHUB_WORKSPACE" validate
+      - name: Fail on unexpected outbound attempts, even when a test caught the error
+        if: ${{ always() && steps.network.outputs.enabled == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash control/ci/pilot-exact-pair/network.sh check | tee pair-results/network-status.txt
+      - name: Verify reviewed source stayed unchanged through validation
+        if: ${{ always() && steps.network.outputs.enabled == 'true' }}
+        env:
+          FRONTEND_SHA: ${{ inputs.frontend_sha }}
+          BACKEND_SHA: ${{ inputs.backend_sha }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+        run: python3 control/ci/pilot-exact-pair/verify.py
+      - name: Upload only sanitized identity, summary and compiler evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # reviewed v4 revision
+        with:
+          name: founder-pilot-exact-pair-${{ github.run_id }}
+          retention-days: 7
+          if-no-files-found: warn
+          path: |
+            pair-results/identity.json
+            pair-results/validation/tests.json
+            pair-results/validation/test-types-baseline.txt
+            pair-results/validation/test-types-candidate.txt
+            pair-results/validation/type-debt-policy.json
+            pair-results/network-preflight.txt
+            pair-results/network-status.txt

@@ -1,0 +1,36 @@
+LOCAL SYNTAX / SECURITY REVIEW
+- One workflow, workflow_dispatch only, two required full-SHA string inputs.
+- Inputs passed through environment or checkout fields, never interpolated into shell code.
+- Fixed public repositories; baseline/tree/file hashes fail closed before dependency install.
+- contents:read only; all checkouts persist-credentials:false; actions pinned to full SHAs.
+- No secrets references, environment selection, deployment commands, push/PR/schedule
+  trigger, manual retry wrapper, application source change, or live database target.
+- Allowed prisma migrate deploy is strictly inside verified disposable carbonlite_ci_test.
+- Isolated CI branch reuses registered nightly-e2e.yml path; main/release not modified.
+- GitHub service IDs are resolved in step env, not invalid job-level job context.
+- Vitest uses --reporter=json; Jest uses --json; no test assertion is weakened.
+- Test UID IPv4/IPv6 egress denies counted and checked, including after failed tests.
+- Narrow artifact allowlist; raw responses/test failures and credentials are not uploaded.
+- Raw test-TypeScript remains FAIL — HISTORICAL DEBT with complete output and actual exit.
+- Separate founder-authorized no-new-diagnostics policy gates the overall validation job.
+- Baseline is rebuilt from approved Git source with only the reviewed matcher-type overlay;
+  identical installed dependencies, toolchain, test config and API resolution are required.
+- Full file/code/message identities and multiplicities are compared; no count-only waiver.
+- Missing/malformed/invocation/toolchain evidence blocks. New or increased identities block.
+- Runtime Docker access is privileged and requires trusted reviewed code; not a malicious
+  code sandbox. Hosted runner firewall and group access remain runtime prerequisites.
+- YAML parsed with Ruby/Psych; all embedded Bash and network.sh pass bash -n; Python
+  sources compile; 29 synthetic identity/policy/execution cases pass. No actionlint installed:
+  GitHub's hosted workflow/schema/expression validation is not claimed as completed.
+- Complete expected trees independently matched Git mktree without creating commits.
+- No CI, cloud, database, provider, deployment, publication or application tests executed
+  as part of this workflow-preparation task.
+
+BOUNDED TYPE-DEBT UPDATE
+Changed only the local CI bundle; application candidates/manifests, network.sh and
+verify.py are unchanged. Workflow changes only add compiler/policy artifact paths.
+No error suppression, altered compiler strictness, automatic waiver, deployment steps,
+new trigger or credential reference. The exact hosted diagnostic identity comparison
+is still unexecuted. Hosted Linux ownership, Docker/firewall and full E2E remain runtime
+risks. A first hosted run can block on strict full-message diagnostic differences.
+No claim is made that historical counts 293/291 will reproduce or that TypeScript is green.
