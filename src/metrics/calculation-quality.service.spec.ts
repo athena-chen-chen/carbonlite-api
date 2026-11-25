@@ -1121,4 +1121,26 @@ describe('CalculationQualityService', () => {
     });
   });
 
+  describe('explicit period and selection intersection', () => {
+    const bounds = {periodStart:'2025-06-01',periodEnd:'2025-06-30'};
+    it.each(['records','documents'])('intersects %s spanning years with dates',kind=>{
+      const records=[record({id:'inside',sourceDocumentId:'doc',recordDate:new Date('2025-06-30Z')}),record({id:'outside',sourceDocumentId:'doc',recordDate:new Date('2026-06-30Z')})];
+      const selection=kind==='records'?{selectedActivityRecordIds:'inside,outside'}:{selectedDocumentIds:'doc'};
+      const result=service.evaluate({organization,records,factors:[factor()],query:{...bounds,...selection}});
+      expect(result.calculationDetails.find(r=>r.activityDataId==='inside')?.status).toBe('CALCULATED');
+      expect(result.calculationDetails.some(r=>r.activityDataId==='outside')).toBe(false);
+      expect(result.recordsInScope).toBe(1);
+      expect(result.totalEstimatedEmissionsKgCO2e).toBe(268);
+      const empty=service.evaluate({organization,records,factors:[factor()],query:{...selection,periodStart:'2024-01-01',periodEnd:'2024-12-31'}});
+      expect(empty.totalEstimatedEmissionsKgCO2e).toBe(0);expect(empty.recordsInScope).toBe(0);
+    });
+    it('preserves selection-only behavior',()=>{
+      const result=service.evaluate({organization,records:[record({id:'selected'}),record({id:'other'})],factors:[factor()],query:{selectedActivityRecordIds:'selected'}});
+      expect(result.recordsInScope).toBe(1);expect(result.totalEstimatedEmissionsKgCO2e).toBe(268);
+    });
+    it.each([['2026-02-30','2026-03-01'],['2026-12-31','2026-01-01'],['bad','2026-01-01']])('rejects invalid explicit bounds %s %s',(periodStart,periodEnd)=>{
+      expect(()=>service.evaluate({organization,records:[],factors:[],query:{periodStart,periodEnd}})).toThrow('Invalid reporting period');
+    });
+  });
+
 });
