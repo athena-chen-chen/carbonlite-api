@@ -394,3 +394,36 @@ privacy 43/43, Entry identity 32/32; syntax/checksums checked separately.
 Linux-only tracing/inheritance execution is NOT RUN on this macOS sandbox.
 No C observer, firewall, ACL, UID, cleanup, Prisma experiment, application identity,
 Entry or existing Exact-Pair payload changes. Independent review is required.
+
+
+PYTHON 3.12 STAT FIXTURE COMPATIBILITY — LOCAL ONLY
+Baseline Source D4: 0f7131300c3be37692bc55453fd7af7faad45599; index
+39cc5aa0acf71b0db33a3a26d6f796e47cd8804b29d19e588522ae49c1795a0b.
+Only test_diagnostic.py, this README and the checksum index change.
+No production diagnostic logic or Entry changes.
+
+The two mocked-experiment tests previously substituted a SimpleNamespace containing
+only st_uid. Python 3.12 Path.is_symlink delegates through lstat/stat and needs
+st_mode; this caused the two hosted errors in run 45715003757 before calibration.
+The corrected fixture obtains real filesystem stat metadata, changes only the UID
+sequence field to synthetic UID 24001 and reconstructs os.stat_result with every
+other named st_* field preserved, including fractional/nanosecond timestamps and
+platform-specific fields. Non-fixture paths return the original result unchanged.
+Calls, including follow_symlinks=False on Python 3.12, retain their arguments.
+No real filesystem ownership or host permissions are changed.
+
+New regressions check full attribute/sequence preservation, mode/permission bits,
+stat/is_dir/is_symlink, and real symlink versus followed-target behavior. A protocol
+emulation explicitly exercises Python 3.12's lstat -> stat(follow_symlinks=False)
+using real os.stat on older interpreters. The original mock reproduces missing
+st_mode under this protocol; the correction reaches the intended detached mismatch
+and retained evidence. This is not an actual Python 3.12 or Hosted PASS.
+
+Local interpreter: Python 3.9.6. Python 3.12 is unavailable on PATH and the checked
+standard Python installation locations. Actual Python 3.12 and Linux execution:
+NOT RUN. No installation, Docker permission change or hosted dispatch attempted.
+Results: both previously failing tests 2/2 PASS; with two new focused regressions,
+4/4 PASS. Full diagnostic suite 129 PASS / 2 Linux-only SKIP (131 total).
+Exact-Pair identity 38/38 PASS, privacy 43/43 PASS, Entry identity 32/32 PASS.
+Syntax, checksums and exact test-only delta verified separately. The existing
+Linux tracing and historical calibration uncertainties remain unresolved.

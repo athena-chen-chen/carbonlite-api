@@ -1125,6 +1125,49 @@ class CalibrationFailureEvidenceTests(unittest.TestCase):
         self.assertTrue(all(v is None for v in row['cleanup'].values()))
         driver.receipt_schema(row)
 
+    def fixture_stat(self,path,sandbox,original_stat,*args,**kwargs):
+        actual=original_stat(path,*args,**kwargs)
+        if path!=sandbox:
+            return actual
+        values=list(actual)
+        values[stat.ST_UID]=24001
+        # Preserve fractional/nanosecond timestamps and platform-specific named fields too.
+        attributes={k:getattr(actual,k) for k in dir(actual) if k.startswith('st_') and k!='st_uid'}
+        return os.stat_result(values,attributes)
+
+    def test_fixture_stat_preserves_every_field_except_synthetic_uid(self):
+        sandbox=self.root/'stat-fixture';sandbox.mkdir(mode=0o700)
+        real_stat=Path.stat;actual=real_stat(sandbox)
+        with patch.object(Path,'stat',lambda path,*a,**kw:self.fixture_stat(path,sandbox,real_stat,*a,**kw)):
+            result=sandbox.stat()
+            self.assertIsInstance(result,os.stat_result)
+            self.assertEqual(result.st_uid,24001)
+            for name in dir(actual):
+                if name.startswith('st_') and name!='st_uid':self.assertEqual(getattr(result,name),getattr(actual,name),name)
+            expected=list(actual);expected[stat.ST_UID]=24001
+            self.assertEqual(list(result),expected)
+            self.assertEqual(stat.S_IMODE(result.st_mode),stat.S_IMODE(actual.st_mode))
+            self.assertTrue(sandbox.is_dir());self.assertFalse(sandbox.is_symlink())
+            self.assertEqual(self.root.stat(),real_stat(self.root))
+
+    def test_python312_lstat_delegation_preserves_symlink_and_permission_metadata(self):
+        sandbox=self.root/'stat-fixture';sandbox.mkdir(mode=0o700)
+        # Reproduce Python 3.12's lstat -> stat(follow_symlinks=False) protocol
+        # using real os.stat metadata on older interpreters, without claiming 3.12 execution.
+        def fake_stat(path,*args,**kwargs):return self.fixture_stat(path,sandbox,os.stat,*args,**kwargs)
+        def delegated_lstat(path):return path.stat(follow_symlinks=False)
+        with patch.object(Path,'stat',fake_stat),patch.object(Path,'lstat',delegated_lstat):
+            self.assertEqual(sandbox.stat().st_uid,24001)
+            self.assertFalse(sandbox.is_symlink())
+            self.assertTrue(stat.S_ISDIR(sandbox.lstat().st_mode))
+            self.assertEqual(stat.S_IMODE(sandbox.stat().st_mode),0o700)
+        sandbox.rmdir();sandbox.symlink_to(self.root,target_is_directory=True)
+        with patch.object(Path,'stat',fake_stat),patch.object(Path,'lstat',delegated_lstat):
+            self.assertTrue(sandbox.is_symlink())
+            self.assertTrue(stat.S_ISLNK(sandbox.lstat().st_mode))
+            self.assertTrue(stat.S_ISDIR(sandbox.stat().st_mode))
+            self.assertEqual(sandbox.lstat().st_uid,24001)
+
     def run_mocked_experiment(self,fail_evidence=False):
         from unittest.mock import MagicMock
         workspace=self.root/'experiment';workspace.mkdir()
@@ -1132,7 +1175,7 @@ class CalibrationFailureEvidenceTests(unittest.TestCase):
         sandbox=workspace/'diagnostic-results/disposable';sandbox.mkdir(parents=True)
         current={};original_stat=Path.stat
         def fake_stat(path,*args,**kwargs):
-            return types.SimpleNamespace(st_uid=24001) if path==sandbox else original_stat(path,*args,**kwargs)
+            return self.fixture_stat(path,sandbox,original_stat,*args,**kwargs)
         def observe(w,stage,argv,*args,**kwargs):
             case=argv[3];e=copy.deepcopy(self.expected);records=copy.deepcopy(self.records)
             if case=='detached':records[1]['ppid']+=1
