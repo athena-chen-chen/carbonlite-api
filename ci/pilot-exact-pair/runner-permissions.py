@@ -64,7 +64,7 @@ def verify(workspace, runner_uid, runner_gid):
     control = workspace / 'control'
     module = control / 'ci/pilot-exact-pair'
     paths.extend([control, control / 'ci', module])
-    required = {'run.py', 'type_debt.py', 'approved.json', 'runner-access.sh',
+    required = {'diagnostics.py', 'run.py', 'type_debt.py', 'approved.json', 'runner-access.sh',
                 'runner-permissions.py', 'verify.py', 'network.sh'}
     for path in paths:
         if not stat.S_ISDIR(path.lstat().st_mode):

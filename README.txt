@@ -1,7 +1,7 @@
 CARBONLITE MANUAL EXACT-PAIR WORKFLOW — LOCAL PREPARATION ONLY
 
 Proposed hosting repository: athena-chen-chen/carbonlite-api
-Proposed hosting branch: ci/pilot-exact-pair-validation (NOT CREATED)
+Hosting branch: ci/pilot-exact-pair-validation (existing published workflow 0a0d72fd4c908bc60564ccf6c9d0505883c28811; this corrected local bundle is NOT published)
 Prepared workflow: .github/workflows/nightly-e2e.yml
 Supporting published paths: ci/pilot-exact-pair/{approved.json,verify.py,run.py,network.sh,type_debt.py,runner-access.sh,runner-permissions.py}
 Local tests: ci/pilot-exact-pair/test_local.py and test_runner_access.sh / test_runner_permissions.py (disposable Linux only)
@@ -19,10 +19,12 @@ Do not dispatch main. No workflow has been published or dispatched in preparatio
 
 IDENTITIES
 Frontend baseline: 3b69611d80d3f9a11712069bca2fd4eb72f51e15
+Frontend approved commit: 760b583c4091329c05d41349a7e257f6c6e5b3cd
 Frontend expected candidate tree: 3885eef878844d9050a2022b0086301ce9e95176 (52 changed files)
 Backend baseline: 1b38e3054be9da4a5935c1802a9a9389becf37a9
-Backend expected candidate tree: a0d2ccacdd55de6c75fbf3f5aec405eb9666de39 (6 changed files)
-Future candidate commit SHAs are NOT YET AVAILABLE. No commit SHA is invented here.
+Backend approved commit: e424c567d43c0086e0dc01b86e48cb648c114078
+Backend expected candidate tree: f4e02d756dc14c0df638d7086b483566e7efeca5 (8 changed files)
+Both approved commit/tree identities were independently read from GitHub; no future SHA is invented.
 The workflow takes exactly two full lowercase 40-hex candidate commit inputs.
 Control checkout is bound to github.workflow_sha, separately from both applications.
 Both complete expected trees were independently reproduced with Git mktree in temporary
@@ -191,7 +193,7 @@ root/runner, privileged Docker control or untrusted install hooks. Those remain 
 trusted-code/disposable-host assumptions, not an untrusted-code security sandbox.
 
 Read/search repairs remain restricted to the actual governing POSIX class: +x on exact
-ancestors/control directories and +r on the three public runtime files consumed by run.py.
+ancestors/control directories and +r on the four public runtime files consumed by run.py.
 They add no write or directory-list bits. Actual reads as clpairtest and rejection of its
 write access to all ancestors/control files remain. The Python guard and sudo chmod run
 as the trusted setup identity; application tests continue only as clpairtest. Existing
@@ -228,3 +230,217 @@ Unexpected metadata must block, without broad chmod or automatic group approval.
 hosted network/Docker/application/type-debt validation remains outstanding. Review this
 new checksum-bound bundle, then obtain separate publication and one-run permissions.
 No publication, dispatch, application modification or cloud operation occurred here.
+
+HOSTED E2E DIAGNOSTICS CORRECTION — LOCAL ONLY, 2026-11-25
+Run 45638411608 retained only suite summaries, so its exact assertion identities and
+six blocked-packet destinations cannot be recovered. A local reproduction using the
+same configured-storage override reproduced six ENOENT assertions in F08/F09. The
+correction uses DOCUMENT_STORAGE.exists/read with documentStorageKey(fileUrl), leaving
+logical URLs, production storage and fault injection unchanged. A real missing-source
+control proves existence/read assertions reject a deleted source. Two test files change;
+no application source changes. Full suites: before 36 PASS/6 FAIL; after 43/43 direct
+PostgreSQL 16.10 and 43/43 PgBouncer 1.24.1, with a deliberately separate storage root.
+
+DIAGNOSTIC PRIVACY AND BOUNDS
+New diagnostics.py captures raw command stdout/stderr to owner-only (0600) local files,
+maximum 16 MiB; overflow/1800-second timeout kills the command group and blocks validation.
+Raw Jest JSON is produced under child umask 077, bounded to 16 MiB for parsing; it is
+never uploaded. The existing runner/artifact account can read sanitized files, not raw
+logs. Sanitized *.failures.json preserves suite statuses, failed test/file names,
+matcher/numeric Expected/Received structure, error codes and relevant stack frames.
+Quoted literals, arbitrary thrown prose, source snippets, dumped objects, sensitive
+fields, URLs, emails and opaque values are omitted. It intentionally does NOT retain
+unsanitized customer/request content. This is synthetic-only evidence, not a generic
+safe logging mechanism for customer workloads. Each artifact is <=512 KiB, <=128 failures,
+<=8 messages/failure, <=8192 characters/message with visible truncation markers. Count,
+parse or size failures block; raw command exit and FAIL stage are saved first. Missing
+Jest output produces a fixed BLOCKED artifact plus bounded sanitized error/frame fallback.
+No failed test becomes PASS. Artifact upload remains the explicit allowlist, seven-day
+retention, repository-controlled Actions download access; no public link or raw upload.
+Founder must maintain repository/artifact access restrictions. Logs expire with the runner.
+
+NETWORK ATTRIBUTION — DENY POLICY UNCHANGED
+The UID-24001 allow rules and unconditional IPv4/IPv6 REJECT remain. Immediately before
+REJECT, header-only kernel LOG rules record a maximum 30/minute, burst 20. They include UID,
+IP/port/protocol; no request, header, DNS-name, SNI or payload content. New validation
+stage intervals permit timestamp overlap attribution to a stage, NEVER a particular test.
+After the existing preflight, counters reset and a microsecond UTC capture marker is saved.
+The always-run check preserves the blocking counter result independently of diagnostics.
+Root journalctl reads only kernel records since this window, at most 2048 records; the
+unprivileged Actions controller parses at most 16 MiB and emits <=128 matching records.
+Only CLPAIR_DENY records for UID 24001 enter the sanitized artifact. IPv4/IPv6 destination,
+port, protocol, UTC timestamp and DNS-vs-other classification are retained. IP/443 alone
+DOES NOT prove external-provider access. PID/executable/test identity remain unavailable;
+we report reliable UID attribution only. Allowed loopback/disposable TCP/5432 bypass LOG;
+correctness of those paths is tested through real successful socket connections.
+Counter/event counts are compared. Rate limiting, kernel log loss, unrelated journal
+volume and hosted journal availability can make attribution PARTIAL/UNAVAILABLE; never
+interpret missing journal records as zero packets. Any blocked packet still fails. Parser,
+journal-command or counter inspection errors fail. The pre-existing privileged Docker
+trust boundary is unchanged. Do not disable the guard to diagnose these packets.
+
+LOCAL TESTS AND HOSTED GATES
+- 29 existing bundle tests; 20 new diagnostic tests; 25 Linux permission tests PASS.
+- Real container-local iptables: allowed loopback, PostgreSQL and PgBouncer sockets,
+  zero initial denied packets; denied TCP/443 and UDP/53; counter=2 and check failed.
+  Both IPv4/IPv6 rule order verified. Actual IPv6 packet delivery and hosted journal
+  availability are NOT proven by this Linux fixture. Synthetic journal parsing covers
+  IPv6, DNS classification, time-window/UID filtering, stage overlap and payload exclusion.
+- A one-case exploratory invocation omitted required synthetic evidence-HMAC configuration
+  and failed app startup. Final full-suite runs use the unchanged approved synthetic
+  keyring contract and pass. No production authorization relaxation was made.
+- Application TypeScript and focused ESLint pass. No cloud access/dispatch/publication.
+
+IMPORTANT IDENTITY GATE
+approved.json and verify.py are UNCHANGED. The old backend commit does NOT contain the
+two corrected E2E files. The new local test-only delta requires independent review and
+separately authorized candidate publication and identity-manifest rebinding before a
+hosted run can exercise it. Do not dispatch the old pair and claim these fixes were tested.
+Nothing in this package authorizes a push, dispatch, PR, deployment or real-data activation.
+
+STRICT DIAGNOSTIC PRIVACY P1 CORRECTION — LOCAL ONLY, 2026-11-25
+Supersedes the earlier free-text sanitization/name-retention description above.
+The eced5888... bundle allowed short unquoted values after Expected:, Matcher error:
+and at prefixes. All three synthetic canaries reproduced before this correction.
+
+No input diagnostic line, dynamic test name or nested exception structure is now copied.
+Format 2 exposes parsed fields only: finite numeric/boolean/null assertion values,
+fixed matcher categories/modifiers, enumerated error codes, and validated source locations.
+Unknown values are replaced with [REDACTED] or counted as redacted. Unicode/non-color
+controls, JSON dumps, arbitrary error prose, function labels/arguments and causes are
+excluded. Conventional ANSI color codes may be removed, but never make payload text safe.
+A stack location must map to an actual tracked source-file path from the identity-verified
+checkout, with positive bounded line/column numbers verified against source line lengths
+(UTF-16 columns). Symlink redirection is rejected. Absolute paths never enter output.
+The source catalog is read using git ls-files by UID 24001; no external parser/dependency
+or source modification is introduced. Unverifiable suite path/status/count evidence blocks.
+
+Parameterized titles, fullName and ancestorTitles are omitted even when short. Failed-test
+identity is the trusted repository-relative file + assertion ordinal, bound to the exact
+candidate SHA/tree in the existing identity artifact. This deliberately loses human-readable
+runtime test names and parameter values; locate the assertion in the pinned source using
+its ordinal and retained source locations. It is not a claim to recover all hidden inputs.
+
+The run.py summary/fallback paths use the same parsed-field policy. Counts are validated
+nonnegative integers, suite statuses are fixed enums, and stage labels are fixed approved
+constants. Nested count/status/path payloads block instead of being copied into tests.json.
+Network stage labels are also checked against the fixed stage enum before output; IP/port,
+UID and UTC fields remain parsed, without arbitrary request content. The firewall script
+and workflow (including raw-log exclusions and seven-day retention) are byte-unchanged.
+
+Outcome kinds distinguish TEST_FAILURE reported by Jest, TEST_INFRASTRUCTURE_FAILURE
+(suite-load failure without failed assertions, capture timeout/overflow), and DIAGNOSTIC_FAILURE
+(invalid/missing/unverifiable evidence). A Jest-reported assertion failure does not establish
+whether its root cause was product behavior or setup. Raw command exit status stays visible;
+parsing/redaction failure blocks the overall runner even when the command itself exited zero.
+
+Existing size/count/retention bounds remain unchanged: 16 MiB input/raw log cap, 8192
+characters/message with an explicit truncation boolean, 128 failures, eight messages/failure,
+512 KiB sanitized artifact, seven-day upload retention. No raw logs/JSON added to uploads.
+Identity/tree gates, approved.json and type_debt.py remain byte-unchanged. Historical compiler
+evidence is still governed by the existing separate type-debt policy; this correction does
+not claim a new general-purpose scrubber for arbitrary compiler/customer workloads.
+
+LOCAL VALIDATION
+- 29 existing bundle tests PASS.
+- 43 diagnostic tests PASS: original 20 adapted for format 2 plus 23 privacy/integration
+  regressions. Short unquoted canaries, dynamic names, nested causes/details, multiline,
+  JSON-escaped, Unicode/control, trusted/untrusted frames and unknown summary metadata tested.
+- Six runner-level tests exercise the real run() function with synthetic command output,
+  verify all its uploadable diagnostic JSON files exclude the canary, preserve raw failures
+  and distinguish infrastructure from diagnostic failure. Raw fixture output is intentionally
+  excluded exactly as in the workflow; no hosted run or database access is performed.
+- Existing 25 Linux mode/owner/ACL/UID permission regressions PASS in --network none --rm.
+- Python/YAML/Bash syntax, application-candidate no-change inventory and checksums verified.
+Separate independent review/publication/identity-rebinding/dispatch approvals still required.
+
+EXACT-PAIR IMMUTABLE IDENTITY REBINDING — LOCAL ONLY, 2026-11-25
+This section supersedes earlier historical six-file/unpublished-candidate statements.
+Input bundle checksum-index: 9f529cf9e065f755adb3cf2f72c979102e17f6d5113196ab0cdf626dd3667f54.
+GitHub commit objects, branch refs and baseline comparisons were freshly read without
+publication or dispatch. Backend e424c567d43c0086e0dc01b86e48cb648c114078 has tree
+f4e02d756dc14c0df638d7086b483566e7efeca5 and parent b1cc0c810c46669003d00d18d18349b6944fbf0a.
+Frontend remains 760b583c4091329c05d41349a7e257f6c6e5b3cd, tree
+3885eef878844d9050a2022b0086301ce9e95176, based on 3b69611d80d3f9a11712069bca2fd4eb72f51e15.
+
+approved.json now includes an explicit expected_commit for BOTH candidates. verify.py
+rejects missing/malformed pins and any different input commit, even a different commit
+with the same tree. HEAD, complete tree, approved baseline ancestry, exact changed-file
+set, clean checkout, normal file types and per-file SHA-256 checks remain mandatory.
+The identity artifact records both the observed and approved commit. The unchanged
+workflow requires full SHA inputs and calls verify.py before dependency installation,
+after installation and after validation. No workflow edit is necessary to enforce pins.
+
+Backend cumulative manifest against 1b38e3054be9da4a5935c1802a9a9389becf37a9:
+  src/metrics/calculation-quality.service.spec.ts
+  src/metrics/calculation-quality.service.ts
+  src/organizations/organizations.service.spec.ts
+  src/organizations/organizations.service.ts
+  test/document-resource-limits.e2e-spec.ts
+  test/mutation-outcomes.e2e-spec.ts
+  test/organization-profile.e2e-spec.ts
+  test/pilot-reporting-scope.e2e-spec.ts
+Original six file hashes and Git blobs are unchanged. The new published test hashes:
+  document-resource-limits: 737c4bef9ac0ed29b578fc95964ef6ff951415f628a3c9e165da25394805c9c2
+  mutation-outcomes: c46d6829a5b18dd48195a1e6b363985e29154633fc1eef54d7b8f78f37693a2e
+Frontend repository, base, tree, all 52 paths/hashes and reviewed patch hash are unchanged;
+its already-published exact commit is now explicitly pinned instead of only input/HEAD bound.
+
+Backend cumulative patch SHA-256: 1c47279835406536ccb6efdbfe17330b75588916cae5572ab9dce016bd5b182a.
+Reproduce with Git diff --binary --full-index --no-ext-diff --no-textconv --no-renames
+--no-color --src-prefix=a/ --dst-prefix=b/ between the approved RC base and e424c567... .
+This digest describes the complete eight-file immutable diff; it is not the historical
+six-file 7e6432a2... patch. Pin/tree/file checks are authoritative, not patch text alone.
+
+LOCAL VERIFICATION
+- 36 identity/bundle tests PASS: original 29 plus seven new pin/manifest regressions.
+- 43 diagnostic/privacy tests PASS; 25 disposable Linux permission tests PASS.
+- Actual clean disposable checkouts of both published commits pass the real verifier:
+  backend eight-file hashes and frontend 52-file hashes, exact trees and ancestry.
+  Superseded backend b1cc0c8... is rejected. No mocks substitute for these Git checks.
+- Read-only GitHub evidence independently confirms both commits/trees, backend manifest,
+  original six blob identities and new test byte hashes, and unchanged frontend blobs.
+- Diagnostic privacy implementation, runner access/ACL guards, network-deny script,
+  workflow/upload restrictions, deployment policy and historical type-debt gate unchanged.
+- Python/YAML/Bash syntax and full checksum verification PASS. Neither application
+  candidate was edited. Temporary Git checkouts and Linux container are disposed.
+
+This bundle is LOCAL and awaits independent publication review. Existing remote workflow
+0a0d72fd... is not updated by this task and must not be dispatched as the corrected bundle.
+No new candidate commits, push, PR, workflow execution, deployment or provider-setting
+changes occurred. Future publication and one-run dispatch require separate authorization.
+Hosted journal availability, IPv6 packet behavior and actual full exact-pair CI outcome
+remain unverified; historical frontend test-TypeScript debt is not converted into PASS.
+
+IDENTITY EVIDENCE P2 CORRECTION — LOCAL ONLY, 2026-11-25
+Input bundle checksum-index: 66e583edb0693d75624e38f3350f51b8f005598d3c933a128e4362eed514102b.
+The verifier correctly enforced the commit pin but reused its local variable in the
+per-file digest loop, so approved_commit in its returned artifact was a file digest.
+The earlier real-checkout evidence confirms backend approved_commit was
+88122ffbc1a27d95995703a0f94288f3f668854aab012b145bbd26bac859ee39,
+and frontend approved_commit was
+c920a9bf1de2ddb44fdcbad40212553764785c86cc646cebeb85ec9544aaa103.
+These are 64-character file hashes, not approved Git commits. Earlier acceptance checks
+passed but did not assert the returned field; those records remain historical evidence.
+
+Only variable names and the returned approval field change in verify.py:
+approved_commit_sha holds the original approved commit; expected_file_sha256 is used
+only inside file verification. All acceptance predicates, checked paths and execution
+order remain unchanged. approved.json and both application candidates are byte-unchanged.
+New regressions require returned approval == approved.json pin == observed commit,
+exactly 40 lowercase hex characters, and not any per-file digest. The same assertions
+run against both real disposable candidate checkouts, not just synthetic Git mocks.
+
+Verified resulting approved_commit values:
+  Backend: e424c567d43c0086e0dc01b86e48cb648c114078
+  Frontend: 760b583c4091329c05d41349a7e257f6c6e5b3cd
+Trees remain f4e02d756dc14c0df638d7086b483566e7efeca5 and
+3885eef878844d9050a2022b0086301ce9e95176 respectively. Backend eight-file and frontend
+52-file hashes/ancestry/cleanliness pass; superseded backend remains rejected.
+
+Validation: 38 identity/bundle tests PASS (36 existing + two returned-evidence regressions),
+43 diagnostic/privacy tests PASS, 25 disposable Linux permission tests PASS, both actual
+candidate checks PASS, syntax/checksums PASS. Diagnostic privacy, workflow, network denial,
+runner/ACL safeguards, type-debt logic and immutable approval metadata remain unchanged.
+No app source, commit, push, dispatch, PR, provider setting or deployment changed.
+This local correction awaits independent publication review. Hosted-only unknowns remain.

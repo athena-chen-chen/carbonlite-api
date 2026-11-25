@@ -5,6 +5,8 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import time
+from diagnostics import jest_evidence, capture, failure_text, write_bounded, trusted_files, suite_summaries, STAGES, safe_counts
 from type_debt import execute as check_type_debt
 
 workspace = Path(sys.argv[1]).resolve()
@@ -28,6 +30,9 @@ results = json.loads((output / 'tests.json').read_text()) if (output / 'tests.js
 
 
 def run(label, args, cwd, *, database=None, test_json=False):
+    if label not in STAGES:
+        raise ValueError('Unknown validation stage')
+    allowed = trusted_files(cwd)
     local_env = dict(env)
     if database:
         local_env['DATABASE_URL'] = database
@@ -36,17 +41,44 @@ def run(label, args, cwd, *, database=None, test_json=False):
     command = list(args)
     if test_json:
         command += [('--reporter=json' if 'vitest' in command else '--json'), '--outputFile=' + str(json_path)]
-    with raw.open('w') as stream:
-        result = subprocess.run(command, cwd=cwd, env=local_env, stdout=stream, stderr=subprocess.STDOUT, timeout=1800)
-    item = {'stage': label, 'exit_code': result.returncode, 'status': 'PASS' if result.returncode == 0 else 'FAIL'}
-    if test_json and json_path.exists():
-        data = json.loads(json_path.read_text())
-        item['counts'] = {key: data.get(key) for key in ['numTotalTests', 'numPassedTests', 'numFailedTests', 'numPendingTests', 'numFailedTestSuites']}
-        item['suites'] = [{'name': str(test.get('name', '')).replace(str(workspace), '<workspace>'), 'status': test.get('status')} for test in data.get('testResults', [])]
+    stage_path = output / 'stage-intervals.json'
+    intervals = json.loads(stage_path.read_text()) if stage_path.exists() else []
+    intervals.append({'stage': label, 'started_us': time.time_ns() // 1000})
+    stage_path.write_text(json.dumps(intervals, indent=2))
+    result = capture(command, cwd, local_env, raw)
+    intervals[-1]['finished_us'] = time.time_ns() // 1000
+    stage_path.write_text(json.dumps(intervals, indent=2))
+    item = {'stage': label, **result, 'outcome_kind': 'TEST_INFRASTRUCTURE_FAILURE' if result['timed_out'] or result['output_limit_exceeded'] else 'COMMAND_RESULT', 'status': 'PASS' if result['exit_code'] == 0 and not result['output_limit_exceeded'] and not result['timed_out'] else 'FAIL'}
+    # Persist the raw command status even if parsing/evidence generation fails.
     results.append(item)
     (output / 'tests.json').write_text(json.dumps(results, indent=2))
+    if test_json:
+        try:
+            if 'jest' in command:
+                jest_evidence(json_path, output / (label + '.failures.json'), cwd, allowed)
+            if json_path.stat().st_size > 16 * 1024 * 1024:
+                raise ValueError('Test evidence exceeds input budget')
+            data = json.loads(json_path.read_text())
+            item['counts'] = safe_counts(data)
+            item['suites'] = suite_summaries(data, cwd, allowed)
+            if item['counts']['numFailedTests'] or item['counts']['numFailedTestSuites']:
+                item['status'] = 'FAIL'
+        except Exception:
+            item['diagnostics'] = 'FAIL'
+            (output / 'tests.json').write_text(json.dumps(results, indent=2))
+            # Evidence failure also blocks; preserve the actual command exit above.
+            fallback = [line for line in raw.read_text(errors='replace').splitlines()
+                        if re.match(r'^\s*(?:Error:|FAIL |at )', line)][:32]
+            write_bounded(output / (label + '.failures.json'),
+                          {'evidence': 'BLOCKED: missing, malformed or over-budget test evidence',
+                           'exit_code': result['exit_code'],
+                           'outcome_kind': 'DIAGNOSTIC_FAILURE',
+                           'command_outcome': 'TEST_INFRASTRUCTURE_FAILURE' if result['timed_out'] or result['output_limit_exceeded'] else 'UNCLASSIFIED_COMMAND_RESULT',
+                           'sanitized_error_frames': [failure_text(line, cwd, allowed) for line in fallback]})
+            raise RuntimeError('Test diagnostic evidence unavailable')
+    (output / 'tests.json').write_text(json.dumps(results, indent=2))
     print(label + ': ' + item['status'], flush=True)
-    if result.returncode:
+    if item['status'] != 'PASS':
         raise RuntimeError('Validation stage failed: ' + label)
     return result
 

@@ -52,3 +52,75 @@ RUNNER ACCESS P1 REVIEW
   remain byte-for-byte unchanged. No cloud changes/publication/dispatch/application edits.
 - Hosted group/ACL/ownership and full CI remain unverified. Trusted root/runner/Docker
   privilege and dependency-install trust are existing limitations, not solved by this guard.
+
+LOCAL DIAGNOSTICS CORRECTION REVIEW — 2026-11-25
+Scope: configured-storage assertions in two backend E2E files; bounded sanitized Jest
+failure artifacts; header-only rate-limited kernel denial evidence; required read access
+for the new diagnostics helper; permission-fixture inventory; documentation/checksums.
+No application files, identity verifier, approved manifests, type-debt logic, database
+allowlist or deployment trigger modified. Manual-only workflow/read-only permissions
+remain. No checkout credentials added. Outbound REJECT rules remain unconditional.
+
+Known limits: the old hosted failure identities and blocked destinations remain unavailable;
+local six-case ENOENT reproduction is independent evidence, not recovered hosted assertions.
+Header logs identify UID, not PID/test/provider. Journal access and IPv6 packet behavior
+need future hosted evidence. Rate-limited diagnostics may be incomplete, explicitly marked.
+No raw logs or request payloads are uploaded. Sanitization deliberately drops arbitrary
+string payloads; some failures may need further synthetic-only investigation. Seven-day
+artifact access is inherited from repository permissions, not a newly created ACL.
+The corrected test delta is outside the old approved backend tree. Existing identity gates
+intentionally reject unreviewed new trees. Separate review/rebinding/publication approval
+is mandatory before any future hosted run. No hosted run/publication authorized here.
+
+STRICT PRIVACY P1 LOCAL CORRECTION — 2026-11-25
+Replaced prefix-based arbitrary string retention with parsed allowlisted fields. Dynamic
+Jest names/causes/details are never copied. File + ordinal + paired immutable SHA/tree
+provides identity; source locations must match the tracked source catalog. Summary counts,
+status enums, fallback evidence and network stage metadata share fail-closed validation.
+The three short pre-fix canaries are now absent, as are nested/escaped/multiline/control
+variants. Runtime raw command exit remains separate from diagnostic failure. No successful
+redaction can turn a failed command into PASS. The new format intentionally omits assertion
+payload strings and runtime test titles rather than claiming regexes prove them nonsensitive.
+
+43 diagnostic/privacy tests, 29 existing bundle tests and 25 Linux permission tests PASS.
+Network deny script, workflow/upload allowlist/retention, runner-permission helpers, identity
+verifier/approved manifest and historical type-debt logic are unchanged from eced5888... .
+No application candidate edits, cloud calls, publication, dispatch or deployment occurred.
+Pending independent review. Existing hosted journal/IPv6 and backend identity-rebinding
+prerequisites remain unresolved and are not waived by these local privacy checks.
+
+EXACT-PAIR IDENTITY REBINDING — LOCAL ONLY, 2026-11-25
+Reviewed input index: 9f529cf9e065f755adb3cf2f72c979102e17f6d5113196ab0cdf626dd3667f54.
+Fresh GitHub commit/tree/ref evidence confirms backend e424c567d43c0086e0dc01b86e48cb648c114078
+(tree f4e02d756dc14c0df638d7086b483566e7efeca5, eight files from approved RC base) and unchanged
+frontend 760b583c4091329c05d41349a7e257f6c6e5b3cd (tree 3885eef878844d9050a2022b0086301ce9e95176).
+Original backend six blobs and all frontend 52 blob/file hashes match prior approval;
+new test bytes match the separately reviewed 737c4bef... and c46d6829... SHA-256 values.
+
+Minimal local delta: approved.json, verify.py, test_local.py, README.txt, REVIEW.txt and
+SHA256SUMS.txt. Add mandatory immutable commit pins; update backend tree and eight-file
+manifest/hash evidence. Existing frontend identity fields remain identical, plus explicit
+pinning of its approved published commit. No fallback to branches, merge refs or tree-only
+acceptance. Existing guards remain; verify.py refuses a different SHA even with same tree.
+Unchanged workflow already invokes this verifier before installation and after later stages.
+
+36 identity/bundle tests PASS (seven added), 43 privacy tests PASS, 25 Linux permission
+regressions PASS. Both real disposable Git checkouts pass the verifier; stale backend pin
+is rejected. Syntax/checksums PASS. No application edits, commits, push, dispatch, PR,
+deployment or settings changes. Candidate source hashes preserved. Complete bundle awaits
+independent publication review. Hosted execution/egress attribution and historical type debt
+remain unresolved; no new hosted result is inferred from local identity verification.
+
+IDENTITY EVIDENCE P2 LOCAL CORRECTION — 2026-11-25
+Baseline checksum-index: 66e583edb0693d75624e38f3350f51b8f005598d3c933a128e4362eed514102b.
+Fix only shadowed verifier variables: approved_commit_sha vs expected_file_sha256.
+No acceptance rule changes; approved.json remains byte-identical. Returned approved_commit
+now equals the approved 40-character SHA, never the final 64-character file digest.
+Two added regressions assert exact returned identity, JSON approval equality, 40-hex format
+and exclusion of file digests. Existing superseded/different-commit tests remain.
+Real backend and frontend disposable checkouts both validate the returned approval SHA,
+tree, manifest, file hashes, cleanliness and ancestry; stale backend remains rejected.
+38 identity/bundle, 43 diagnostic and 25 Linux permission tests PASS. Syntax/checksums PASS.
+Local delta: verify.py, test_local.py, README.txt, REVIEW.txt, SHA256SUMS.txt only.
+No application, candidate identity, workflow, privacy, network, permissions or type-debt
+logic changes. No publication/dispatch/deployment. Independent review remains required.

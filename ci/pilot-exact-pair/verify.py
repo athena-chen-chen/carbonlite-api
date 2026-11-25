@@ -12,8 +12,13 @@ def git(root, *args):
 
 
 def verify(root, sha, approved):
-    if not re.fullmatch(r'[0-9a-f]{40}', sha):
+    if not isinstance(sha, str) or not re.fullmatch(r'[0-9a-f]{40}', sha):
         raise ValueError('Full lowercase commit SHA required')
+    approved_commit_sha = approved.get('expected_commit')
+    if not isinstance(approved_commit_sha, str) or not re.fullmatch(r'[0-9a-f]{40}', approved_commit_sha):
+        raise ValueError('Missing or malformed approved commit pin')
+    if sha != approved_commit_sha:
+        raise ValueError('Commit differs from immutable approved candidate')
     remote = git(root, 'remote', 'get-url', 'origin').removesuffix('.git')
     if remote != 'https://github.com/' + approved['repository']:
         raise ValueError('Repository mismatch')
@@ -28,13 +33,13 @@ def verify(root, sha, approved):
         raise ValueError('Changed-file manifest mismatch')
     if git(root, 'status', '--porcelain', '--untracked-files=all'):
         raise ValueError('Checkout not clean')
-    for name, expected in approved['files'].items():
+    for name, expected_file_sha256 in approved['files'].items():
         path = root / name
         if path.is_symlink() or not path.is_file():
             raise ValueError('Unexpected file type')
-        if hashlib.sha256(path.read_bytes()).hexdigest() != expected:
+        if hashlib.sha256(path.read_bytes()).hexdigest() != expected_file_sha256:
             raise ValueError('File hash mismatch')
-    return {'repository': approved['repository'], 'commit': sha, 'tree': tree,
+    return {'repository': approved['repository'], 'commit': sha, 'approved_commit': approved_commit_sha, 'tree': tree,
             'baseline': approved['baseline'], 'changed_files': sorted(paths),
             'reviewed_file_sha256': approved['files'], 'reviewed_patch_sha256': approved['reviewed_patch_sha256'],
             'identity': 'PASS'}

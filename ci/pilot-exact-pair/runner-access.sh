@@ -28,7 +28,8 @@ while :; do
 done
 control_directories=("$workspace/control" "$workspace/control/ci" "$workspace/control/ci/pilot-exact-pair")
 directories+=("${control_directories[@]}")
-files=("$workspace/control/ci/pilot-exact-pair/run.py"
+files=("$workspace/control/ci/pilot-exact-pair/diagnostics.py"
+       "$workspace/control/ci/pilot-exact-pair/run.py"
        "$workspace/control/ci/pilot-exact-pair/type_debt.py"
        "$workspace/control/ci/pilot-exact-pair/approved.json")
 # Fail before repairs on missing/nonregular/symlinked evidence.

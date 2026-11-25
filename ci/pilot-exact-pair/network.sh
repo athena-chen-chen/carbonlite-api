@@ -15,6 +15,9 @@ case "${1:?}" in
       [[ "$address" =~ ^172\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || exit 1
       sudo iptables -A CLPAIR_EGRESS -d "$address" -p tcp --dport 5432 -j RETURN
     done
+    # Header-only metadata, bounded rate; no request contents or DNS payloads.
+    sudo iptables -A CLPAIR_EGRESS -m limit --limit 30/minute --limit-burst 20 -j LOG --log-prefix 'CLPAIR_DENY ' --log-uid
+    sudo ip6tables -A CLPAIR_EGRESS -m limit --limit 30/minute --limit-burst 20 -j LOG --log-prefix 'CLPAIR_DENY ' --log-uid
     sudo iptables -A CLPAIR_EGRESS -j REJECT
     sudo ip6tables -A CLPAIR_EGRESS -j REJECT
     sudo iptables -I OUTPUT 1 -m owner --uid-owner "$uid" -j CLPAIR_EGRESS

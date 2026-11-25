@@ -19,7 +19,7 @@ class IdentityGateTests(unittest.TestCase):
         self.root = Path(self.directory.name)
         (self.root / 'sample.txt').write_bytes(b'synthetic only\n')
         self.sha = 'a' * 40
-        self.approved = {'repository': 'athena-chen-chen/carbonlite-api', 'expected_tree': 'b' * 40,
+        self.approved = {'repository': 'athena-chen-chen/carbonlite-api', 'expected_commit': self.sha, 'expected_tree': 'b' * 40,
                          'baseline': 'c' * 40, 'reviewed_patch_sha256': 'd' * 64, 'files': {'sample.txt': hashlib.sha256(b'synthetic only\n').hexdigest()}}
         self.responses = {('remote', 'get-url', 'origin'): 'https://github.com/athena-chen-chen/carbonlite-api.git',
                           ('rev-parse', 'HEAD'): self.sha, ('rev-parse', 'HEAD^{tree}'): 'b' * 40,
@@ -39,10 +39,54 @@ class IdentityGateTests(unittest.TestCase):
         self.assertEqual(self.verify()['identity'], 'PASS')
         self.assertTrue(self.runner.call_args.kwargs['check'])
 
+    def test_returned_approved_commit_is_exact_pin_not_file_digest(self):
+        result = self.verify()
+        self.assertEqual(result['approved_commit'], self.approved['expected_commit'])
+        self.assertEqual(result['approved_commit'], result['commit'])
+        self.assertRegex(result['approved_commit'], r'^[0-9a-f]{40}$')
+        self.assertNotIn(result['approved_commit'], self.approved['files'].values())
+
+    def test_both_published_approval_pins_are_reported_exactly(self):
+        import json
+        approvals = json.loads(Path(__file__).with_name('approved.json').read_text())
+        for kind in ('backend', 'frontend'):
+            with self.subTest(candidate=kind):
+                approval = dict(approvals[kind], files=self.approved['files'])
+                commit = approvals[kind]['expected_commit']
+                self.responses[('remote', 'get-url', 'origin')] = 'https://github.com/' + approval['repository']
+                self.responses[('rev-parse', 'HEAD')] = commit
+                self.responses[('rev-parse', 'HEAD^{tree}')] = approval['expected_tree']
+                self.responses[('diff', '--no-renames', '--name-only', approval['baseline'], commit)] = 'sample.txt'
+                result = module.verify(self.root, commit, approval)
+                self.assertEqual(result['approved_commit'], approvals[kind]['expected_commit'])
+                self.assertEqual(result['approved_commit'], commit)
+                self.assertRegex(result['approved_commit'], r'^[0-9a-f]{40}$')
+                self.assertNotIn(result['approved_commit'], approval['files'].values())
+
     def test_rejects_branch_or_injection_instead_of_sha(self):
         for value in ['main', 'a' * 39, 'a' * 41, 'A' * 40, '$(echo unsafe)']:
             with self.assertRaises(ValueError):
                 module.verify(self.root, value, self.approved)
+
+    def test_different_commit_with_same_tree_rejected(self):
+        other = 'e' * 40
+        self.responses[('rev-parse', 'HEAD')] = other
+        with self.assertRaises(ValueError):
+            module.verify(self.root, other, self.approved)
+
+    def test_missing_commit_pin_rejected(self):
+        del self.approved['expected_commit']
+        with self.assertRaises(ValueError): self.verify()
+
+    def test_malformed_commit_pin_rejected(self):
+        for value in [None, 'main', 'a' * 39, 'A' * 40]:
+            self.approved['expected_commit'] = value
+            with self.assertRaises(ValueError): self.verify()
+
+    def test_superseded_backend_commit_rejected(self):
+        self.approved['expected_commit'] = 'e424c567d43c0086e0dc01b86e48cb648c114078'
+        with self.assertRaises(ValueError):
+            module.verify(self.root, 'b1cc0c810c46669003d00d18d18349b6944fbf0a', self.approved)
 
     def test_wrong_repository(self):
         self.responses[('remote', 'get-url', 'origin')] = 'https://github.com/example/wrong'
@@ -249,6 +293,30 @@ class DebtExecutionTests(unittest.TestCase):
         report, _ = self.invoke()
         self.assertEqual(report['policy'], 'BLOCKED')
         self.assertIn('lockfile mismatch', report['reason'])
+
+
+class PublishedPairMetadataTests(unittest.TestCase):
+    def test_backend_pin_and_eight_file_manifest(self):
+        import json
+        data = json.loads(Path(__file__).with_name('approved.json').read_text())['backend']
+        self.assertEqual(data['expected_commit'], 'e424c567d43c0086e0dc01b86e48cb648c114078')
+        self.assertEqual(data['expected_tree'], 'f4e02d756dc14c0df638d7086b483566e7efeca5')
+        self.assertEqual(data['baseline'], '1b38e3054be9da4a5935c1802a9a9389becf37a9')
+        self.assertEqual(set(data['files']), {'src/metrics/calculation-quality.service.spec.ts', 'src/metrics/calculation-quality.service.ts', 'src/organizations/organizations.service.spec.ts', 'src/organizations/organizations.service.ts', 'test/document-resource-limits.e2e-spec.ts', 'test/mutation-outcomes.e2e-spec.ts', 'test/organization-profile.e2e-spec.ts', 'test/pilot-reporting-scope.e2e-spec.ts'})
+
+    def test_new_test_hashes(self):
+        import json
+        files = json.loads(Path(__file__).with_name('approved.json').read_text())['backend']['files']
+        self.assertEqual(files['test/document-resource-limits.e2e-spec.ts'], '737c4bef9ac0ed29b578fc95964ef6ff951415f628a3c9e165da25394805c9c2')
+        self.assertEqual(files['test/mutation-outcomes.e2e-spec.ts'], 'c46d6829a5b18dd48195a1e6b363985e29154633fc1eef54d7b8f78f37693a2e')
+
+    def test_frontend_identity_preserved(self):
+        import json
+        data = json.loads(Path(__file__).with_name('approved.json').read_text())['frontend']
+        self.assertEqual(data['expected_commit'], '760b583c4091329c05d41349a7e257f6c6e5b3cd')
+        self.assertEqual(data['expected_tree'], '3885eef878844d9050a2022b0086301ce9e95176')
+        self.assertEqual(data['baseline'], '3b69611d80d3f9a11712069bca2fd4eb72f51e15')
+        self.assertEqual(len(data['files']), 52)
 
 
 if __name__ == '__main__':

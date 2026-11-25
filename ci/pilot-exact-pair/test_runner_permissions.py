@@ -17,7 +17,7 @@ MODULE = REVIEWED / 'ci/pilot-exact-pair'
 GUARD_SPEC = importlib.util.spec_from_file_location('permission_guard', MODULE / 'runner-permissions.py')
 guard = importlib.util.module_from_spec(GUARD_SPEC)
 GUARD_SPEC.loader.exec_module(guard)
-REQUIRED = ['run.py', 'type_debt.py', 'approved.json', 'runner-access.sh',
+REQUIRED = ['diagnostics.py', 'run.py', 'type_debt.py', 'approved.json', 'runner-access.sh',
             'runner-permissions.py', 'verify.py', 'network.sh']
 
 

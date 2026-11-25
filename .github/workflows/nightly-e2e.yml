@@ -147,6 +147,7 @@ jobs:
           PY
           blocked="$(sudo iptables -L CLPAIR_EGRESS -n -v -x | awk '$3=="REJECT" {print $1}')"
           test "$blocked" -gt 0
+          date -u +%s%6N > pair-results/network-since-us.txt
           sudo iptables -Z CLPAIR_EGRESS
           sudo ip6tables -Z CLPAIR_EGRESS
           echo 'OUTBOUND_GUARD_PREFLIGHT: PASS' | tee pair-results/network-preflight.txt
@@ -164,7 +165,20 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # Independent diagnostics cannot mask the counter failure, and vice versa.
+          set +e
           bash control/ci/pilot-exact-pair/network.sh check | tee pair-results/network-status.txt
+          counter_status=${PIPESTATUS[0]}
+          since_us="$(cat pair-results/network-since-us.txt)"
+          [[ "$since_us" =~ ^[0-9]{16}$ ]] || exit 1
+          # Read header-only kernel records since this capture window; no payload logging.
+          sudo journalctl -k --since="@$((since_us / 1000000))" -o json --no-pager -n 2048 \
+            | python3 control/ci/pilot-exact-pair/diagnostics.py network "$since_us" \
+                pair-results/network-events.json pair-results/validation/stage-intervals.json pair-results/network-status.txt
+          diagnostic_status=$?
+          set -e
+          test "$counter_status" = 0
+          test "$diagnostic_status" = 0
       - name: Verify reviewed source stayed unchanged through validation
         if: ${{ always() && steps.network.outputs.enabled == 'true' }}
         env:
@@ -187,3 +201,6 @@ jobs:
             pair-results/validation/type-debt-policy.json
             pair-results/network-preflight.txt
             pair-results/network-status.txt
+            pair-results/network-events.json
+            pair-results/validation/stage-intervals.json
+            pair-results/validation/*.failures.json
