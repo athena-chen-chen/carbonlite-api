@@ -36,6 +36,7 @@ FAILURE_CODES = {'CAPABILITY_MISMATCH', 'CAPABILITY_DENIAL_COUNTER', 'CAPABILITY
                  'MIGRATION_FAILURE', 'DISPOSABLE_RESET', 'CONTAINER_IDENTITY', 'FRESH_HOME',
                  'DISPOSABLE_DIRECTORY', 'RUNNER_IDENTITY', 'CONTROL_INDEX', 'PAYLOAD_IDENTITY',
                  'CONTROL_PERMISSIONS', 'CONTROL_TYPE', 'CONTROL_ACL', 'COMPILER', 'ACTUAL_USER_ACCESS'}
+FAILURE_CODES.add('CALIBRATION_EVIDENCE')
 FAILURE_CODES.update({'CANCELLED','CLEANUP_UNVERIFIED','LIFECYCLE_INVALID','TRACE_INCOMPLETE',
                      'CALIBRATION_UNEXPECTED','CALIBRATION_AMBIGUOUS','KERNEL_EVIDENCE'})
 RAW_KEYS = {"kind", "stage", "utc_ns", "monotonic_ns", "uid", "pid", "tid",
@@ -713,26 +714,26 @@ def settled(pid, start):
 
 def kernel_events(data, begin_us, end_us):
     """Only existing CLPAIR_DENY kernel headers; no raw journal uploads."""
-    if len(data)>65536:raise Blocked('KERNEL_EVIDENCE')
+    if len(data)>65536:raise calibration_error('KERNEL_EVIDENCE','KERNEL_PARSE')
     result=[]
     for line in data.splitlines():
         r=json.loads(line,object_pairs_hook=unique_object)
-        if not isinstance(r,dict) or not isinstance(r.get('MESSAGE'),str):raise Blocked('KERNEL_EVIDENCE')
+        if not isinstance(r,dict) or not isinstance(r.get('MESSAGE'),str):raise calibration_error('KERNEL_EVIDENCE','KERNEL_PARSE')
         message=r['MESSAGE']; stamp=r.get('__REALTIME_TIMESTAMP','')
-        if not isinstance(stamp,str) or not re.fullmatch(r'[0-9]{1,20}',stamp):raise Blocked('KERNEL_EVIDENCE')
+        if not isinstance(stamp,str) or not re.fullmatch(r'[0-9]{1,20}',stamp):raise calibration_error('KERNEL_EVIDENCE','KERNEL_PARSE')
         stamp=int(stamp)
         if not begin_us<=stamp<=end_us:continue
         if len(message)>4096 or message.count('CLPAIR_DENY ')!=1 or any(ord(c)<32 or ord(c)>126 for c in message):
-            raise Blocked('KERNEL_EVIDENCE')
+            raise calibration_error('KERNEL_EVIDENCE','KERNEL_PARSE')
         pairs=re.findall(r'\b(DST|DPT|PROTO|UID)=([^\s]+)',message)
         f=dict(pairs)
         if len(f)!=len(pairs) or set(f)!={'DST','DPT','PROTO','UID'} or f['UID']!='24001' or f['PROTO']!='TCP':
-            raise Blocked('CALIBRATION_UNEXPECTED')
-        if not re.fullmatch(r'[0-9a-fA-F:.]+',f['DST']) or not re.fullmatch(r'[0-9]{1,5}',f['DPT']):raise Blocked('KERNEL_EVIDENCE')
+            raise calibration_error('CALIBRATION_UNEXPECTED','KERNEL_HEADER')
+        if not re.fullmatch(r'[0-9a-fA-F:.]+',f['DST']) or not re.fullmatch(r'[0-9]{1,5}',f['DPT']):raise calibration_error('KERNEL_EVIDENCE','KERNEL_PARSE')
         address=str(ipaddress.ip_address(f['DST']));port=int(f['DPT'])
-        if not 0<port<65536:raise Blocked('KERNEL_EVIDENCE')
+        if not 0<port<65536:raise calibration_error('KERNEL_EVIDENCE','KERNEL_PARSE')
         result.append({'utc_us':stamp,'uid':24001,'destination':address,'port':port,'protocol':'TCP'})
-        if len(result)>16:raise Blocked('KERNEL_EVIDENCE')
+        if len(result)>16:raise calibration_error('KERNEL_EVIDENCE','KERNEL_PARSE')
     return result
 
 
@@ -744,29 +745,164 @@ def read_kernel(begin_us, expected_count, after):
                           '--grep=CLPAIR_DENY ','--since','@'+str(begin_us//1000000)+'.'+str(begin_us%1000000).zfill(6),
                           '--until','@'+str(end_us//1000000)+'.'+str(end_us%1000000).zfill(6),'-n','32'],
                          stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,timeout=5)
-        if r.returncode:raise Blocked('KERNEL_EVIDENCE')
+        if r.returncode:raise calibration_error('KERNEL_EVIDENCE','KERNEL_PARSE')
         events=kernel_events(r.stdout,begin_us,end_us)
-        if counters(CONTROL)!=after:raise Blocked('CALIBRATION_AMBIGUOUS')
+        if counters(CONTROL)!=after:raise calibration_error('CALIBRATION_AMBIGUOUS','KERNEL_COUNTER_RECONCILIATION')
         if len(events)==expected_count:return events
-        if len(events)>expected_count or time.monotonic()>=deadline:raise Blocked('CALIBRATION_AMBIGUOUS')
+        if len(events)>expected_count or time.monotonic()>=deadline:raise calibration_error('CALIBRATION_AMBIGUOUS','KERNEL_COUNTER_RECONCILIATION')
         time.sleep(.05)
 
 
+
+CALIBRATION_ORDER = ('direct','grandchild','short','detached','ipv6','ipv6-loopback','thread','interrupted','unreadable-detached')
+PREDICATES = {'VALIDATED','FIXTURE_CASE','FIXTURE_SCHEMA','FIXTURE_NUMERIC','FIXTURE_IDENTITY',
+              'FIXTURE_SOCKET','FIXTURE_DESTINATION','TRACE_EXEC_COUNT','EXECUTABLE_CLASSIFICATION',
+              'CONNECT_EVENT_COUNT','TRACER_IDENTITY','CONNECTION_METADATA','KERNEL_HEADER',
+              'KERNEL_PARSE','KERNEL_COUNTER_RECONCILIATION','KERNEL_PACKET_TUPLE','COUNTER_RECONCILIATION',
+              'CLEANUP_FAILURE','EVIDENCE_FAILURE','TRACE_VALIDATION','FIXTURE_READ','FIXTURE_OUTCOME','UNCLASSIFIED_FAILURE'}
+IDENTITY_FIELDS = ('pid','tid','ppid','uid','start_ticks','socket_fd','socket_family','port')
+DESTINATIONS = {'CALIBRATION_IPV4','CALIBRATION_IPV6','LOOPBACK_IPV6','OTHER_VALID_IP','INVALID','UNAVAILABLE'}
+
+
+def calibration_error(code, predicate):
+    error = Blocked(code)
+    error.calibration_predicate = predicate
+    return error
+
+
+def scalar(value):
+    return value if type(value) is int and 0 <= value < 2**64 else None
+
+
+def destination_class(value):
+    if value is None: return 'UNAVAILABLE'
+    if not isinstance(value,str) or len(value)>45: return 'INVALID'
+    try: address=ipaddress.ip_address(value)
+    except ValueError: return 'INVALID'
+    return {'192.0.2.1':'CALIBRATION_IPV4','::ffff:c000:201':'CALIBRATION_IPV6','::1':'LOOPBACK_IPV6'}.get(str(address),'OTHER_VALID_IP')
+
+
+def calibration_receipt(case, status, predicate, expected, records, before, after, packets, cleanup):
+    # Projection only: never copy raw dictionaries, strings, traces or exception content.
+    expected = expected if type(expected) is dict else {}
+    connects=[r for r in records if type(r) is dict and r.get('kind')=='connect'] if type(records) is list else None
+    execs=[r for r in records if type(r) is dict and r.get('kind')=='exec'] if type(records) is list else None
+    observed=connects[0] if connects and len(connects)==1 else {}
+    kernel=packets[0] if type(packets) is list and len(packets)==1 and type(packets[0]) is dict else {}
+    label=execs[0].get('executable',{}).get('label') if execs and len(execs)==1 and type(execs[0].get('executable')) is dict else None
+    clean=cleanup if type(cleanup) is dict else {}
+    result={'case':case,'status':status,'predicate':predicate,
+            'expected_exec_count':1,'observed_exec_count':len(execs) if execs is not None else None,
+            'expected_connect_count':int(case!='unreadable-detached'),'observed_connect_count':len(connects) if connects is not None else None,
+            'expected_delta':int(case not in {'ipv6-loopback','unreadable-detached'}),
+            'counter_before':scalar(before),'counter_after':scalar(after),
+            'observed_delta':after-before if type(before) is int and type(after) is int and 0<=before<=after<2**64 else None,
+            'expected_identity':{k:scalar(expected.get(k)) for k in IDENTITY_FIELDS},
+            'observed_identity':{k:scalar(observed.get(k)) for k in IDENTITY_FIELDS},
+            'expected_destination':destination_class(expected.get('destination')),
+            'observed_destination':destination_class(observed.get('destination')),
+            'observed_executable':'PYTHON' if label=='PYTHON' else 'OTHER' if label is not None else 'UNAVAILABLE',
+            'expected_kernel_count':int(case not in {'ipv6-loopback','unreadable-detached'}),
+            'observed_kernel_count':len(packets) if type(packets) is list else None,
+            'kernel_uid':scalar(kernel.get('uid')),'kernel_port':scalar(kernel.get('port')),
+            'kernel_destination':destination_class(kernel.get('destination')),
+            'kernel_protocol':'TCP' if kernel.get('protocol')=='TCP' else 'OTHER' if kernel else 'UNAVAILABLE',
+            'cleanup':{k:clean.get(k) if type(clean.get(k)) is bool else None for k in ('cleanup_complete','proxy_reaped','observer_settled')},
+            'remaining_tasks':scalar(clean.get('remaining_tasks'))}
+    receipt_schema(result)
+    return result
+
+
+def receipt_schema(row):
+    keys={'case','status','predicate','expected_exec_count','observed_exec_count','expected_connect_count',
+          'observed_connect_count','expected_delta','counter_before','counter_after','observed_delta',
+          'expected_identity','observed_identity','expected_destination','observed_destination','observed_executable',
+          'expected_kernel_count','observed_kernel_count','kernel_uid','kernel_port','kernel_destination','kernel_protocol',
+          'cleanup','remaining_tasks'}
+    if type(row) is not dict or set(row)!=keys or row['case'] not in CALIBRATION_ORDER or row['status'] not in {'PASS','BLOCKED'} or row['predicate'] not in PREDICATES:
+        raise Blocked('CALIBRATION_EVIDENCE')
+    numbers=keys-{'case','status','predicate','expected_identity','observed_identity','expected_destination','observed_destination','observed_executable','kernel_destination','kernel_protocol','cleanup'}
+    for k in numbers:
+        if row[k] is not None and (type(row[k]) is not int or not 0<=row[k]<2**64): raise Blocked('CALIBRATION_EVIDENCE')
+    for k in ('expected_identity','observed_identity'):
+        if type(row[k]) is not dict or set(row[k])!=set(IDENTITY_FIELDS): raise Blocked('CALIBRATION_EVIDENCE')
+        for value in row[k].values():
+            if value is not None and (type(value) is not int or not 0<=value<2**64): raise Blocked('CALIBRATION_EVIDENCE')
+    for k in ('expected_destination','observed_destination','kernel_destination'):
+        if row[k] not in DESTINATIONS: raise Blocked('CALIBRATION_EVIDENCE')
+    if row['observed_executable'] not in {'PYTHON','OTHER','UNAVAILABLE'} or row['kernel_protocol'] not in {'TCP','OTHER','UNAVAILABLE'}: raise Blocked('CALIBRATION_EVIDENCE')
+    if type(row['cleanup']) is not dict or set(row['cleanup'])!={'cleanup_complete','proxy_reaped','observer_settled'} or any(v is not None and type(v) is not bool for v in row['cleanup'].values()): raise Blocked('CALIBRATION_EVIDENCE')
+    if row['expected_exec_count']!=1 or row['expected_connect_count']!=int(row['case']!='unreadable-detached') or row['expected_delta']!=int(row['case'] not in {'ipv6-loopback','unreadable-detached'}) or row['expected_kernel_count']!=row['expected_delta']: raise Blocked('CALIBRATION_EVIDENCE')
+    for key in ('observed_exec_count','observed_connect_count','observed_kernel_count'):
+        if row[key] is not None and row[key]>2048: raise Blocked('CALIBRATION_EVIDENCE')
+    for identity in (row['expected_identity'],row['observed_identity']):
+        for key,value in identity.items():
+            limit=2**32 if key=='uid' else 65536 if key in {'port','socket_family'} else 2**64 if key=='start_ticks' else 2**31
+            if value is not None and value>=limit: raise Blocked('CALIBRATION_EVIDENCE')
+    if row['kernel_uid'] is not None and row['kernel_uid']>=2**32 or row['kernel_port'] is not None and row['kernel_port']>=65536: raise Blocked('CALIBRATION_EVIDENCE')
+    if row['counter_before'] is not None and row['counter_after'] is not None:
+        if row['counter_after']>=row['counter_before']:
+            if row['observed_delta']!=row['counter_after']-row['counter_before']: raise Blocked('CALIBRATION_EVIDENCE')
+        elif row['status']=='PASS' or row['observed_delta'] is not None: raise Blocked('CALIBRATION_EVIDENCE')
+    if row['status']=='PASS' and (row['counter_before'] is None or row['counter_after'] is None or any(v is None for v in row['expected_identity'].values()) or row['expected_destination'] in {'INVALID','UNAVAILABLE'}): raise Blocked('CALIBRATION_EVIDENCE')
+    if row['status']=='PASS' and (row['predicate']!='VALIDATED' or row['observed_exec_count']!=1 or row['observed_connect_count']!=row['expected_connect_count'] or row['observed_delta']!=row['expected_delta'] or row['observed_kernel_count']!=row['expected_kernel_count'] or row['observed_executable']!='PYTHON' or not all(v is True for v in row['cleanup'].values()) or row['remaining_tasks']!=0): raise Blocked('CALIBRATION_EVIDENCE')
+    if row['status']=='BLOCKED' and row['predicate']=='VALIDATED': raise Blocked('CALIBRATION_EVIDENCE')
+
+
+def calibration_evidence_schema(value):
+    if type(value) is not dict or set(value)!={'completed','failure'} or type(value['completed']) is not list or len(value['completed'])>9: raise Blocked('CALIBRATION_EVIDENCE')
+    for i,row in enumerate(value['completed']):
+        receipt_schema(row)
+        if row['case']!=CALIBRATION_ORDER[i] or row['status']!='PASS': raise Blocked('CALIBRATION_EVIDENCE')
+    if value['failure'] is not None:
+        receipt_schema(value['failure'])
+        n=len(value['completed'])
+        if value['failure']['status']!='BLOCKED' or value['failure']['case'] not in {CALIBRATION_ORDER[min(n,8)],CALIBRATION_ORDER[max(n-1,0)]}: raise Blocked('CALIBRATION_EVIDENCE')
+    if len(json.dumps(value).encode())>32768: raise Blocked('CALIBRATION_EVIDENCE')
+
+
+def publish_calibration(path, evidence, complete=None):
+    try:
+        return publish_calibration_checked(path,evidence,complete)
+    except Exception:
+        raise Blocked('CALIBRATION_EVIDENCE') from None
+
+
+def publish_calibration_checked(path, evidence, complete=None):
+    calibration_evidence_schema(evidence)
+    value={'status':'BLOCKED','reason':'CALIBRATION_INCOMPLETE','calibration_evidence':evidence} if complete is None else {**complete,'calibration_evidence':evidence}
+    export_schema(value)
+    path=Path(path)
+    if path.name!='capability.json' or path.parent.is_symlink() or path.parent.resolve(strict=True)!=path.parent or path.parent.stat().st_uid!=os.getuid() or path.parent.stat().st_mode&0o077: raise Blocked('CALIBRATION_EVIDENCE')
+    if path.exists() or path.is_symlink():
+        info=path.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_uid!=os.getuid() or info.st_mode&0o077: raise Blocked('CALIBRATION_EVIDENCE')
+        old=json.loads(path.read_bytes(),object_pairs_hook=unique_object);export_schema(old)
+        if 'calibration_evidence' not in old: raise Blocked('CALIBRATION_EVIDENCE')
+    temporary=path.with_name('capability.next')
+    created=False
+    try:
+        write(temporary,value)
+        created=True
+        os.replace(temporary,path)
+    finally:
+        if created and temporary.exists() and not temporary.is_symlink(): temporary.unlink()
+
 def expected_calibration(case, expected):
-    if case not in CASES:raise Blocked('CALIBRATION_UNEXPECTED')
+    if case not in CASES:raise calibration_error('CALIBRATION_UNEXPECTED','FIXTURE_CASE')
     keys={'pid','tid','ppid','uid','destination','port','start_ticks','socket_family','socket_fd','socket_type','protocol'}
-    if set(expected)!=keys:raise Blocked('CAPABILITY_EVIDENCE')
+    if set(expected)!=keys:raise calibration_error('CAPABILITY_EVIDENCE','FIXTURE_SCHEMA')
     for k in keys-{'destination'}:
-        if type(expected[k]) is not int or not 0<=expected[k]<2**64:raise Blocked('CAPABILITY_EVIDENCE')
+        if type(expected[k]) is not int or not 0<=expected[k]<2**64:raise calibration_error('CAPABILITY_EVIDENCE','FIXTURE_NUMERIC')
     if any(expected[k]>=2**31 for k in ('pid','tid','ppid','socket_fd')) or min(expected['pid'],expected['tid'],expected['start_ticks'])<1:
-        raise Blocked('CAPABILITY_EVIDENCE')
+        raise calibration_error('CAPABILITY_EVIDENCE','FIXTURE_NUMERIC')
     if expected['uid']!=24001 or expected['socket_type']!=socket.SOCK_STREAM or expected['protocol']!=socket.IPPROTO_TCP:
-        raise Blocked('CALIBRATION_UNEXPECTED')
+        raise calibration_error('CALIBRATION_UNEXPECTED','FIXTURE_IDENTITY' if expected['uid']!=24001 else 'FIXTURE_SOCKET')
     # Linux UAPI values, including during a macOS-only parser regression.
     family=10 if case in {'ipv6','ipv6-loopback'} else 2
     address='::ffff:c000:201' if case=='ipv6' else '::1' if case=='ipv6-loopback' else '192.0.2.1'
     if expected['socket_family']!=family or expected['destination']!=address or not 0<expected['port']<65536 or (case!='ipv6-loopback' and expected['port']!=443):
-        raise Blocked('CALIBRATION_UNEXPECTED')
+        raise calibration_error('CALIBRATION_UNEXPECTED','FIXTURE_DESTINATION')
     return address
 
 
@@ -775,17 +911,17 @@ def calibration(case, expected, records, before, after, packets):
     connects=[r for r in records if r['kind']=='connect'];execs=[r for r in records if r['kind']=='exec']
     negative=case=='unreadable-detached'
     if len(execs)!=1 or execs[0]['executable']['label']!='PYTHON' or len(connects)!=(0 if negative else 1):
-        raise Blocked('CALIBRATION_UNEXPECTED')
+        raise calibration_error('CALIBRATION_UNEXPECTED', 'TRACE_EXEC_COUNT' if len(execs)!=1 else 'EXECUTABLE_CLASSIFICATION' if execs[0]['executable']['label']!='PYTHON' else 'CONNECT_EVENT_COUNT')
     if connects and any(connects[0][k]!=v for k,v in expected.items() if k not in {'socket_type','protocol'}):
-        raise Blocked('CALIBRATION_UNEXPECTED')
+        raise calibration_error('CALIBRATION_UNEXPECTED', 'TRACER_IDENTITY' if any(connects[0][k]!=expected[k] for k in ('pid','tid','ppid','uid','start_ticks')) else 'CONNECTION_METADATA')
     denied=case not in {'unreadable-detached','ipv6-loopback'}
     if policy(before,after)!=('BLOCKED' if denied else 'PASS') or after-before!=int(denied) or len(packets)!=int(denied):
-        raise Blocked('CALIBRATION_AMBIGUOUS')
+        raise calibration_error('CALIBRATION_AMBIGUOUS','COUNTER_RECONCILIATION')
     if packets:
         ip=ipaddress.ip_address(address);ip=ip.ipv4_mapped if getattr(ip,'ipv4_mapped',None) else ip
         packet=packets[0]
         if (packet['uid'],packet['destination'],packet['port'],packet['protocol'])!=(24001,str(ip),expected['port'],'TCP'):
-            raise Blocked('CALIBRATION_UNEXPECTED')
+            raise calibration_error('CALIBRATION_UNEXPECTED','KERNEL_PACKET_TUPLE')
     return True
 
 
@@ -811,6 +947,13 @@ def export_schema(value):
     """Second privacy boundary: no unrestricted string/key or scalar output."""
     if type(value) is dict and ('preparation_failure' in value or value.get('reason') == 'PREPARATION_FAILURE'):
         preparation_schema(value)
+        return
+    if type(value) is dict and 'calibration_evidence' in value:
+        calibration_evidence_schema(value['calibration_evidence'])
+        rest={k:v for k,v in value.items() if k!='calibration_evidence'}
+        if rest=={'status':'BLOCKED','reason':'CALIBRATION_INCOMPLETE'}: return
+        if set(rest)!={'cases','denied_calibration_packets','limitations'} or len(value['calibration_evidence']['completed'])!=9 or value['calibration_evidence']['failure'] is not None: raise Blocked('CALIBRATION_EVIDENCE')
+        export_schema(rest)
         return
     approved = json.loads((HERE / 'approved.json').read_text())['backend']
     words = set()
@@ -908,46 +1051,70 @@ def experiment(workspace):
     if sandbox.is_symlink() or sandbox.stat().st_uid != 24001:
         raise Blocked("DISPOSABLE_DIRECTORY")
     cases = []
+    receipts=[]
     previous_case=baseline
     for case in ("direct", "grandchild", "short", "detached", "ipv6", "ipv6-loopback", "thread", "interrupted", "unreadable-detached"):
-        begin_us=time.time_ns()//1000
-        case_before = counters(CONTROL)
-        if case_before!=previous_case:raise Blocked('CALIBRATION_AMBIGUOUS')
-        golden = sandbox / (case + ".json")
-        env = environment(api, sandbox)
-        env["CANARY"] = CANARY
-        code, records = observe(workspace, "capability", [sys.executable, str(HERE / "run.py"), "fixture", case, str(golden), CANARY], env, table,
-                                expected_failure=(case=='unreadable-detached'))
-        # Metadata fixture belongs to UID 24001; do not relax directory access.
-        r = subprocess.Popen(["sudo", "-u", "clpairtest", "cat", str(golden)],
-                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        expected=records=packets=case_before=case_after=None
+        cleanup_start=len(CLEANUP_REPORTS)
         try:
-            data = r.stdout.read(4097)
-            code_read = r.wait(timeout=5)
-        finally:
-            if r.poll() is None:
-                r.kill(); r.wait(timeout=5)
-        if code_read or len(data) > 4096:
-            raise Blocked("CAPABILITY_EVIDENCE")
-        expected = json.loads(data)
-        expected_calibration(case,expected)
-        negative = case == "unreadable-detached"
-        if (negative and (code != 125 or not settled(expected['pid'], expected['start_ticks']))) or (not negative and code) or CANARY in json.dumps(records):
-            raise Blocked("CAPABILITY_MISMATCH")
-        case_after = counters(CONTROL)
-        denied = not negative and case != 'ipv6-loopback'
-        packets=read_kernel(begin_us,int(denied),case_after)
-        calibration(case,expected,records,case_before,case_after,packets)
-        previous_case=case_after
-        cases.append({"case": case, "status": "PASS", "events": records, 'firewall':packets,
-                      'counter_before':case_before,'counter_after':case_after,'cleanup':CLEANUP_REPORTS[-1], 'expected':expected})
-        if command(["sudo", "-u", "clpairtest", "rm", "--", str(golden)]):
-            raise Blocked("CAPABILITY_CLEANUP")
+            begin_us=time.time_ns()//1000
+            case_before = counters(CONTROL)
+            if case_before!=previous_case:raise Blocked('CALIBRATION_AMBIGUOUS')
+            golden = sandbox / (case + ".json")
+            env = environment(api, sandbox)
+            env["CANARY"] = CANARY
+            code, records = observe(workspace, "capability", [sys.executable, str(HERE / "run.py"), "fixture", case, str(golden), CANARY], env, table,
+                                    expected_failure=(case=='unreadable-detached'))
+            # Metadata fixture belongs to UID 24001; do not relax directory access.
+            r = subprocess.Popen(["sudo", "-u", "clpairtest", "cat", str(golden)],
+                                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+            try:
+                data = r.stdout.read(4097)
+                code_read = r.wait(timeout=5)
+            finally:
+                if r.poll() is None:
+                    r.kill(); r.wait(timeout=5)
+            if code_read or len(data) > 4096:
+                raise Blocked("CAPABILITY_EVIDENCE")
+            expected = json.loads(data)
+            expected_calibration(case,expected)
+            negative = case == "unreadable-detached"
+            if (negative and (code != 125 or not settled(expected['pid'], expected['start_ticks']))) or (not negative and code) or CANARY in json.dumps(records):
+                raise Blocked("CAPABILITY_MISMATCH")
+            case_after = counters(CONTROL)
+            denied = not negative and case != 'ipv6-loopback'
+            packets=read_kernel(begin_us,int(denied),case_after)
+            calibration(case,expected,records,case_before,case_after,packets)
+            receipts.append(calibration_receipt(case,'PASS','VALIDATED',expected,records,case_before,case_after,packets,CLEANUP_REPORTS[-1]))
+            publish_calibration(published/'capability.json',{'completed':receipts,'failure':None})
+            previous_case=case_after
+            cases.append({"case": case, "status": "PASS", "events": records, 'firewall':packets,
+                          'counter_before':case_before,'counter_after':case_after,'cleanup':CLEANUP_REPORTS[-1], 'expected':expected})
+            if command(["sudo", "-u", "clpairtest", "rm", "--", str(golden)]):
+                raise Blocked("CAPABILITY_CLEANUP")
+        except Exception as error:
+            category=getattr(error,'calibration_predicate',None)
+            if category not in PREDICATES:
+                code=failure_code(error)
+                category=('EVIDENCE_FAILURE' if code=='CALIBRATION_EVIDENCE' else
+                          'EXECUTABLE_CLASSIFICATION' if isinstance(error,Blocked) and error.args==('UNKNOWN_EXECUTABLE',) else
+                          'TRACER_IDENTITY' if code in {'TRACE_IDENTITY','TRACE_PID','TRACE_PARENT'} else
+                          'CLEANUP_FAILURE' if code in {'CLEANUP_UNVERIFIED','CAPABILITY_CLEANUP'} else
+                          'FIXTURE_READ' if code=='CAPABILITY_EVIDENCE' else
+                          'FIXTURE_OUTCOME' if code=='CAPABILITY_MISMATCH' else
+                          'COUNTER_RECONCILIATION' if code.startswith('COUNTER') or code=='CALIBRATION_AMBIGUOUS' else 'TRACE_VALIDATION')
+            try:
+                failure=calibration_receipt(case,'BLOCKED',category,expected,records,case_before,case_after,packets,
+                                            CLEANUP_REPORTS[-1] if len(CLEANUP_REPORTS)>cleanup_start else None)
+                publish_calibration(published/'capability.json',{'completed':receipts,'failure':failure})
+            except Exception:
+                print('CALIBRATION_EVIDENCE: BLOCKED',file=sys.stderr)
+            raise  # Preserve the original failure code and nonzero exit.
     calibration_total = counters(CONTROL)
     if calibration_total != previous_case or calibration_total != len(cases)-2:
         raise Blocked("DENIAL_CALIBRATION")
-    write(published / "capability.json", {"cases": cases, "denied_calibration_packets": calibration_total,
-          "limitations": CAP_LIMIT})
+    publish_calibration(published / "capability.json", {"completed":receipts,"failure":None},
+                        {"cases": cases, "denied_calibration_packets": calibration_total,"limitations": CAP_LIMIT})
     arms = []
     previous = calibration_total
     for arm, disabled in (("A", False), ("B", True)):

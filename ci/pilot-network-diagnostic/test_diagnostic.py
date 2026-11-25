@@ -996,6 +996,199 @@ class ObserverOutputEvidenceTests(unittest.TestCase):
         self.assertEqual(path.read_bytes(),before)
 
 
+class CalibrationFailureEvidenceTests(unittest.TestCase):
+    def setUp(self):
+        self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
+        self.root=Path(self.temp.name).resolve();self.published=self.root/'diagnostic-results/published';self.published.mkdir(parents=True,mode=0o700)
+        self.path=self.published/'capability.json'
+        self.clean={'cleanup_complete':True,'proxy_reaped':True,'observer_settled':True,'remaining_tasks':0}
+        self.expected={'pid':100,'tid':100,'ppid':99,'uid':24001,'destination':'192.0.2.1','port':443,'start_ticks':20,'socket_family':2,'socket_fd':3,'socket_type':1,'protocol':6}
+        connect={k:v for k,v in self.expected.items() if k not in {'socket_type','protocol'}}
+        self.records=[{'kind':'exec','executable':{'label':'PYTHON'}},{'kind':'connect',**connect}]
+        self.packets=[{'uid':24001,'destination':'192.0.2.1','port':443,'protocol':'TCP'}]
+
+    def receipt(self,case='direct',status='PASS',predicate='VALIDATED',before=0,after=1):
+        return driver.calibration_receipt(case,status,predicate,self.expected,self.records,before,after,self.packets,self.clean)
+
+    def mismatch(self,kind,category):
+        e=copy.deepcopy(self.expected);r=copy.deepcopy(self.records);p=copy.deepcopy(self.packets);after=4
+        if kind in {'ppid','pid','tid'}:r[1][kind]+=1
+        elif kind=='executable':r[0]['executable']['label']='NODE'
+        elif kind=='missing':r.pop()
+        elif kind=='extra':r.append(copy.deepcopy(r[1]))
+        elif kind=='family':r[1]['socket_family']=10
+        elif kind=='destination':r[1]['destination']='192.0.2.2'
+        elif kind=='kernel':p[0]['port']=444
+        elif kind=='counter':after=5
+        with self.assertRaises(driver.Blocked) as caught:driver.calibration('detached',e,r,3,after,p)
+        self.assertEqual(caught.exception.calibration_predicate,category)
+        row=driver.calibration_receipt('detached','BLOCKED',category,e,r,3,after,p,self.clean)
+        self.assertEqual(row['case'],'detached');self.assertEqual(row['predicate'],category)
+        driver.receipt_schema(row)
+        return row
+
+    def test_detached_ppid_mismatch(self):
+        row=self.mismatch('ppid','TRACER_IDENTITY')
+        self.assertEqual(row['expected_identity']['ppid'],99);self.assertEqual(row['observed_identity']['ppid'],100)
+    def test_pid_tid_mismatch(self):
+        for key in ('pid','tid'):self.mismatch(key,'TRACER_IDENTITY')
+    def test_executable_classification(self):self.mismatch('executable','EXECUTABLE_CLASSIFICATION')
+    def test_missing_connect(self):self.mismatch('missing','CONNECT_EVENT_COUNT')
+    def test_extra_connect(self):self.mismatch('extra','CONNECT_EVENT_COUNT')
+    def test_socket_family(self):self.mismatch('family','CONNECTION_METADATA')
+    def test_destination(self):self.mismatch('destination','CONNECTION_METADATA')
+    def test_kernel_tuple(self):self.mismatch('kernel','KERNEL_PACKET_TUPLE')
+    def test_counter(self):self.mismatch('counter','COUNTER_RECONCILIATION')
+
+    def test_fixture_and_kernel_parser_categories(self):
+        e=copy.deepcopy(self.expected);e['uid']=24002
+        with self.assertRaises(driver.Blocked) as c:driver.expected_calibration('detached',e)
+        self.assertEqual(c.exception.calibration_predicate,'FIXTURE_IDENTITY')
+        with self.assertRaises(driver.Blocked) as c:driver.expected_calibration('detached',{})
+        self.assertEqual(c.exception.calibration_predicate,'FIXTURE_SCHEMA')
+        raw=json.dumps({'__REALTIME_TIMESTAMP':'10','MESSAGE':'CLPAIR_DENY DST=192.0.2.1 DPT=443 PROTO=UDP UID=24001'}).encode()
+        with self.assertRaises(driver.Blocked) as c:driver.kernel_events(raw,0,20)
+        self.assertEqual(c.exception.calibration_predicate,'KERNEL_HEADER')
+
+    def test_progress_is_immediate_and_keeps_three_successes_after_failure(self):
+        rows=[]
+        for n,case in enumerate(('direct','grandchild','short')):
+            self.assertTrue(driver.calibration(case,self.expected,self.records,n,n+1,self.packets))
+            rows.append(self.receipt(case,before=n,after=n+1))
+            driver.publish_calibration(self.path,{'completed':rows,'failure':None})
+            self.assertEqual(len(json.loads(self.path.read_text())['calibration_evidence']['completed']),n+1)
+        failure=self.mismatch('ppid','TRACER_IDENTITY')
+        driver.publish_calibration(self.path,{'completed':rows,'failure':failure})
+        value=json.loads(self.path.read_text());driver.export_schema(value)
+        self.assertEqual(value['status'],'BLOCKED');self.assertEqual(value['calibration_evidence']['failure']['case'],'detached')
+        self.assertEqual(stat.S_IMODE(self.path.stat().st_mode),0o600)
+        driver.write(self.published/'summary.json',{'status':'BLOCKED','reason':'TRACE_OR_DIAGNOSTIC_FAILURE','no_retry':True})
+        driver.export_check(self.root)
+        with patch.object(driver,'counters',return_value=4):self.assertEqual(driver.final_counter(self.root),1)
+
+    def test_full_receipt_still_requires_independent_counter_revalidation(self):
+        old=PolicyTests().receipt();rows=[]
+        for r in old['cases']:
+            self.assertTrue(driver.calibration(r['case'],r['expected'],r['events'],r['counter_before'],r['counter_after'],r['firewall']))
+            rows.append(driver.calibration_receipt(r['case'],'PASS','VALIDATED',r['expected'],r['events'],r['counter_before'],r['counter_after'],r['firewall'],r['cleanup']))
+        complete={**old,'limitations':driver.CAP_LIMIT}
+        driver.publish_calibration(self.path,{'completed':rows,'failure':None},complete)
+        driver.export_schema(json.loads(self.path.read_text()))
+        driver.write(self.published/'summary.json',{'status':'PASS','arms_completed':2,'calibration_packets':7,'final_packets':7})
+        with patch.object(driver,'counters',return_value=7):self.assertEqual(driver.final_counter(self.root),0)
+        (self.published/'network.json').unlink()
+        with patch.object(driver,'counters',return_value=8):self.assertEqual(driver.final_counter(self.root),1)
+
+    def test_evidence_cannot_replace_existing_symlink_or_untrusted_output(self):
+        other=self.root/'unrelated';other.write_bytes(b'synthetic unrelated')
+        self.path.symlink_to(other)
+        with self.assertRaises(driver.Blocked):driver.publish_calibration(self.path,{'completed':[self.receipt()],'failure':None})
+        self.assertEqual(other.read_bytes(),b'synthetic unrelated')
+
+    def test_evidence_failure_is_nonzero_and_cannot_remove_existing_file(self):
+        temporary=self.path.with_name('capability.next');temporary.write_bytes(b'synthetic existing')
+        with self.assertRaises(driver.Blocked):driver.publish_calibration(self.path,{'completed':[self.receipt()],'failure':None})
+        self.assertEqual(temporary.read_bytes(),b'synthetic existing')
+        self.assertFalse(self.path.exists())
+        with patch.object(driver,'main',side_effect=driver.Blocked('CALIBRATION_EVIDENCE')),contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(driver.entrypoint(),1)
+
+    def test_sensitive_record_fields_rejected_and_raw_input_not_projected(self):
+        row=self.receipt()
+        for key in row:
+            bad=copy.deepcopy(row);bad[key]=driver.CANARY
+            with self.subTest(key=key),self.assertRaises((driver.Blocked,TypeError)):driver.receipt_schema(bad)
+        for field in ('args','environment','raw_trace','username','path','exception'):
+            bad=copy.deepcopy(row);bad[field]=driver.CANARY
+            with self.assertRaises(driver.Blocked):driver.receipt_schema(bad)
+        e={**self.expected,'password':driver.CANARY};records=copy.deepcopy(self.records);records[1]['args']=driver.CANARY
+        projected=driver.calibration_receipt('detached','BLOCKED','CONNECTION_METADATA',e,records,3,4,self.packets,self.clean)
+        self.assertNotIn(driver.CANARY,json.dumps(projected))
+        self.assertNotIn('password',json.dumps(projected))
+
+    def test_malformed_receipts_and_oversized_evidence_block(self):
+        for field,value in [('counter_after',-1),('observed_delta',False),('observed_exec_count',2049),('kernel_port',65536)]:
+            row=self.receipt();row[field]=value
+            with self.assertRaises(driver.Blocked):driver.receipt_schema(row)
+        row=self.receipt();row['observed_identity']['pid']=2**31
+        with self.assertRaises(driver.Blocked):driver.receipt_schema(row)
+        with self.assertRaises(driver.Blocked):driver.calibration_evidence_schema({'completed':[self.receipt()]*10,'failure':None})
+
+    def test_regressed_counter_retains_nonnegative_evidence_and_failure(self):
+        row=driver.calibration_receipt('detached','BLOCKED','COUNTER_RECONCILIATION',self.expected,self.records,3,2,self.packets,self.clean)
+        self.assertEqual(row['counter_before'],3);self.assertEqual(row['counter_after'],2)
+        self.assertIsNone(row['observed_delta'])
+        driver.receipt_schema(row)
+
+    def test_cleanup_failure_has_no_false_completion(self):
+        row=driver.calibration_receipt('detached','BLOCKED','CLEANUP_FAILURE',None,None,None,None,None,None)
+        self.assertTrue(all(v is None for v in row['cleanup'].values()))
+        driver.receipt_schema(row)
+
+    def run_mocked_experiment(self,fail_evidence=False):
+        from unittest.mock import MagicMock
+        workspace=self.root/'experiment';workspace.mkdir()
+        (workspace/'carbonlite-api').mkdir()
+        sandbox=workspace/'diagnostic-results/disposable';sandbox.mkdir(parents=True)
+        current={};original_stat=Path.stat
+        def fake_stat(path,*args,**kwargs):
+            return types.SimpleNamespace(st_uid=24001) if path==sandbox else original_stat(path,*args,**kwargs)
+        def observe(w,stage,argv,*args,**kwargs):
+            case=argv[3];e=copy.deepcopy(self.expected);records=copy.deepcopy(self.records)
+            if case=='detached':records[1]['ppid']+=1
+            current['expected']=e
+            driver.CLEANUP_REPORTS.append(dict(self.clean,stage='capability'))
+            return 0,records
+        proc=MagicMock();proc.stdout.read.side_effect=lambda n:json.dumps(current['expected']).encode();proc.wait.return_value=0;proc.poll.return_value=0
+        driver.CLEANUP_REPORTS.clear()
+        with contextlib.ExitStack() as stack:
+            for obj,key,value in [(driver.sys,'platform','linux'),(driver,'integrity',lambda:({},None)),
+                                  (driver,'identity',lambda w:{}),(driver,'executables',lambda api:{}),
+                                  (driver,'command',lambda *a,**k:0),(driver,'environment',lambda *a,**k:{}),
+                                  (driver,'observe',observe),(driver.subprocess,'Popen',lambda *a,**k:proc),
+                                  (driver,'read_kernel',lambda *a:self.packets),(Path,'stat',fake_stat)]:
+                stack.enter_context(patch.object(obj,key,value))
+            stack.enter_context(patch.object(driver,'counters',side_effect=[0,0,1,1,2,2,3,3,4]))
+            if fail_evidence:stack.enter_context(patch.object(driver,'publish_calibration',side_effect=driver.Blocked('CALIBRATION_EVIDENCE')))
+            with self.assertRaises(driver.Blocked) as caught:driver.experiment(workspace)
+        return workspace,caught.exception
+
+    def test_experiment_persists_detached_failure_and_prior_completed_cases(self):
+        workspace,error=self.run_mocked_experiment()
+        self.assertEqual(driver.failure_code(error),'CALIBRATION_UNEXPECTED')
+        value=json.loads((workspace/'diagnostic-results/published/capability.json').read_text())
+        evidence=value['calibration_evidence']
+        self.assertEqual([r['case'] for r in evidence['completed']],['direct','grandchild','short'])
+        self.assertEqual(evidence['failure']['predicate'],'TRACER_IDENTITY')
+        self.assertEqual(evidence['failure']['observed_identity']['ppid'],100)
+        self.assertEqual(evidence['failure']['expected_identity']['ppid'],99)
+        driver.export_schema(value)
+        with patch.object(driver,'main',side_effect=error), \
+             patch.object(driver.sys,'argv',['run.py','experiment',str(workspace)]),contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(driver.entrypoint(),1)
+        driver.export_check(workspace)
+        with patch.object(driver,'counters',return_value=4):self.assertEqual(driver.final_counter(workspace),1)
+
+    def test_experiment_evidence_failure_never_reports_pass(self):
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            workspace,error=self.run_mocked_experiment(True)
+        self.assertEqual(driver.failure_code(error),'CALIBRATION_EVIDENCE')
+        self.assertIn('CALIBRATION_EVIDENCE: BLOCKED',err.getvalue())
+        self.assertNotIn(driver.CANARY,err.getvalue())
+        self.assertFalse((workspace/'diagnostic-results/published/capability.json').exists())
+
+    def test_same_acceptance_predicates_as_D3(self):
+        # Remove only evidence wrappers; compare every acceptance If expression and loop in key validators.
+        baseline=HERE.parents[2]/'network-diagnostic-observer-evidence/ci/pilot-network-diagnostic/run.py'
+        if not baseline.is_file():self.skipTest('D3 comparison overlay unavailable')
+        old=ast.parse(baseline.read_text());new=ast.parse((HERE/'run.py').read_text())
+        for name in ('expected_calibration','calibration','kernel_events','read_kernel','final_counter'):
+            a=next(n for n in old.body if isinstance(n,ast.FunctionDef) and n.name==name)
+            b=next(n for n in new.body if isinstance(n,ast.FunctionDef) and n.name==name)
+            predicates=lambda n:[ast.dump(x.test) for x in ast.walk(n) if isinstance(x,ast.If)]
+            self.assertEqual(predicates(a),predicates(b),name)
+
+
 
 if __name__=='__main__':
     unittest.main()

@@ -347,3 +347,50 @@ Python syntax, six payload hashes, checksum index and four-file scope verified.
 Actual Linux ACL inheritance/UID behavior remains NOT RUN; no hosted claim is made.
 Existing Entry W2, Exact-Pair bundle, workflow, approved identities and C observer
 remain unchanged. No publication, dispatch or application edits occurred.
+
+
+CALIBRATION FAILURE EVIDENCE — LOCAL-ONLY CORRECTION
+Baseline D3: 0cb2c241a7f260c5c71156c01d11b0fc4d53d739; index
+da6c8f05752637c967726568e85b12cb9e42627bc912e52e8af448e3bbe29c65.
+No historical run is reconstructed: the detached failure predicate remains unknown.
+
+Before: a failure discarded per-case expected/observed values and retained only a
+shared CALIBRATION_UNEXPECTED code and cleanup receipts. After: each successful
+calibration immediately atomically checkpoints a bounded safe receipt into the
+already allowlisted capability.json. On failure it retains completed receipts and
+one fixed-case/fixed-predicate failure record. No workflow/artifact path changes.
+Intermediate evidence explicitly reports BLOCKED/CALIBRATION_INCOMPLETE; a receipt
+PASS describes that case only. It does not authorize an overall calibration PASS.
+
+Receipt fields are a strict schema: fixed case/predicate/status, bounded counts,
+nonnegative counter snapshots and optional delta, fixed numeric identity fields,
+fixed destination classes (not arbitrary addresses), a fixed executable class,
+validated kernel scalar projections and cleanup booleans. Unknown values are null
+or fixed classifications, never arbitrary text. No raw trace, golden dictionary,
+ACL dump, path, argv, environment, exception message or payload is newly exported.
+Completed/failure evidence is limited to nine receipts plus one failure and 32 KiB;
+legacy artifact file/total limits and seven-day workflow retention are unchanged.
+Atomic updates require a canonical runner-owned private directory and owner-only
+regular files; symlinks/unsafe existing data are rejected. Temp creation is exclusive;
+pre-existing temporary files are never deleted or overwritten. Files stay mode 0600.
+
+Original expected_calibration/calibration/kernel/read_kernel If predicates remain
+identical; only their raised fixed errors receive predicate metadata. Successful
+full capability output retains the existing validated metadata receipt required by
+independent final-counter revalidation, plus safe evidence. Partial/malformed or
+missing full receipts cannot satisfy that gate. No allowed packet count changes.
+Fixture, tracer identity, executable, connection, kernel tuple/counter and cleanup
+failures remain distinguishable. Evidence failure remains nonzero; it never repairs
+or converts a failed calibration into PASS. Existing summary.json captures the
+original failure. Evidence-generation failures print only a fixed marker.
+
+Synthetic detached PPID example: expected 99 versus observed 100 produces
+TRACER_IDENTITY, expected/observed connect counts 1/1, counter delta 1/1, cleanup
+booleans, and BLOCKED, while preserving direct/grandchild/short receipts. This is
+an in-memory regression, not attribution of hosted run 45706637080.
+Validation: diagnostic tests 127 PASS / 2 Linux-only SKIP (129 total), including a
+mocked full experiment failure and evidence-write failure. Exact-Pair 38/38,
+privacy 43/43, Entry identity 32/32; syntax/checksums checked separately.
+Linux-only tracing/inheritance execution is NOT RUN on this macOS sandbox.
+No C observer, firewall, ACL, UID, cleanup, Prisma experiment, application identity,
+Entry or existing Exact-Pair payload changes. Independent review is required.
