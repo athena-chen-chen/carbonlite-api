@@ -180,3 +180,29 @@ authorized publication, independently read back the actual new Entry commit/tree
 and checksum outside its own tree; obtain separate immutable dispatch approval.
 This preserves external Entry identity verification without circular self-hashing.
 No publication or dispatch occurs as part of local rebinding.
+
+
+D3 IMMUTABLE REBINDING — LOCAL ONLY
+This section supersedes the previous active D2 source binding in historical notes.
+Published D3 commit: 0cb2c241a7f260c5c71156c01d11b0fc4d53d739
+Published D3 tree: a9c2057d29435de47b805a9ea2f3618daac5f883
+D3 index: da6c8f05752637c967726568e85b12cb9e42627bc912e52e8af448e3bbe29c65
+All seven published D3 files were independently read back and matched byte-for-byte;
+all six source payload hashes and the index verified before rebinding.
+
+Only immutable source references, source hash metadata, corresponding regression
+expectations, this documentation and Entry checksums change. verify.py remains
+byte-identical. D2 is rejected by both the early shell guard and verifier, including
+when a synthetic checkout matches the superseded D2 commit/tree. D3 acceptance
+uses synthetic checkout fixtures, not a claim of Linux-hosted execution.
+
+Backend remains e424c567d43c0086e0dc01b86e48cb648c114078, tree
+f4e02d756dc14c0df638d7086b483566e7efeca5, with the exact eight-file manifest.
+Future Entry commit/tree are intentionally unknown: separately approved immutable
+inputs must match invocation GITHUB_SHA/workflow SHA and independent checkout Git
+identities. No future SHA is invented or embedded in its own checksum index.
+
+The manual-only registered-path workflow, read-only permissions, separate checkouts,
+UID 24001 safeguards, firewall, ACL/tracing/cleanup/Prisma behavior, diagnostic-only
+scope, sanitized artifact restrictions and seven-day retention remain unchanged.
+No publication, dispatch, Source D3 or application modification occurred.

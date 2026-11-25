@@ -80,8 +80,8 @@ jobs:
           [[ "$ENTRY_INDEX_SHA256" =~ ^[0-9a-f]{64}$ ]] || exit 1
           test "$ENTRY_SHA" = "$INVOKING_WORKFLOW_SHA"
           test "$ENTRY_SHA" = "$GITHUB_SHA"
-          test "$DIAGNOSTIC_SHA" = 1c81536c44612d02aeb1e79d5e216ab0420f9b2e
-          test "$DIAGNOSTIC_TREE" = ad8693a2fd66733f36d5197bfa5655266c3642ef
+          test "$DIAGNOSTIC_SHA" = 0cb2c241a7f260c5c71156c01d11b0fc4d53d739
+          test "$DIAGNOSTIC_TREE" = a9c2057d29435de47b805a9ea2f3618daac5f883
       - name: Checkout immutable entry separately
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -94,7 +94,7 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           repository: athena-chen-chen/carbonlite-api
-          ref: 1c81536c44612d02aeb1e79d5e216ab0420f9b2e
+          ref: 0cb2c241a7f260c5c71156c01d11b0fc4d53d739
           path: control
           fetch-depth: 0
           persist-credentials: false
