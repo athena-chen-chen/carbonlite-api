@@ -123,6 +123,7 @@ jobs:
           sudo usermod -aG docker clpairtest
           mkdir -p pair-results/validation
           sudo chown -R clpairtest:clpairtest carbonlite-api carbonlite-web pair-results/validation
+          bash control/ci/pilot-exact-pair/runner-access.sh "$GITHUB_WORKSPACE" "$(id -u)" "$(id -g)"
           sudo -H -u clpairtest env -i PATH="$PATH" POSTGRES_CONTAINER="$POSTGRES_CONTAINER" \
             python3 "$GITHUB_WORKSPACE/control/ci/pilot-exact-pair/run.py" "$GITHUB_WORKSPACE" generate
       - name: Close and verify test-process outbound networking

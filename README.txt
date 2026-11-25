@@ -3,8 +3,8 @@ CARBONLITE MANUAL EXACT-PAIR WORKFLOW — LOCAL PREPARATION ONLY
 Proposed hosting repository: athena-chen-chen/carbonlite-api
 Proposed hosting branch: ci/pilot-exact-pair-validation (NOT CREATED)
 Prepared workflow: .github/workflows/nightly-e2e.yml
-Supporting published paths: ci/pilot-exact-pair/{approved.json,verify.py,run.py,network.sh,type_debt.py}
-Local-only verifier test: ci/pilot-exact-pair/test_local.py
+Supporting published paths: ci/pilot-exact-pair/{approved.json,verify.py,run.py,network.sh,type_debt.py,runner-access.sh,runner-permissions.py}
+Local tests: ci/pilot-exact-pair/test_local.py and test_runner_access.sh / test_runner_permissions.py (disposable Linux only)
 Do not copy these files into either application candidate or its release branch.
 
 DISPATCHABILITY
@@ -147,3 +147,84 @@ APPROVAL GATES
 4. Separate one-run workflow-dispatch approval with those immutable identities.
 5. Observe all results; no automatic rerun. Review the raw typecheck failure and no-new-diagnostics evidence explicitly; no automatic debt equivalence.
 Merge, deployment, Preview-hold restoration and real customer activation remain separate.
+
+RUNNER ACCESS P1 CORRECTION — LOCAL ONLY
+The prior effective-access-only check could accept world-writable paths under POSIX
+owner/group precedence. Global metadata safety is now established BEFORE any chmod,
+then rechecked after repair. No hosted run has been performed with this correction.
+
+The workflow binds the trusted runner role with the current invoking UID and primary
+GID via quoted id output. Only root or that bound UID may invoke the metadata guard;
+UID 24001 is never a trusted control owner. The declared GID must be the runner account's
+actual primary GID. Legitimate root-/Actions-runner-owned workspace ancestors remain
+allowed; an untrusted owner is rejected even if the current mode is read-only, because
+that owner could chmod it. No arbitrary supplementary/Docker group is implicitly trusted.
+
+runner-permissions.py inspects every path from / through GITHUB_WORKSPACE, then control/,
+control/ci/ and control/ci/pilot-exact-pair/, and every immediate control-module file.
+Required runtime files include run.py, type_debt.py, approved.json, runner-access.sh,
+runner-permissions.py, verify.py and network.sh. Symlinks, nonregular files, missing
+helpers, unexpected subdirectories and noncanonical redirection fail closed.
+
+Independent of clpairtest's effective access, world-write bits ALWAYS block, including
+0757 precedence cases, files, ancestors and sticky/world-writable temporary roots.
+Group-write bits are allowed ONLY for this explicit role-bound whitelist: GID 0 and the
+bound Actions runner primary GID, with all enumerated primary/supplementary members
+restricted to root and the bound runner UID. Missing/unverifiable account/group metadata
+blocks. Docker, clpairtest and other untrusted membership cause rejection even if the
+GID otherwise matches the whitelist. Other owning groups may be read-only, never writable.
+This policy requires review approval; an unexpected hosted group must not be auto-waived.
+
+Linux access/default POSIX ACL xattrs are inspected directly using Python's standard
+library. Known Linux version-2 encodings are parsed with strict entry/tag/identity checks.
+Any untrusted owner/named-user/owning-group/named-group/other write entry is rejected;
+masked-out untrusted writes are conservatively rejected too. Trusted ACL writes require
+the same UID/group policy as modes. Unrecognized ACL mechanisms, invalid encodings,
+unsupported inspection and read failures BLOCK. ENODATA alone establishes ACL absence.
+No getfacl/setfacl installation, ACL modification or package dependency is introduced.
+
+The guard returns a fingerprint of path device/inode/owner/group and control-file bytes.
+The helper checks it again after the existing minimum POSIX read/search repairs, so
+namespace, ownership or content changes during repair block. Only root/the trusted runner
+may mutate the inspected namespace; this does not defend against a malicious trusted
+root/runner, privileged Docker control or untrusted install hooks. Those remain existing
+trusted-code/disposable-host assumptions, not an untrusted-code security sandbox.
+
+Read/search repairs remain restricted to the actual governing POSIX class: +x on exact
+ancestors/control directories and +r on the three public runtime files consumed by run.py.
+They add no write or directory-list bits. Actual reads as clpairtest and rejection of its
+write access to all ancestors/control files remain. The Python guard and sudo chmod run
+as the trusted setup identity; application tests continue only as clpairtest. Existing
+identity, network, database-isolation and no-new-diagnostics checks are unchanged.
+
+LOCAL VALIDATION
+- Existing bundle tests: 29/29 PASS.
+- Updated Linux permission suite: 25/25 PASS, including real 0777/0757 directories,
+  untrusted group writes, unsafe scripts/ancestors/owners, file/directory symlinks,
+  required-helper absence, approved runner owners/groups, untrusted group members,
+  safe read-only paths, idempotence and actual UID 24001 reads without control writes.
+- Real Linux access/default ACLs exercised. Named user/group write grants were proven
+  with successful kernel write-opens under the untrusted UID (no bytes modified), then
+  rejected by the guard. Malformed-encoding and ACL-read-failure cases are simulated.
+- Cached dpage/pgadmin4:latest used ONLY as an available Python/Linux fixture with entry
+  point overridden to bash, --user 0 for synthetic setup, --network none and --rm.
+  No pgAdmin/database/application service started. Bundle mounted read-only; users/files
+  created only in container-local disposable paths. A fixture-only runuser launcher
+  performs real initgroups/setgid/setuid before executing commands; it is not a stubbed
+  permission result. No host account or permission changes and no software installation.
+- Bash/YAML/Python syntax and complete payload checksum verification PASS.
+
+Example local regression command:
+docker run --rm --network none --user 0 \
+  --env RUNNER_ACCESS_DISPOSABLE_FIXTURE=synthetic-only \
+  --env PYTHONDONTWRITEBYTECODE=1 \
+  --mount type=bind,source=<absolute-bundle-path>,target=/reviewed,readonly \
+  --entrypoint bash dpage/pgadmin4:latest /reviewed/ci/pilot-exact-pair/test_runner_access.sh /reviewed
+
+REMAINING HOSTED GATES
+Original blocked component/mode, actual hosted UID/GID ownership, account/group enumeration,
+ACL/filesystem inspection support and executable paths are not proven by this fixture.
+Unexpected metadata must block, without broad chmod or automatic group approval. Full
+hosted network/Docker/application/type-debt validation remains outstanding. Review this
+new checksum-bound bundle, then obtain separate publication and one-run permissions.
+No publication, dispatch, application modification or cloud operation occurred here.

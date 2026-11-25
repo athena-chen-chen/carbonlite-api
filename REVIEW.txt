@@ -34,3 +34,21 @@ new trigger or credential reference. The exact hosted diagnostic identity compar
 is still unexecuted. Hosted Linux ownership, Docker/firewall and full E2E remain runtime
 risks. A first hosted run can block on strict full-message diagnostic differences.
 No claim is made that historical counts 293/291 will reproduce or that TypeScript is green.
+
+RUNNER ACCESS P1 REVIEW
+- A standard-library Linux metadata guard now runs before permission repair and after it.
+- Full chain and all control-module files require root/bound-runner ownership; symlinks,
+  nonregular/redirected paths and missing evidence block. World-write always blocks.
+- Group-write whitelist is explicit (root + bound runner primary GID), additionally
+  requiring exclusively trusted membership. Docker/test/untrusted members are rejected.
+- Linux access/default ACLs are decoded; untrusted write entries block even if masked.
+  Unknown/unreadable ACL evidence blocks; no ACL-tool package or settings change.
+- Namespace/owner/content fingerprint must remain unchanged across read/search repair.
+- Application tests remain under UID 24001. Permission repairs add no write bits.
+- 29/29 existing tests and 25/25 disposable Linux regressions PASS; real ACL/kernel-open
+  evidence included. Only malformed/inspection-error cases use simulated metadata failures.
+- Workflow delta: existing access call binds invoking UID/GID; no other workflow change.
+- Existing run.py, approved.json, verify.py, network.sh, type_debt.py and test_local.py
+  remain byte-for-byte unchanged. No cloud changes/publication/dispatch/application edits.
+- Hosted group/ACL/ownership and full CI remain unverified. Trusted root/runner/Docker
+  privilege and dependency-install trust are existing limitations, not solved by this guard.
