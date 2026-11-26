@@ -630,12 +630,58 @@ def observe(workspace, stage, argv, env, table, expected_failure=False):
         Path(name).unlink(missing_ok=True)
 
 
+
+def fixture_pidfd(pid):
+    """Fixture-only identity-bound handle; never fall back to numeric PID polling."""
+    if sys.platform != 'linux' or not hasattr(os, 'pidfd_open'):
+        raise Blocked('CAPABILITY_MISMATCH')
+    start = process_birth(pid)
+    fd = os.pidfd_open(pid, 0)
+    try:
+        entries = [line for line in Path('/proc/self/fdinfo/' + str(fd)).read_text().splitlines()
+                   if line.startswith('Pid:')]
+        if len(entries) != 1 or entries[0].split() != ['Pid:', str(pid)] or process_birth(pid) != start:
+            raise Blocked('CAPABILITY_MISMATCH')
+        return fd, start
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def fixture_pidfd_events(fd, timeout_ms):
+    import select
+    poller = select.poll()
+    poller.register(fd, select.POLLIN)
+    events = poller.poll(timeout_ms)
+    allowed = select.POLLIN | select.POLLHUP
+    if any(number != fd or not mask or mask & ~allowed for number, mask in events):
+        raise Blocked('CAPABILITY_MISMATCH')
+    return bool(events)
+
+
+def fixture_wait_terminated(fd):
+    # pidfd readiness establishes termination of this exact process, including
+    # when its numeric PID has been reaped/reused. EOF alone is not sufficient.
+    if not fixture_pidfd_events(fd, 5000):
+        raise Blocked('CAPABILITY_MISMATCH')
+
+
+def fixture_parent_guard(parent, parent_start, parent_fd, own_start):
+    # No special trust for PID 1. Bind the actual adopter's lifetime, and retain
+    # strict snapshot equality at capture and immediately before connect.
+    if (os.getppid() != parent or process_birth(os.getpid()) != own_start or
+            fixture_pidfd_events(parent_fd, 0) or process_birth(parent) != parent_start or
+            os.getppid() != parent):
+        raise Blocked('CAPABILITY_MISMATCH')
+
+
 def fixture(case, destination):
     """Linux-only synthetic children; never send a payload or contact historical IPs."""
     dest = Path(destination)
     if case not in {"direct", "grandchild", "short", "detached", "ipv6", "ipv6-loopback", "thread", "interrupted", "unreadable-detached"}:
         return 78
-    def attempt():
+    def attempt(parent_guard=None):
+        if parent_guard is not None: parent_guard()
         family, host = (socket.AF_INET6, "::ffff:192.0.2.1") if case == "ipv6" else (socket.AF_INET, "192.0.2.1")
         port = 443
         listener = None
@@ -651,6 +697,7 @@ def fixture(case, destination):
         with socket.socket(family, socket.SOCK_STREAM) as s:
             value.update(socket_family=family,socket_fd=s.fileno(),socket_type=s.getsockopt(socket.SOL_SOCKET,socket.SO_TYPE),
                          protocol=s.getsockopt(socket.SOL_SOCKET,socket.SO_PROTOCOL))
+            if parent_guard is not None: parent_guard()
             write(dest,value)
             if case == 'unreadable-detached':
                 import ctypes
@@ -659,6 +706,7 @@ def fixture(case, destination):
             if case == "interrupted":
                 signal.signal(signal.SIGALRM, lambda *_: None)
                 signal.setitimer(signal.ITIMER_REAL, 0.001)
+            if parent_guard is not None: parent_guard()
             try:
                 s.connect((host, port))
             except OSError:
@@ -679,24 +727,53 @@ def fixture(case, destination):
         return status[0]
     if case in {"grandchild", "short", "detached", "unreadable-detached"}:
         detached = case in {"detached", "unreadable-detached"}
-        read_fd, write_fd = os.pipe() if detached else (-1, -1)
-        child = os.fork()
+        if not detached:
+            child = os.fork()
+            if not child: os._exit(attempt())
+            _, status = os.waitpid(child, 0)
+            return os.waitstatus_to_exitcode(status)
+        root_fd, _ = fixture_pidfd(os.getpid())
+        try:
+            child = os.fork()
+        except BaseException:
+            if root_fd >= 0: os.close(root_fd)
+            raise
         if not child:
-            if detached:
-                os.close(write_fd)
-                os.setsid()
-                grandchild = os.fork()
-                if grandchild:
-                    os._exit(0)
-                # EOF proves the launched root has exited and closed its only
-                # write end. No timing-based sleep or payload exchange.
-                if os.read(read_fd, 1) != b'':
-                    os._exit(1)
-                os.close(read_fd)
-            os._exit(attempt())
+            parent_fd = adopter_fd = -1
+            result = 1
+            try:
+                if detached:
+                    os.setsid()
+                    original_parent = os.getpid()
+                    parent_fd, _ = fixture_pidfd(original_parent)
+                    grandchild = os.fork()
+                    if not grandchild:
+                        own_start = process_birth(os.getpid())
+                        fixture_wait_terminated(root_fd)
+                        fixture_wait_terminated(parent_fd)
+                        # Both fixture ancestors have terminated. A new adopter
+                        # must be live and identity-bound before any golden data
+                        # is captured. No sleeps, and no accepted PPID transitions.
+                        adopter = os.getppid()
+                        if adopter in {original_parent, os.getpid()} or adopter < 1:
+                            raise Blocked('CAPABILITY_MISMATCH')
+                        adopter_fd, adopter_start = fixture_pidfd(adopter)
+                        guard = lambda: fixture_parent_guard(adopter, adopter_start, adopter_fd, own_start)
+                        guard()
+                        result = attempt(guard)
+                    else:
+                        result = 0
+                else:
+                    result = attempt()
+            except BaseException:
+                result = 1
+            finally:
+                for fd in (adopter_fd, parent_fd, root_fd):
+                    if fd >= 0: os.close(fd)
+            os._exit(result)
         if detached:
-            os.close(read_fd)
-            os._exit(0)  # Observer must continue after this launched root exits.
+            os.close(root_fd)
+            os._exit(0)  # Observer still follows the detached grandchild.
         _, status = os.waitpid(child, 0)
         return os.waitstatus_to_exitcode(status)
     return attempt()

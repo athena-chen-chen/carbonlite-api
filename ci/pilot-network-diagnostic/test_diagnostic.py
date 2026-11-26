@@ -1233,5 +1233,237 @@ class CalibrationFailureEvidenceTests(unittest.TestCase):
 
 
 
+
+# Self-contained evidence derived from independently retrieved immutable D5 bytes.
+# Empty Python 3.12 type_params fields are normalized away; nonempty fields are not.
+D5_PROTECTED_EVIDENCE = {'commit': '835d44eeb21870171373c446b40833395888f4ed', 'run_source_sha256': '73cf62f54f727ee94c28a6c61152e24afe02f74d1a788952426b21b6da82d411', 'protected_ast_sha256': 'dcb49a681fb010a5f324c7d107de6908cbf20ae25ba9948984b2303592c62c19', 'unchanged_payloads': {'ci/pilot-network-diagnostic/trace-connect.c': '3cebc1a5be7fd147e41edf0727acc081217f60d29328f43aca8af521b7c49d90', '.github/workflows/pilot-network-attribution.yml': '4149fcbe304e5e1687eb3f0f65b77c20739996fe1b15591891b005400dd2c472', 'ci/pilot-network-diagnostic/approved.json': 'ef75dce1d125c0c43144b12fea14dabf93776c3f75d7b6512150e9ee13cff427'}}
+D5_EVIDENCE_SHA256 = '39c03454676acc0321a222e4a361aebb5435957d85de285cf6cf8cdd2a503632'
+FIXTURE_ONLY_FUNCTIONS = frozenset({'fixture','fixture_pidfd','fixture_pidfd_events',
+                                     'fixture_wait_terminated','fixture_parent_guard'})
+
+
+def normalized_source_ast(value):
+    if isinstance(value,bytes): return ["bytes",value.hex()]
+    if isinstance(value, ast.AST):
+        return [type(value).__name__, [[key, normalized_source_ast(item)]
+                for key, item in ast.iter_fields(value)
+                if not (key == 'type_params' and item == [])]]
+    if isinstance(value, list): return [normalized_source_ast(item) for item in value]
+    return value
+
+
+def verify_d5_protected_source(root, evidence):
+    canonical = lambda value: json.dumps(value, sort_keys=True, separators=(',',':')).encode()
+    if type(evidence) is not dict or hashlib.sha256(canonical(evidence)).hexdigest() != D5_EVIDENCE_SHA256:
+        raise ValueError('D5_EVIDENCE_IDENTITY')
+    source = ast.parse((root/'ci/pilot-network-diagnostic/run.py').read_text())
+    body = [node for node in source.body if not
+            (isinstance(node,(ast.FunctionDef,ast.ClassDef)) and node.name in FIXTURE_ONLY_FUNCTIONS)]
+    if hashlib.sha256(canonical(normalized_source_ast(body))).hexdigest() != evidence['protected_ast_sha256']:
+        raise ValueError('D5_PROTECTED_SOURCE')
+    for path, expected in evidence['unchanged_payloads'].items():
+        if hashlib.sha256((root/path).read_bytes()).hexdigest() != expected:
+            raise ValueError('D5_PAYLOAD_IDENTITY')
+
+
+class DetachedLifecycleTests(unittest.TestCase):
+    """Deterministic syscall models, not a claim of Linux ptrace execution."""
+    class Exited(BaseException):
+        def __init__(self, code): self.code = code
+
+    def test_pidfd_is_bound_before_use(self):
+        with patch.object(driver.sys, 'platform', 'linux'), \
+             patch.object(driver.os, 'pidfd_open', return_value=31, create=True) as opening, \
+             patch.object(driver, 'process_birth', side_effect=[12,12]), \
+             patch.object(Path, 'read_text', return_value='Pid:\t3812\n'), \
+             patch.object(driver.os, 'close') as close:
+            self.assertEqual(driver.fixture_pidfd(3812), (31,12))
+            opening.assert_called_once_with(3812,0)
+            close.assert_not_called()
+
+    def test_pid_reuse_or_wrong_pidfd_is_rejected_and_closed(self):
+        for births, info in (([12,13], 'Pid:\t3812\n'), ([12], 'Pid:\t999\n'),
+                             ([12], 'Pid:\t-1\n'), ([12], 'Pid:\t3812\nPid:\t3812\n')):
+            with self.subTest(info=info), patch.object(driver.sys,'platform','linux'), \
+                 patch.object(driver.os,'pidfd_open',return_value=31,create=True), \
+                 patch.object(driver,'process_birth',side_effect=births), \
+                 patch.object(Path,'read_text',return_value=info), patch.object(driver.os,'close') as close:
+                with self.assertRaises(driver.Blocked): driver.fixture_pidfd(3812)
+                close.assert_called_once_with(31)
+
+    def test_unsupported_pidfd_is_blocked(self):
+        with patch.object(driver.sys,'platform','darwin'):
+            with self.assertRaises(driver.Blocked): driver.fixture_pidfd(3812)
+        with patch.object(driver.sys,'platform','linux'), patch.object(driver,'process_birth',return_value=12), \
+             patch.object(driver.os,'pidfd_open',side_effect=OSError('unsupported'),create=True):
+            with self.assertRaises(OSError): driver.fixture_pidfd(3812)
+
+    def test_bounded_wait_and_timeout(self):
+        with patch.object(driver,'fixture_pidfd_events',return_value=True) as event:
+            driver.fixture_wait_terminated(31); event.assert_called_once_with(31,5000)
+        with patch.object(driver,'fixture_pidfd_events',return_value=False):
+            with self.assertRaises(driver.Blocked): driver.fixture_wait_terminated(31)
+
+    def test_poll_rejects_errors_and_unrelated_descriptors(self):
+        import select
+        for events in ([(31,select.POLLERR)],[(32,select.POLLIN)],[(31,select.POLLNVAL)]):
+            with self.subTest(events=events),patch.object(select,'poll') as poll:
+                poll.return_value.poll.return_value=events
+                with self.assertRaises(driver.Blocked): driver.fixture_pidfd_events(31,5000)
+        for mask in (select.POLLIN,select.POLLHUP):
+            with patch.object(select,'poll') as poll:
+                poll.return_value.poll.return_value=[(31,mask)]
+                self.assertTrue(driver.fixture_pidfd_events(31,5000))
+
+    def test_stable_parent_is_not_hardcoded_to_one(self):
+        for parent in (1,777):
+            with self.subTest(parent=parent),patch.object(driver.os,'getppid',return_value=parent), \
+                 patch.object(driver.os,'getpid',return_value=3813), \
+                 patch.object(driver,'process_birth',side_effect=[11549,88]), \
+                 patch.object(driver,'fixture_pidfd_events',return_value=False):
+                driver.fixture_parent_guard(parent,88,33,11549)
+
+    def test_changed_parent_lifetime_or_process_identity_is_blocked(self):
+        for ppids,births,dead in (([777],[],False),([1,777],[11549,88],False),
+                                 ([1],[999],False),([1],[11549],True),([1],[11549,99],False)):
+            with self.subTest(ppids=ppids,births=births,dead=dead), \
+                 patch.object(driver.os,'getppid',side_effect=ppids),patch.object(driver.os,'getpid',return_value=3813), \
+                 patch.object(driver,'process_birth',side_effect=births), \
+                 patch.object(driver,'fixture_pidfd_events',return_value=dead):
+                with self.assertRaises(driver.Blocked): driver.fixture_parent_guard(1,88,33,11549)
+
+    def model(self, case='detached', wait_error=False, adopter=777, attempt_error=False, late_transition=False):
+        timeline=[]; metadata=[]; count=iter([3790,3812])
+        def pid(): return next(count,3813)
+        def leave(code): raise self.Exited(code)
+        def wait(fd):
+            timeline.append(('terminated',fd))
+            if wait_error and fd==32: raise driver.Blocked('CAPABILITY_MISMATCH')
+        def capture(path,value):
+            self.assertIn(('terminated',31),timeline);self.assertIn(('terminated',32),timeline)
+            timeline.append(('capture',value['ppid']));metadata.append(value)
+        fake=unittest.mock.MagicMock();fake.__enter__.return_value=fake;fake.fileno.return_value=3
+        fake.getsockopt.side_effect=[driver.socket.SOCK_STREAM,driver.socket.IPPROTO_TCP]
+        fake.connect.side_effect=OSError('synthetic denial')
+        real_read=Path.read_text
+        def read(path,*a,**kw):
+            if str(path)=='/proc/self/stat': return '3813 (python) S '+' '.join(['0']*18+['11549'])
+            return real_read(path,*a,**kw)
+        with contextlib.ExitStack() as stack:
+            for obj,name,kw in ((driver.os,'getpid',{'side_effect':pid}),
+                (driver.os,'getppid',{'side_effect':([adopter]*8+[adopter+1]) if late_transition else None,'return_value':adopter}), (driver.os,'getuid',{'return_value':24001}), (driver.os,'fork',{'side_effect':[0,0]}),
+                (driver.os,'setsid',{}), (driver.os,'_exit',{'side_effect':leave}),
+                (driver,'fixture_pidfd',{'side_effect':[(31,10),(32,11),(33,88)]}),
+                (driver,'fixture_wait_terminated',{'side_effect':wait}),
+                (driver,'process_birth',{'side_effect':lambda pid:11549 if pid==3813 else 88}),
+                (driver,'fixture_pidfd_events',{'return_value':False}),
+                (driver,'write',{'side_effect':capture}), (Path,'read_text',{'new':read})):
+                stack.enter_context(patch.object(obj,name,**kw))
+            close=stack.enter_context(patch.object(driver.os,'close'))
+            stack.enter_context(patch.object(driver.socket,'socket',return_value=fake))
+            stack.enter_context(patch.object(driver.socket,'SO_PROTOCOL',38,create=True))
+            import ctypes
+            libc=stack.enter_context(patch.object(ctypes,'CDLL')).return_value;libc.prctl.return_value=0
+            if attempt_error: fake.getsockopt.side_effect=RuntimeError('synthetic failure')
+            with self.assertRaises(self.Exited) as exit: driver.fixture(case,'synthetic.json')
+        return exit.exception.code,metadata,close,fake,libc,timeline
+
+    def test_detached_capture_after_both_ancestors_terminate(self):
+        code,rows,close,sock,libc,timeline=self.model()
+        self.assertEqual(code,0);self.assertEqual(rows[0]['ppid'],777)
+        self.assertEqual(rows[0]['start_ticks'],11549);self.assertEqual(rows[0]['uid'],24001)
+        sock.connect.assert_called_once_with(('192.0.2.1',443))
+        self.assertCountEqual([c.args[0] for c in close.call_args_list],[31,32,33])
+        libc.prctl.assert_not_called()
+
+    def test_intermediate_timeout_prevents_capture_and_network(self):
+        code,rows,close,sock,_,_=self.model(wait_error=True)
+        self.assertEqual(code,1);self.assertEqual(rows,[]);sock.connect.assert_not_called()
+        self.assertCountEqual([c.args[0] for c in close.call_args_list],[31,32])
+
+    def test_incomplete_reparenting_remains_blocked(self):
+        code,rows,close,sock,_,_=self.model(adopter=3812)
+        self.assertEqual(code,1);self.assertEqual(rows,[]);sock.connect.assert_not_called()
+        self.assertCountEqual([c.args[0] for c in close.call_args_list],[31,32])
+
+    def test_unreadable_negative_control_still_sets_dumpability(self):
+        code,rows,close,sock,libc,_=self.model(case='unreadable-detached')
+        self.assertEqual(code,0);self.assertEqual(len(rows),1)
+        libc.prctl.assert_called_once_with(4,0,0,0,0)
+        sock.connect.assert_called_once_with(('192.0.2.1',443))
+        self.assertCountEqual([c.args[0] for c in close.call_args_list],[31,32,33])
+
+    def test_parent_change_after_metadata_prevents_connect(self):
+        code,rows,close,sock,_,_=self.model(late_transition=True)
+        self.assertEqual(code,1);self.assertEqual(len(rows),1);sock.connect.assert_not_called()
+        self.assertCountEqual([c.args[0] for c in close.call_args_list],[31,32,33])
+
+    def test_attempt_failure_closes_handles_and_exits_nonzero(self):
+        code,rows,close,sock,_,_=self.model(attempt_error=True)
+        self.assertEqual(code,1);sock.connect.assert_not_called()
+        self.assertCountEqual([c.args[0] for c in close.call_args_list],[31,32,33])
+
+    def test_nonfixture_runtime_functions_and_tracer_remain_identical_to_D5(self):
+        verify_d5_protected_source(HERE.parents[1], D5_PROTECTED_EVIDENCE)
+
+
+class HostedLayoutEvidenceTests(unittest.TestCase):
+    def checkout(self):
+        temp = tempfile.TemporaryDirectory(); self.addCleanup(temp.cleanup)
+        workspace = Path(temp.name)/'work/carbonlite-api/carbonlite-api'
+        root = workspace/'control'; root.mkdir(parents=True)
+        source = HERE.parents[1]
+        paths = [line.split('  ')[1] for line in (HERE/'SHA256SUMS.txt').read_text().splitlines()]
+        paths += ['ci/pilot-network-diagnostic/SHA256SUMS.txt']
+        for path in paths:
+            dest = root/path; dest.parent.mkdir(parents=True,exist_ok=True)
+            shutil.copyfile(source/path,dest)
+        return root
+
+    def test_hosted_checkout_without_historical_siblings(self):
+        root=self.checkout()
+        self.assertEqual({p.name for p in root.parent.iterdir()}, {'control'})
+        verify_d5_protected_source(root,D5_PROTECTED_EVIDENCE)
+
+    def test_incorrect_immutable_identity_is_rejected(self):
+        root=self.checkout(); evidence=copy.deepcopy(D5_PROTECTED_EVIDENCE)
+        evidence['commit']='0'*40
+        with self.assertRaisesRegex(ValueError,'D5_EVIDENCE_IDENTITY'):
+            verify_d5_protected_source(root,evidence)
+
+    def test_missing_or_modified_approved_evidence_is_rejected(self):
+        root=self.checkout()
+        for evidence in (None,{},dict(D5_PROTECTED_EVIDENCE,run_source_sha256='0'*64)):
+            with self.subTest(evidence=type(evidence)),self.assertRaisesRegex(ValueError,'D5_EVIDENCE_IDENTITY'):
+                verify_d5_protected_source(root,evidence)
+
+    def test_missing_required_source_is_rejected(self):
+        root=self.checkout(); (root/'ci/pilot-network-diagnostic/run.py').unlink()
+        with self.assertRaises(FileNotFoundError):verify_d5_protected_source(root,D5_PROTECTED_EVIDENCE)
+
+    def test_strict_ppid_matching_change_is_rejected(self):
+        root=self.checkout(); path=root/'ci/pilot-network-diagnostic/run.py'
+        old=path.read_text(); new=old.replace("('pid','tid','ppid','uid','start_ticks')", "('pid','tid','uid','start_ticks')")
+        self.assertNotEqual(old,new);path.write_text(new)
+        with self.assertRaisesRegex(ValueError,'D5_PROTECTED_SOURCE'):
+            verify_d5_protected_source(root,D5_PROTECTED_EVIDENCE)
+
+    def test_modified_tracer_and_missing_payload_are_rejected(self):
+        root=self.checkout(); path=root/'ci/pilot-network-diagnostic/trace-connect.c'
+        path.write_text('synthetic unapproved source')
+        with self.assertRaisesRegex(ValueError,'D5_PAYLOAD_IDENTITY'):
+            verify_d5_protected_source(root,D5_PROTECTED_EVIDENCE)
+        path.unlink()
+        with self.assertRaises(FileNotFoundError):verify_d5_protected_source(root,D5_PROTECTED_EVIDENCE)
+
+    def test_python312_empty_fields_normalize_without_hiding_type_parameters(self):
+        node=ast.parse('def example(): pass').body[0]
+        original=normalized_source_ast(node)
+        node._fields=(*node._fields,'type_params') if 'type_params' not in node._fields else node._fields
+        node.type_params=[];self.assertEqual(original,normalized_source_ast(node))
+        node.type_params=[ast.Name(id='Unapproved',ctx=ast.Load())]
+        self.assertNotEqual(original,normalized_source_ast(node))
+
+
 if __name__=='__main__':
     unittest.main()

@@ -427,3 +427,50 @@ Results: both previously failing tests 2/2 PASS; with two new focused regression
 Exact-Pair identity 38/38 PASS, privacy 43/43 PASS, Entry identity 32/32 PASS.
 Syntax, checksums and exact test-only delta verified separately. The existing
 Linux tracing and historical calibration uncertainties remain unresolved.
+
+LOCAL FINAL DETACHED LIFECYCLE CORRECTION (not published or hosted-validated)
+Baseline D5: 835d44eeb21870171373c446b40833395888f4ed.
+Only fixture lifecycle helpers and fixture branches change in run.py. Each
+ancestor opens its own identity-bound Linux pidfd before forking. The detached
+grandchild waits at most five seconds per ancestor for the original root AND
+intermediate parent to terminate. It then binds the actual live adopter using
+pidfd, PID and start time. The fixture checks this same adopter before identity
+capture, before writing golden metadata and immediately before connect. PID 1
+has no special allowance. Unsupported pidfd/inspection, timeout, PID/start-time
+mismatch, incomplete reparenting or adopter death/change fails nonzero. There
+is no numeric-PID fallback, sleep-based timing guess or additional connection.
+All fixture-owned pidfds close on modeled success/failure; observer descendant
+termination/reaping and completion receipts remain authoritative and unchanged.
+The unreadable-detached prctl negative control remains in place; actual Linux
+permission/ptrace behavior has NOT RUN locally. New tests model syscalls and
+socket denial, not real Linux process reaping. The existing real Linux tests
+remain skipped on macOS. No hosted calibration PASS is claimed.
+Strict PPID calibration equality, all previous nonfixture runtime functions,
+tracer C, firewall policy, counters, packet expectations, cleanup, privacy,
+workflow and approved backend metadata remain byte/AST-identical to D5.
+
+Local validation (macOS/Python 3.9.6): 14 focused lifecycle model tests PASS;
+full diagnostic suite 143 PASS / 2 Linux-only SKIP; Exact-Pair 38/38 PASS;
+privacy 43/43 PASS. C portability build, Linux-branch syntax/type checks and
+root PID-reuse selftest PASS. Actual pidfd/fork/ptrace reaping and Linux ACL
+inheritance NOT RUN: Docker socket access is denied. Python 3.12 NOT RUN.
+These results authorize no publication or hosted execution.
+
+HOSTED TEST PORTABILITY P2 (local preparation only)
+The D5 equivalence test no longer reads a historical sibling checkout. Its
+self-contained approval record is derived from independently retrieved D5 commit
+835d44eeb21870171373c446b40833395888f4ed bytes (run.py SHA-256
+73cf62f54f727ee94c28a6c61152e24afe02f74d1a788952426b21b6da82d411).
+A fixed evidence seal binds the commit, original-source hash, protected AST hash
+and unchanged payload hashes. The test hashes every original nonfixture module
+statement, including strict calibration predicates and constants, and checks
+tracer/workflow/approved.json bytes. Only the fixture and four lifecycle helpers
+are excluded. Empty Python 3.12 type_params fields are normalized for cross-
+version compatibility; nonempty fields remain part of the protected identity.
+Missing or modified evidence/source/payloads fail rather than skip. Tests include
+an isolated checkout with no historical siblings, rejected wrong D5 identity,
+missing evidence, changed PPID matching and modified/missing tracer payloads.
+No network or Git installation is needed by these integrity assertions. This is
+an offline source-integrity check, not a claim that local tests queried GitHub.
+Runtime run.py and all security controls remain byte-identical to the reviewed
+lifecycle correction. Actual Linux pidfd/ptrace execution remains NOT RUN.
