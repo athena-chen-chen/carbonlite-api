@@ -1,3 +1,4 @@
+import { copyDeleteFailure, CorrelatedRequest } from '../common/monitoring/document-delete-diagnostics';
 import { WorkspaceMutationGuard } from '../auth/guards/workspace-mutation.guard';
 import {
   Controller,
@@ -7,6 +8,7 @@ import {
   Param,
   Post,
   Query,
+  Req,
   UploadedFile,
   UseInterceptors,
   Body,
@@ -137,31 +139,35 @@ export class DocumentsController {
   async remove(
     @CurrentUser() user: AuthenticatedUser,
     @Param('id') id: string,
+    @Req() request: CorrelatedRequest,
   ) {
     try {
       return await this.documentsService.remove(
         user.organizationId,
         id,
         user.id,
+        request.requestId,
       );
     } catch (error) {
-      throwCapturedAppError(
-        error,
-        {
-          feature: 'documents',
-          operation: 'delete',
-          userId: user.id,
-          userEmail: user.email,
-          organizationId: user.organizationId,
-          entityType: 'Document',
-          entityId: id,
-          metadata: {
-            route: '/api/documents/:id',
-            method: 'DELETE',
+      await this.documentsService.recordDeleteFailureCorrelation(user.organizationId, request.requestId, error);
+      try {
+        throwCapturedAppError(
+          error,
+          {
+            feature: 'documents',
+            operation: 'delete',
+            metadata: {
+              route: '/api/documents/:id',
+              method: 'DELETE',
+              requestId: request.requestId,
+            },
           },
-        },
-        'Document deletion failed. Please try again.',
-      );
+          'Document deletion failed. Please try again.',
+        );
+      } catch (outgoing) {
+        copyDeleteFailure(error, outgoing);
+        throw outgoing;
+      }
     }
   }
 

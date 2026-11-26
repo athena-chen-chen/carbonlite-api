@@ -1,8 +1,10 @@
+import { deleteAuditScope, deleteDiagnostic, markDeleteCorrelation, validRequestId } from '../common/monitoring/document-delete-diagnostics';
 import { assertDocumentSize, hashDocumentFile, readBoundedDocumentFile, validateDocumentContent, validateDocumentType } from './document-resource-policy';
 import { inspectSpreadsheetContainer } from '../document-extraction/spreadsheet-activity-rows';
 import {
   ConflictException,
   ForbiddenException,
+  HttpException,
   Inject,
   Injectable,
   Logger,
@@ -252,7 +254,7 @@ export class DocumentsService {
 
   }
 
-  async remove(organizationId: string, id: string, userId?: string) {
+  async remove(organizationId: string, id: string, userId?: string, requestId?: string) {
     const document = await this.prisma.document.findUnique({
       where: { id },
       select: { fileUrl: true },
@@ -276,7 +278,7 @@ export class DocumentsService {
 
     const intent = await this.recovery.prepareDocument(organizationId, id, userId);
     if (!intent) throw new NotFoundException(`Document ${id} not found.`);
-    const outcome = await this.recovery.completeDocument(organizationId, id, userId);
+    const outcome = await this.recovery.completeDocument(organizationId, id, userId, requestId);
     if (!outcome) throw new NotFoundException(`Document ${id} not found.`);
     return {
       deletedDocument: true,
@@ -287,6 +289,25 @@ export class DocumentsService {
       storageLifecycle: outcome.intent.status,
       idempotent: outcome.idempotent,
     };
+  }
+
+  /** Supplemental protected linkage only; never replaces mandatory deletion audit. */
+  async recordDeleteFailureCorrelation(organizationId: string, requestId: string | undefined, error: unknown) {
+    const scope = deleteAuditScope(error);
+    if (!scope || scope.organizationId !== organizationId || !validRequestId(requestId)) return;
+    try {
+      const diagnostic = deleteDiagnostic(error, requestId, error instanceof HttpException ? error.getStatus() : 500);
+      await this.prisma.$transaction(async (tx) => {
+        await tx.$executeRaw`SELECT set_config('statement_timeout', '500ms', true)`;
+        await tx.auditLog.create({ data: {
+          organizationId, action: 'DOCUMENT_DELETE_DIAGNOSTIC',
+          entityType: 'DocumentDeletionIntent', entityId: scope.intentId,
+          description: `Supplemental deletion failure correlation ${requestId}; not a deletion success receipt.`,
+          newValue: { ...diagnostic, correlationLinkAvailable: true, documentId: scope.documentId, deletionIntentId: scope.intentId },
+        } });
+      }, { maxWait: 250, timeout: 750 });
+      markDeleteCorrelation(error, true);
+    } catch { markDeleteCorrelation(error, false); }
   }
 
   private get recovery() {

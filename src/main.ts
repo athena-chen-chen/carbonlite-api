@@ -1,3 +1,4 @@
+import { CorrelatedRequest, requestCorrelation } from './common/monitoring/document-delete-diagnostics';
 import 'dotenv/config';
 import 'reflect-metadata';
 import { Logger, RequestMethod, ValidationPipe } from '@nestjs/common';
@@ -30,13 +31,14 @@ async function bootstrap() {
 
   app.use(restoreAccessGate(recoveryAccessPolicy));
 
-  app.use((req: Request, res: Response, next: NextFunction) => {
+  app.use((req: CorrelatedRequest, res: Response, next: NextFunction) => {
+    requestCorrelation(req, res, () => undefined);
     const timer = new PerfTimer();
 
     res.on('finish', () => {
       const durationMs = timer.elapsedMs();
       const requestPath = typeof req.route?.path === 'string' ? req.route.path.slice(0, 256) : '[UNMATCHED]';
-      const message = `${req.method} ${requestPath} ${res.statusCode} ${durationMs}ms`;
+      const message = `${req.method} ${requestPath} ${res.statusCode} ${durationMs}ms requestId=${req.requestId}`;
 
       if (durationMs > SLOW_REQUEST_THRESHOLD_MS) {
         requestLogger.warn(`SLOW ${message}`);

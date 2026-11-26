@@ -1,3 +1,4 @@
+import { requestCorrelation } from '../../src/common/monitoring/document-delete-diagnostics';
 import {
   ExceptionFilter,
   INestApplication,
@@ -13,6 +14,7 @@ import { configureHttpSecurity } from '../../src/common/security/http-security';
 
 export async function createE2eApp(options?: {
   globalFilters?: ExceptionFilter[];
+  correlateRequests?: boolean;
   enableSentryDebugRoute?: boolean;
 }) {
   assertSafeTestDatabaseTarget();
@@ -21,6 +23,7 @@ export async function createE2eApp(options?: {
   }).compile();
 
   const app = moduleRef.createNestApplication<NestExpressApplication>();
+  if (options?.correlateRequests) app.use(requestCorrelation);
   configureHttpSecurity(app, {
     ...process.env,
     APP_ENV: 'test',

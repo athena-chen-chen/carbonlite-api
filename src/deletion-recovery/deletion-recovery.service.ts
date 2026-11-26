@@ -1,3 +1,4 @@
+import { attachDeleteFailure, DeleteAuditScope, emptyDeleteObservation, DocumentDeleteReconciliationError } from '../common/monitoring/document-delete-diagnostics';
 import {
   BadRequestException,
   ConflictException,
@@ -164,97 +165,123 @@ export class DeletionRecoveryService {
     organizationId: string,
     documentId: string,
     requestedById?: string,
+    requestId?: string,
   ) {
-    const outcome = await this.legalHolds.withDeletionGuard({
-      organizationId,
-      operation: 'DELETE_DOCUMENT',
-      actorUserId: requestedById,
-      documentIds: [documentId],
-    }, async (tx) => {
-      const intent = await tx.documentDeletionIntent.findFirst({
-        where: { organizationId, documentId },
-        orderBy: { createdAt: 'desc' },
-      });
-      if (!intent) return { kind: 'NOT_FOUND' as const };
-      if (intent.status === DocumentDeletionIntentStatus.PENDING_PURGE ||
-          intent.status === DocumentDeletionIntentStatus.PURGED) {
-        return { kind: 'COMPLETE' as const, intent, idempotent: true, preservedActivityRecords: 0 };
-      }
-      if (intent.status === DocumentDeletionIntentStatus.RECONCILIATION_REQUIRED) {
-        return { kind: 'RECONCILIATION_REQUIRED' as const };
-      }
-      const document = await tx.document.findUnique({ where: { id: documentId } });
-      if (!document || document.organizationId !== organizationId) {
-        await tx.documentDeletionIntent.update({
-          where: { id: intent.id },
-          data: { status: DocumentDeletionIntentStatus.RECONCILIATION_REQUIRED, reconciliationCode: 'DOCUMENT_ROW_MISSING' },
+    let observation = emptyDeleteObservation();
+    let scope: DeleteAuditScope | undefined;
+    let failureStage: 'DATABASE_FAILURE' | 'STORAGE_FAILURE' = 'DATABASE_FAILURE';
+    let outcome;
+    try {
+      outcome = await this.legalHolds.withDeletionGuard({
+        organizationId,
+        operation: 'DELETE_DOCUMENT',
+        actorUserId: requestedById,
+        documentIds: [documentId],
+      }, async (tx) => {
+        const intent = await tx.documentDeletionIntent.findFirst({
+          where: { organizationId, documentId },
+          orderBy: { createdAt: 'desc' },
         });
-        return { kind: 'RECONCILIATION_REQUIRED' as const };
-      }
+        if (!intent) return { kind: 'NOT_FOUND' as const };
+        scope = { organizationId, documentId, intentId: intent.id };
+        observation.intentStatus = intent.status;
+        observation.reconciliationCode = intent.reconciliationCode === 'DOCUMENT_ROW_MISSING' || intent.reconciliationCode === 'ACTIVE_AND_QUARANTINE_MISSING' ? intent.reconciliationCode : null;
+        if (intent.status === DocumentDeletionIntentStatus.PENDING_PURGE ||
+            intent.status === DocumentDeletionIntentStatus.PURGED) {
+          return { kind: 'COMPLETE' as const, intent, idempotent: true, preservedActivityRecords: 0 };
+        }
+        if (intent.status === DocumentDeletionIntentStatus.RECONCILIATION_REQUIRED) {
+          observation.reason = 'EXISTING_RECONCILIATION_REQUIRED';
+          return { kind: 'RECONCILIATION_REQUIRED' as const };
+        }
+        const document = await tx.document.findUnique({ where: { id: documentId } });
+        if (!document || document.organizationId !== organizationId) {
+          observation.reason = 'DOCUMENT_ROW_MISSING';
+          await tx.documentDeletionIntent.update({
+            where: { id: intent.id },
+            data: { status: DocumentDeletionIntentStatus.RECONCILIATION_REQUIRED, reconciliationCode: 'DOCUMENT_ROW_MISSING' },
+          });
+          return { kind: 'RECONCILIATION_REQUIRED' as const };
+        }
 
-      const movement = await this.storage.quarantine(intent.storageKey, intent.id);
-      if (movement.quarantineKey !== intent.quarantineKey || movement.result === 'NOT_FOUND') {
-        await tx.documentDeletionIntent.update({
-          where: { id: intent.id },
-          data: { status: DocumentDeletionIntentStatus.RECONCILIATION_REQUIRED, reconciliationCode: 'ACTIVE_AND_QUARANTINE_MISSING' },
+        failureStage = 'STORAGE_FAILURE';
+        const movement = await this.storage.quarantine(intent.storageKey, intent.id);
+        failureStage = 'DATABASE_FAILURE';
+        observation.quarantineIdentityMatches = movement.quarantineKey === intent.quarantineKey;
+        if (observation.quarantineIdentityMatches) {
+          observation.phase = movement.result === 'NOT_FOUND' ? 'QUARANTINE_PRECHECK' : 'AFTER_QUARANTINE';
+          observation.activeExists = false;
+          observation.quarantineExists = movement.result !== 'NOT_FOUND';
+        }
+        if (movement.quarantineKey !== intent.quarantineKey || movement.result === 'NOT_FOUND') {
+          observation.reason = movement.quarantineKey !== intent.quarantineKey
+            ? 'QUARANTINE_IDENTITY_MISMATCH' : 'ACTIVE_AND_QUARANTINE_MISSING';
+          await tx.documentDeletionIntent.update({
+            where: { id: intent.id },
+            data: { status: DocumentDeletionIntentStatus.RECONCILIATION_REQUIRED, reconciliationCode: 'ACTIVE_AND_QUARANTINE_MISSING' },
+          });
+          return { kind: 'RECONCILIATION_REQUIRED' as const };
+        }
+
+        const preservedActivityRecords = await tx.activityData.count({
+          where: {
+            organizationId,
+            OR: [{ documentId }, { sourceDocumentId: documentId }],
+          },
         });
-        return { kind: 'RECONCILIATION_REQUIRED' as const };
-      }
-
-      const preservedActivityRecords = await tx.activityData.count({
-        where: {
-          organizationId,
-          OR: [{ documentId }, { sourceDocumentId: documentId }],
-        },
-      });
-      await tx.document.delete({ where: { id: documentId } });
-      const completed = await tx.documentDeletionIntent.update({
-        where: { id: intent.id },
-        data: {
-          status: DocumentDeletionIntentStatus.PENDING_PURGE,
-          databaseDeletedAt: new Date(),
-          reconciliationCode: null,
-        },
-      });
-      await tx.auditLog.create({
-        data: {
-          organizationId,
-          userId: requestedById ?? null,
-          action: 'DELETE_DOCUMENT',
-          entityType: 'DocumentDeletionIntent',
-          entityId: completed.id,
-          description: 'Source document moved to recoverable quarantine and database metadata deleted.',
-          newValue: {
-            documentId,
-            deletionIntentId: completed.id,
-            deletedActivityRecords: 0,
-            preservedActivityRecords,
+        await tx.document.delete({ where: { id: documentId } });
+        const completed = await tx.documentDeletionIntent.update({
+          where: { id: intent.id },
+          data: {
+            status: DocumentDeletionIntentStatus.PENDING_PURGE,
+            databaseDeletedAt: new Date(),
+            reconciliationCode: null,
           },
-        },
-      });
-      await tx.userActivityEvent.create({
-        data: {
-          organizationId,
-          userId: requestedById ?? null,
-          eventName: 'DOCUMENT_DELETED',
-          entityType: 'Document',
-          entityId: documentId,
-          metadata: {
-            deletionIntentId: completed.id,
-            deletedActivityRecords: 0,
-            preservedActivityRecords,
-            sourceEvidence: 'QUARANTINED',
+        });
+        await tx.auditLog.create({
+          data: {
+            organizationId,
+            userId: requestedById ?? null,
+            action: 'DELETE_DOCUMENT',
+            entityType: 'DocumentDeletionIntent',
+            entityId: completed.id,
+            description: 'Source document moved to recoverable quarantine and database metadata deleted.',
+            newValue: {
+              documentId,
+              deletionIntentId: completed.id,
+              deletedActivityRecords: 0,
+              preservedActivityRecords,
+            },
           },
-        },
+        });
+        await tx.userActivityEvent.create({
+          data: {
+            organizationId,
+            userId: requestedById ?? null,
+            eventName: 'DOCUMENT_DELETED',
+            entityType: 'Document',
+            entityId: documentId,
+            metadata: {
+              deletionIntentId: completed.id,
+              deletedActivityRecords: 0,
+              preservedActivityRecords,
+              sourceEvidence: 'QUARANTINED',
+            },
+          },
+        });
+        return { kind: 'COMPLETE' as const, intent: completed, idempotent: false, preservedActivityRecords };
       });
-      return { kind: 'COMPLETE' as const, intent: completed, idempotent: false, preservedActivityRecords };
-    });
+    } catch (error) {
+      if (scope) attachDeleteFailure(error, { ...observation, reason: failureStage }, scope);
+      throw error;
+    }
 
     if (outcome.kind === 'NOT_FOUND') return null;
     if (outcome.kind === 'RECONCILIATION_REQUIRED') {
-      throw new ServiceUnavailableException(
-        'Document deletion requires storage reconciliation; no permanent purge was attempted.',
-      );
+      observation.intentStatus = 'RECONCILIATION_REQUIRED';
+      if (observation.reason === 'DOCUMENT_ROW_MISSING') observation.reconciliationCode = 'DOCUMENT_ROW_MISSING';
+      if (observation.reason === 'ACTIVE_AND_QUARANTINE_MISSING' || observation.reason === 'QUARANTINE_IDENTITY_MISMATCH') observation.reconciliationCode = 'ACTIVE_AND_QUARANTINE_MISSING';
+      throw new DocumentDeleteReconciliationError(observation, scope!, requestId);
     }
     return outcome;
   }

@@ -131,7 +131,7 @@ describe('DocumentsService storage lifecycle', () => {
       deletedDocument: true, sourceEvidence: 'QUARANTINED', deletionIntentId: 'intent-a',
     });
     expect(recovery.prepareDocument).toHaveBeenCalledWith('org-a', 'doc-a', 'user-a');
-    expect(recovery.completeDocument).toHaveBeenCalledWith('org-a', 'doc-a', 'user-a');
+    expect(recovery.completeDocument).toHaveBeenCalledWith('org-a', 'doc-a', 'user-a', undefined);
     expect(storage.delete).not.toHaveBeenCalled();
   });
 
