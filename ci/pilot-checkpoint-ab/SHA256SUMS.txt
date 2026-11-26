@@ -1,0 +1,6 @@
+258c925670b05e7f9ee60de89ccdf03036c0569d0d1ba865f8e2e870ed58fc8e  .github/workflows/nightly-e2e.yml
+c011eb20a9272ab52b06459d53caeada96d5b00e9f63987e5d6ac261f179fcfc  ci/pilot-checkpoint-ab/run.py
+ef3a4c9b0f75a61ac021781f93acb5edac94ce0cb4388fde803357f7a18e208a  ci/pilot-checkpoint-ab/verify.py
+0851410ea1eaea277adcb4ec5c6b58219b4fe53ca45f5022993bc3bb59644fb8  ci/pilot-checkpoint-ab/test_local.py
+756865c59ba321f025676a9c74f1b66052a4064ff13730fd236f40aad6aec1d5  ci/pilot-checkpoint-ab/approved.json
+9045e110bc18d76693a79d2ac27847c533f65152ae4bb4f4ce03df4ccd866feb  ci/pilot-checkpoint-ab/README.txt

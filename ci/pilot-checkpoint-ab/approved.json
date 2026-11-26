@@ -1,0 +1,39 @@
+{
+  "repository": "athena-chen-chen/carbonlite-api",
+  "branch": "ci/pilot-checkpoint-ab",
+  "baseline": "472120fc7d27f9b56ed6ae3f1e67d602ca2b1f90",
+  "control_commit": "472120fc7d27f9b56ed6ae3f1e67d602ca2b1f90",
+  "control_tree": "6babc63ebc787687e5f8be29cd28a0af04391f5b",
+  "control_index_sha256": "7c2fcda616101ccd1296544743145e4b3ec1a95e5627eea408acda94dc530ed5",
+  "backend": {
+    "repository": "athena-chen-chen/carbonlite-api",
+    "baseline": "1b38e3054be9da4a5935c1802a9a9389becf37a9",
+    "expected_tree": "f4e02d756dc14c0df638d7086b483566e7efeca5",
+    "reviewed_patch_sha256": "1c47279835406536ccb6efdbfe17330b75588916cae5572ab9dce016bd5b182a",
+    "files": {
+      "src/metrics/calculation-quality.service.spec.ts": "14ca799300334673a39b0b0e0284f4ec2513c07ed7694274c3062187ba61557b",
+      "src/metrics/calculation-quality.service.ts": "bd2e5898086ad5c834c719b920cef15f339925a07d3e5e8bb676e5dd9ddde5b2",
+      "src/organizations/organizations.service.spec.ts": "b6162c19ca665ea980fcfd8988bb7a0519b331cb32b483b9727e53d41909b6bf",
+      "src/organizations/organizations.service.ts": "b20cd315c669102229624562ba2ff976f0abf365d5f4bf3f4d4459cceaa8c443",
+      "test/document-resource-limits.e2e-spec.ts": "737c4bef9ac0ed29b578fc95964ef6ff951415f628a3c9e165da25394805c9c2",
+      "test/mutation-outcomes.e2e-spec.ts": "c46d6829a5b18dd48195a1e6b363985e29154633fc1eef54d7b8f78f37693a2e",
+      "test/organization-profile.e2e-spec.ts": "d23eb3fa2978e36655ce1a6bd55c2548a12c0abcf7f8efd82ecd10780cd6137b",
+      "test/pilot-reporting-scope.e2e-spec.ts": "88122ffbc1a27d95995703a0f94288f3f668854aab012b145bbd26bac859ee39"
+    },
+    "expected_commit": "e424c567d43c0086e0dc01b86e48cb648c114078"
+  },
+  "postgres_image": "postgres@sha256:07abc3f43c9395b0bdbbab36bc25ddb0e8d83cd4fcafb5fb7d6abe14ff156dd8",
+  "pooler_image": "edoburu/pgbouncer@sha256:53d98b3174b0842c475b9842fb0a733b2d9f7ec9da834ec42252aa553f48c628",
+  "prisma_version": "6.19.3",
+  "node_major": 20,
+  "pnpm_version": "10.17.0",
+  "files": [
+    ".github/workflows/nightly-e2e.yml",
+    "ci/pilot-checkpoint-ab/run.py",
+    "ci/pilot-checkpoint-ab/verify.py",
+    "ci/pilot-checkpoint-ab/test_local.py",
+    "ci/pilot-checkpoint-ab/approved.json",
+    "ci/pilot-checkpoint-ab/README.txt",
+    "ci/pilot-checkpoint-ab/SHA256SUMS.txt"
+  ]
+}
