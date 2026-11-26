@@ -224,3 +224,36 @@ network denial/counters, service definitions, identity verifier, privacy/upload 
 cleanup and type-debt code are byte-identical to the approved published baseline.
 No new in-scope P0/P1/P2 identified. This correction is ready for isolated publication
 review, not execution. No commits, pushes, dispatch, deploy or settings changes here.
+
+FRONTEND JWT FIXTURE SUCCESSOR REBINDING — LOCAL ONLY
+Current CI baseline: 53f4d6e7b9ab9d2add516e7e34efc9296c158510,
+tree a02f2bd2e727f55ad4bf2fb84de2492ce039dcdd. This section supersedes
+historical Frontend execution pins above; historical evidence is not rewritten.
+Approved Frontend: 1b822f9437ac164c538222ef9d51a4a2f2d663d7,
+tree cfc181616b2fd12e4acc16d81ecdbb885ba6997a. Its immediate parent is
+760b583c4091329c05d41349a7e257f6c6e5b3cd, now rejected as an execution input.
+The cumulative baseline remains 3b69611d80d3f9a11712069bca2fd4eb72f51e15.
+All previous 52 Frontend file hashes remain identical. The 53rd entry is
+scripts/dev-database.test.mjs, SHA-256
+e68cb7444de38b750ad7d286ccd72f2ce9ad62c61aeb8226c807aa9dc0c3c61a.
+Cumulative Frontend patch SHA-256:
+62c44a7153c0cd0836587007a9144b4b0dd871e928e2d4f74cd10630a04b3ed5.
+Reproduce with git diff --binary --full-index --no-ext-diff --no-textconv
+--no-renames --no-color --src-prefix=a/ --dst-prefix=b/ between the cumulative
+Frontend baseline and successor. Exact commit/tree/file hashes remain authoritative.
+Backend 188e62b21fc1069d461bf440fbc62b5b48e70f0c, tree
+527afe06335da3a391fe87ff91d6a58de1a41a4d and its entire approval remain unchanged.
+Workflow, branch/manual guards, UID/ACL, IPv4/IPv6 denial, counters, Checkpoint opt-out,
+PostgreSQL/PgBouncer, privacy/artifacts, cleanup and type-debt gates are byte-identical.
+Only approval metadata, associated regression tests, documentation and checksum index change.
+No application files or the JWT fixture are modified by this rebinding.
+Stale Frontend commits, mixed trees and the old fixture hash must fail closed.
+No future CI commit is assigned. Publication and any Hosted execution require
+separate authorization. Actual Hosted execution is NOT RUN for this candidate.
+
+Local rebinding validation: Exact-Pair 54 PASS / 1 existing Mac Bash 3.2 SKIP;
+Privacy 43/43 PASS. Real successor (53 cumulative files) and Backend (nine files)
+pass the unchanged verifier. Old Frontend commit, old tree, stale HEAD and old
+fixture hash reject. Backend approval and prior 52 Frontend hashes are unchanged.
+No Hosted result is claimed; remaining Frontend/build/type-debt gates require
+separately authorized execution after publication.

@@ -107,6 +107,33 @@ class IdentityGateTests(unittest.TestCase):
         self.responses[('rev-parse', 'HEAD^{tree}')] = tree
         self.assertEqual(module.verify(self.root, commit, self.approved)['identity'], 'PASS')
 
+    def test_superseded_frontend_commit_rejected(self):
+        self.approved['expected_commit'] = '1b822f9437ac164c538222ef9d51a4a2f2d663d7'
+        with self.assertRaisesRegex(ValueError, 'Commit differs'):
+            module.verify(self.root, '760b583c4091329c05d41349a7e257f6c6e5b3cd', self.approved)
+
+    def test_frontend_successor_rejects_mixed_head_and_tree(self):
+        commit = '1b822f9437ac164c538222ef9d51a4a2f2d663d7'
+        tree = 'cfc181616b2fd12e4acc16d81ecdbb885ba6997a'
+        old_commit = '760b583c4091329c05d41349a7e257f6c6e5b3cd'
+        old_tree = '3885eef878844d9050a2022b0086301ce9e95176'
+        self.approved.update(expected_commit=commit, expected_tree=tree)
+        self.responses[('diff', '--no-renames', '--name-only', 'c' * 40, commit)] = 'sample.txt'
+        for head, actual_tree in ((old_commit, tree), (commit, old_tree), (old_commit, old_tree)):
+            with self.subTest(head=head, tree=actual_tree):
+                self.responses[('rev-parse', 'HEAD')] = head
+                self.responses[('rev-parse', 'HEAD^{tree}')] = actual_tree
+                with self.assertRaises(ValueError):
+                    module.verify(self.root, commit, self.approved)
+        self.responses[('rev-parse', 'HEAD')] = commit
+        self.responses[('rev-parse', 'HEAD^{tree}')] = tree
+        self.assertEqual(module.verify(self.root, commit, self.approved)['identity'], 'PASS')
+
+    def test_superseded_frontend_fixture_hash_rejected(self):
+        self.approved['files']['sample.txt'] = '0446cb7bd7f681cbeaf06b53f39800979dc25ac66dbe6b931e170dee2d663b94'
+        with self.assertRaisesRegex(ValueError, 'File hash mismatch'):
+            self.verify()
+
     def test_wrong_repository(self):
         self.responses[('remote', 'get-url', 'origin')] = 'https://github.com/example/wrong'
         with self.assertRaises(ValueError): self.verify()
@@ -397,13 +424,15 @@ class PublishedPairMetadataTests(unittest.TestCase):
         backend = json.loads(Path(__file__).with_name('approved.json').read_text())['backend']
         self.assertEqual(backend['reviewed_patch_sha256'], '5ebff061189886ab0a251e78ee1c4d17356badbbab39e3a03f0102a3ccf509d0')
 
-    def test_frontend_identity_preserved(self):
+    def test_frontend_successor_identity_and_fixture_manifest(self):
         import json
         data = json.loads(Path(__file__).with_name('approved.json').read_text())['frontend']
-        self.assertEqual(data['expected_commit'], '760b583c4091329c05d41349a7e257f6c6e5b3cd')
-        self.assertEqual(data['expected_tree'], '3885eef878844d9050a2022b0086301ce9e95176')
+        self.assertEqual(data['expected_commit'], '1b822f9437ac164c538222ef9d51a4a2f2d663d7')
+        self.assertEqual(data['expected_tree'], 'cfc181616b2fd12e4acc16d81ecdbb885ba6997a')
         self.assertEqual(data['baseline'], '3b69611d80d3f9a11712069bca2fd4eb72f51e15')
-        self.assertEqual(len(data['files']), 52)
+        self.assertEqual(len(data['files']), 53)
+        self.assertEqual(data['files']['scripts/dev-database.test.mjs'], 'e68cb7444de38b750ad7d286ccd72f2ce9ad62c61aeb8226c807aa9dc0c3c61a')
+        self.assertEqual(data['reviewed_patch_sha256'], '62c44a7153c0cd0836587007a9144b4b0dd871e928e2d4f74cd10630a04b3ed5')
 
 
 class CheckpointScopeTests(unittest.TestCase):
