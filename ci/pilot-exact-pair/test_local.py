@@ -84,9 +84,28 @@ class IdentityGateTests(unittest.TestCase):
             with self.assertRaises(ValueError): self.verify()
 
     def test_superseded_backend_commit_rejected(self):
-        self.approved['expected_commit'] = 'e424c567d43c0086e0dc01b86e48cb648c114078'
-        with self.assertRaises(ValueError):
-            module.verify(self.root, 'b1cc0c810c46669003d00d18d18349b6944fbf0a', self.approved)
+        self.approved['expected_commit'] = '188e62b21fc1069d461bf440fbc62b5b48e70f0c'
+        for stale in ('e424c567d43c0086e0dc01b86e48cb648c114078',
+                      'b1cc0c810c46669003d00d18d18349b6944fbf0a'):
+            with self.subTest(commit=stale), self.assertRaisesRegex(ValueError, 'Commit differs'):
+                module.verify(self.root, stale, self.approved)
+
+    def test_rebound_backend_rejects_mixed_head_and_tree_identities(self):
+        commit = '188e62b21fc1069d461bf440fbc62b5b48e70f0c'
+        tree = '527afe06335da3a391fe87ff91d6a58de1a41a4d'
+        previous_commit = 'e424c567d43c0086e0dc01b86e48cb648c114078'
+        previous_tree = 'f4e02d756dc14c0df638d7086b483566e7efeca5'
+        self.approved.update(expected_commit=commit, expected_tree=tree)
+        self.responses[('diff', '--no-renames', '--name-only', 'c' * 40, commit)] = 'sample.txt'
+        for head, actual_tree in ((previous_commit, tree), (commit, previous_tree),
+                                  (previous_commit, previous_tree)):
+            self.responses[('rev-parse', 'HEAD')] = head
+            self.responses[('rev-parse', 'HEAD^{tree}')] = actual_tree
+            with self.subTest(head=head, tree=actual_tree), self.assertRaises(ValueError):
+                module.verify(self.root, commit, self.approved)
+        self.responses[('rev-parse', 'HEAD')] = commit
+        self.responses[('rev-parse', 'HEAD^{tree}')] = tree
+        self.assertEqual(module.verify(self.root, commit, self.approved)['identity'], 'PASS')
 
     def test_wrong_repository(self):
         self.responses[('remote', 'get-url', 'origin')] = 'https://github.com/example/wrong'
@@ -296,19 +315,25 @@ class DebtExecutionTests(unittest.TestCase):
 
 
 class PublishedPairMetadataTests(unittest.TestCase):
-    def test_backend_pin_and_eight_file_manifest(self):
+    def test_backend_pin_and_nine_file_manifest(self):
         import json
         data = json.loads(Path(__file__).with_name('approved.json').read_text())['backend']
-        self.assertEqual(data['expected_commit'], 'e424c567d43c0086e0dc01b86e48cb648c114078')
-        self.assertEqual(data['expected_tree'], 'f4e02d756dc14c0df638d7086b483566e7efeca5')
+        self.assertEqual(data['expected_commit'], '188e62b21fc1069d461bf440fbc62b5b48e70f0c')
+        self.assertEqual(data['expected_tree'], '527afe06335da3a391fe87ff91d6a58de1a41a4d')
         self.assertEqual(data['baseline'], '1b38e3054be9da4a5935c1802a9a9389becf37a9')
-        self.assertEqual(set(data['files']), {'src/metrics/calculation-quality.service.spec.ts', 'src/metrics/calculation-quality.service.ts', 'src/organizations/organizations.service.spec.ts', 'src/organizations/organizations.service.ts', 'test/document-resource-limits.e2e-spec.ts', 'test/mutation-outcomes.e2e-spec.ts', 'test/organization-profile.e2e-spec.ts', 'test/pilot-reporting-scope.e2e-spec.ts'})
+        self.assertEqual(set(data['files']), {'src/common/security/recovery-control-store.spec.ts', 'src/metrics/calculation-quality.service.spec.ts', 'src/metrics/calculation-quality.service.ts', 'src/organizations/organizations.service.spec.ts', 'src/organizations/organizations.service.ts', 'test/document-resource-limits.e2e-spec.ts', 'test/mutation-outcomes.e2e-spec.ts', 'test/organization-profile.e2e-spec.ts', 'test/pilot-reporting-scope.e2e-spec.ts'})
 
     def test_new_test_hashes(self):
         import json
         files = json.loads(Path(__file__).with_name('approved.json').read_text())['backend']['files']
+        self.assertEqual(files['src/common/security/recovery-control-store.spec.ts'], '4898bfa1874ca1bac35aa09440cf97da5dd3516886fc1b9c2f27d2105313cbe9')
         self.assertEqual(files['test/document-resource-limits.e2e-spec.ts'], '737c4bef9ac0ed29b578fc95964ef6ff951415f628a3c9e165da25394805c9c2')
         self.assertEqual(files['test/mutation-outcomes.e2e-spec.ts'], 'c46d6829a5b18dd48195a1e6b363985e29154633fc1eef54d7b8f78f37693a2e')
+
+    def test_backend_cumulative_patch_identity(self):
+        import json
+        backend = json.loads(Path(__file__).with_name('approved.json').read_text())['backend']
+        self.assertEqual(backend['reviewed_patch_sha256'], '5ebff061189886ab0a251e78ee1c4d17356badbbab39e3a03f0102a3ccf509d0')
 
     def test_frontend_identity_preserved(self):
         import json
@@ -317,6 +342,100 @@ class PublishedPairMetadataTests(unittest.TestCase):
         self.assertEqual(data['expected_tree'], '3885eef878844d9050a2022b0086301ce9e95176')
         self.assertEqual(data['baseline'], '3b69611d80d3f9a11712069bca2fd4eb72f51e15')
         self.assertEqual(len(data['files']), 52)
+
+
+class CheckpointScopeTests(unittest.TestCase):
+    """Exercise the real stage function without Prisma, Docker or network access."""
+    def setUp(self):
+        import ast
+        self.ast = ast
+        self.source = Path(__file__).with_name('run.py').read_text()
+        self.tree = ast.parse(self.source)
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.output = Path(self.temp.name)
+        self.calls = []
+        self.shared = {'PATH': '/synthetic/bin', 'CI': 'true'}
+        self.exit_code = 0
+        def capture(command, cwd, environment, raw):
+            self.calls.append((command, dict(environment)))
+            return {'exit_code': self.exit_code, 'timed_out': False, 'output_limit_exceeded': False}
+        stages = {'prisma-generation', 'disposable-migrate', 'disposable-seed',
+                  'database-identity', 'backend-units', 'backend-types', 'backend-build',
+                  'backend-e2e-postgres', 'backend-e2e-pgbouncer', 'frontend-script-tests',
+                  'frontend-vitest', 'frontend-types', 'frontend-build'}
+        self.ns = {'env': self.shared, 'output': self.output, 'results': [], 'STAGES': stages,
+                   'trusted_files': lambda cwd: set(), 'capture': capture, 'json': json,
+                   'time': __import__('time')}
+        function = next(n for n in self.tree.body if isinstance(n, ast.FunctionDef) and n.name == 'run')
+        exec(compile(ast.Module(body=[function], type_ignores=[]), 'run.py', 'exec'), self.ns)
+
+    def invoke(self, label, command):
+        with contextlib.redirect_stdout(io.StringIO()):
+            return self.ns['run'](label, command, self.output)
+
+    def test_only_explicit_prisma_stages_receive_optout(self):
+        for label, command in [('prisma-generation', ['pnpm', 'exec', 'prisma', 'generate']),
+                               ('disposable-migrate', ['pnpm', 'exec', 'prisma', 'migrate', 'deploy'])]:
+            with self.subTest(stage=label):
+                self.invoke(label, command)
+                self.assertEqual(self.calls[-1], (command, {**self.shared, 'CHECKPOINT_DISABLE': '1'}))
+        self.assertNotIn('CHECKPOINT_DISABLE', self.shared)
+
+    def test_no_optout_leaks_to_application_or_test_stages(self):
+        self.invoke('disposable-migrate', ['pnpm', 'exec', 'prisma', 'migrate', 'deploy'])
+        for label in sorted(self.ns['STAGES'] - {'prisma-generation', 'disposable-migrate'}):
+            self.invoke(label, ['synthetic-command'])
+            self.assertEqual(self.calls[-1][1], self.shared)
+
+    def test_rollback_helper_gets_local_copy_for_nested_prisma_generate(self):
+        ast = self.ast
+        calls = [n for n in ast.walk(self.tree) if isinstance(n, ast.Call)
+                 and isinstance(n.func, ast.Attribute) and n.func.attr == 'check_output']
+        self.assertEqual(len(calls), 1)
+        call = calls[0]
+        self.assertEqual(ast.literal_eval(call.args[0]), ['node', 'scripts/phase-e-rollback-artifact.mjs'])
+        expression = next(k.value for k in call.keywords if k.arg == 'env')
+        result = eval(compile(ast.Expression(expression), 'run.py', 'eval'), {'env': self.shared})
+        self.assertEqual(result, {**self.shared, 'CHECKPOINT_DISABLE': '1'})
+        self.assertNotIn('CHECKPOINT_DISABLE', self.shared)
+
+    def test_inherited_setting_is_not_a_global_test_environment_input(self):
+        import types
+        ast = self.ast
+        assignment = next(n for n in self.tree.body if isinstance(n, ast.Assign)
+                          and any(isinstance(t, ast.Name) and t.id == 'env' for t in n.targets))
+        incoming = types.SimpleNamespace(environ={'PATH': '/synthetic/bin', 'POSTGRES_CONTAINER': 'synthetic',
+                                                 'CHECKPOINT_DISABLE': '0'})
+        result = eval(compile(ast.Expression(assignment.value), 'run.py', 'eval'),
+                      {'os': incoming, 'output': self.output, 'api': self.output})
+        self.assertNotIn('CHECKPOINT_DISABLE', result)
+
+    def test_failed_migration_still_fails_and_retains_result(self):
+        self.exit_code = 1
+        with self.assertRaises(RuntimeError):
+            self.invoke('disposable-migrate', ['pnpm', 'exec', 'prisma', 'migrate', 'deploy'])
+        report = json.loads((self.output / 'tests.json').read_text())[-1]
+        self.assertEqual((report['status'], report['exit_code']), ('FAIL', 1))
+
+    def test_network_counters_still_block_either_family_and_inspection_failure(self):
+        import os
+        # Fake only the inspection command: the real reviewed network.sh check runs.
+        sudo = self.output / 'sudo'
+        sudo.write_text('#!/bin/bash\ncase "$1" in\n'
+                        'iptables) n="${TEST_V4:?}";;\n'
+                        'ip6tables) n="${TEST_V6:?}";;\n'
+                        '*) exit 99;;\nesac\n'
+                        '[ "$n" != ERROR ] || exit 1\n'
+                        'printf "%s 0 REJECT all -- * * ::/0 ::/0\\n" "$n"\n')
+        sudo.chmod(0o700)
+        for v4, v6, passes in [('0', '0', True), ('1', '0', False), ('0', '1', False),
+                               ('3', '0', False), ('ERROR', '0', False), ('0', 'ERROR', False)]:
+            with self.subTest(v4=v4, v6=v6):
+                result = subprocess.run(['bash', str(Path(__file__).with_name('network.sh')), 'check'],
+                                        env={'PATH': str(self.output) + os.pathsep + os.environ['PATH'],
+                                             'TEST_V4': v4, 'TEST_V6': v6}, capture_output=True)
+                self.assertEqual(result.returncode == 0, passes)
 
 
 if __name__ == '__main__':

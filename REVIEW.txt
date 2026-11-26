@@ -1,3 +1,11 @@
+FINAL LOCAL REVIEW SCOPE — BACKEND SUCCESSOR AND RETAINED CHECKPOINT OPT-OUT
+Active approvals are the final README IDENTITIES section and approved.json.
+Earlier review entries below are historical evidence for their original source pair;
+the final successor rebinding supersedes those older execution approvals.
+The reviewed run.py opt-out is reused byte-for-byte, not redesigned. Identity changes
+are confined to approval metadata, cumulative patch/file evidence and tests/documentation.
+Final validation and independent counterexamples are recorded at the end.
+
 LOCAL SYNTAX / SECURITY REVIEW
 - One workflow, workflow_dispatch only, two required full-SHA string inputs.
 - Inputs passed through environment or checkout fields, never interpolated into shell code.
@@ -124,3 +132,64 @@ tree, manifest, file hashes, cleanliness and ancestry; stale backend remains rej
 Local delta: verify.py, test_local.py, README.txt, REVIEW.txt, SHA256SUMS.txt only.
 No application, candidate identity, workflow, privacy, network, permissions or type-debt
 logic changes. No publication/dispatch/deployment. Independent review remains required.
+
+CHECKPOINT OPT-OUT BOUNDED LOCAL REVIEW — 2026-11-25
+Only runtime additions are two invocation-local dictionary copies: an opt-out
+for the explicit Prisma generation/migration stage labels, and a fresh env copy
+for the existing rollback helper's nested legacy-client generation chain.
+Independent inverse-diff check restores the exact baseline run.py bytes when
+only those additions are removed. All workflow bytes, commands, conditions,
+permissions, services, candidate pins and other safety-critical payloads match.
+No Recovery fixture bytes are included or modified.
+
+Validation: 44 Exact-Pair identity/bundle regressions PASS (38 existing + 6 new);
+43 diagnostic/privacy regressions PASS. Six new tests cover actual stage env
+capture, no shared-env leakage to all other stage labels, rollback-helper env
+scoping, rejected inherited opt-out, preserved failed migration status, and the
+real network.sh check with mocked inspection output for zero/v4/v6/three denied
+packets plus failed v4/v6 inspection. No real firewall or networking is altered.
+Five in-memory mutations (missing/incorrect/mis-scoped stage opt-out, missing
+rollback opt-out and global leakage) are all rejected by the regressions.
+Actionlint 1.7.12 accepts the unchanged workflow. Optional ShellCheck/Pyflakes
+integrations disabled; Python AST, shell script syntax and all six workflow
+Bash blocks separately PASS. All 15 payload checksums are verified.
+
+No in-scope P0/P1/P2 found in bounded source/diff review. This is local modeled
+validation, not a new Hosted Linux result. Existing privacy, ACL, firewall,
+cleanup and type-debt controls are preserved, not newly certified on Linux.
+No commits, pushes, dispatch, deployment, live access or settings changes.
+
+FINAL SUCCESSOR REBINDING REVIEW AND LOCAL VALIDATION
+Backend approval: 188e62b21fc1069d461bf440fbc62b5b48e70f0c, tree
+527afe06335da3a391fe87ff91d6a58de1a41a4d. The unchanged cumulative baseline is
+1b38e3054be9da4a5935c1802a9a9389becf37a9. Nine exact file hashes are required;
+the only additional file is the published Recovery Control permission fixture.
+The existing eight Backend entries and all 52 Frontend entries are unchanged.
+Cumulative Backend patch SHA-256:
+5ebff061189886ab0a251e78ee1c4d17356badbbab39e3a03f0102a3ccf509d0.
+Frontend remains 760b583c4091329c05d41349a7e257f6c6e5b3cd, tree
+3885eef878844d9050a2022b0086301ce9e95176. No future CI commit is invented.
+
+Fresh local results: 46 Exact-Pair regressions PASS; 43 privacy regressions PASS.
+The unchanged verifier independently accepts both clean real immutable checkouts,
+checks all cumulative file hashes and matches the independently recomputed patch hash.
+Six real-verifier negative cases reject the superseded SHA, old/new tree mixtures,
+missing fixture entry, stale fixture hash and missing approval pin. Six independent
+in-memory runtime mutations (missing/incorrect stage setting, migrate omitted,
+rollback setting omitted, shared environment mutation and all-stage leakage) are
+all rejected by the existing six opt-out/counter regressions without test errors.
+The real network.sh check is exercised with modeled counters; denied IPv4/IPv6,
+three denied packets and unavailable inspection still fail. No firewall was changed.
+
+Actionlint 1.7.12 PASS with optional external ShellCheck/Pyflakes integrations disabled.
+Python AST/compile, all three shell files and all nine workflow Bash blocks PASS.
+The run.py opt-out bytes exactly match the previously reviewed f31c1ebe... input.
+The workflow, verify.py, network.sh, ACL/access helpers, diagnostics/privacy and
+TypeScript-debt enforcement are byte-identical to published CI baseline 472120fc... .
+No application file, dependency, service, permission, test command or cleanup rule changed.
+No new in-scope P0/P1/P2 found in this bounded local review. Historical test and
+identity notes above are retained for their original approvals, not current dispatch.
+
+Hosted Linux UID/ACL/firewall, disposable PostgreSQL/PgBouncer, Docker access and full
+application suites are NOT RUN here. No local result is claimed as full Hosted PASS.
+No commit, push, dispatch, deployment, customer access or settings change is authorized.

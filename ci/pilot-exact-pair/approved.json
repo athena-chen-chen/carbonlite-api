@@ -63,8 +63,8 @@
   "backend": {
     "repository": "athena-chen-chen/carbonlite-api",
     "baseline": "1b38e3054be9da4a5935c1802a9a9389becf37a9",
-    "expected_tree": "f4e02d756dc14c0df638d7086b483566e7efeca5",
-    "reviewed_patch_sha256": "1c47279835406536ccb6efdbfe17330b75588916cae5572ab9dce016bd5b182a",
+    "expected_tree": "527afe06335da3a391fe87ff91d6a58de1a41a4d",
+    "reviewed_patch_sha256": "5ebff061189886ab0a251e78ee1c4d17356badbbab39e3a03f0102a3ccf509d0",
     "files": {
       "src/metrics/calculation-quality.service.spec.ts": "14ca799300334673a39b0b0e0284f4ec2513c07ed7694274c3062187ba61557b",
       "src/metrics/calculation-quality.service.ts": "bd2e5898086ad5c834c719b920cef15f339925a07d3e5e8bb676e5dd9ddde5b2",
@@ -73,8 +73,9 @@
       "test/document-resource-limits.e2e-spec.ts": "737c4bef9ac0ed29b578fc95964ef6ff951415f628a3c9e165da25394805c9c2",
       "test/mutation-outcomes.e2e-spec.ts": "c46d6829a5b18dd48195a1e6b363985e29154633fc1eef54d7b8f78f37693a2e",
       "test/organization-profile.e2e-spec.ts": "d23eb3fa2978e36655ce1a6bd55c2548a12c0abcf7f8efd82ecd10780cd6137b",
-      "test/pilot-reporting-scope.e2e-spec.ts": "88122ffbc1a27d95995703a0f94288f3f668854aab012b145bbd26bac859ee39"
+      "test/pilot-reporting-scope.e2e-spec.ts": "88122ffbc1a27d95995703a0f94288f3f668854aab012b145bbd26bac859ee39",
+      "src/common/security/recovery-control-store.spec.ts": "4898bfa1874ca1bac35aa09440cf97da5dd3516886fc1b9c2f27d2105313cbe9"
     },
-    "expected_commit": "e424c567d43c0086e0dc01b86e48cb648c114078"
+    "expected_commit": "188e62b21fc1069d461bf440fbc62b5b48e70f0c"
   }
 }

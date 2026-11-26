@@ -34,6 +34,9 @@ def run(label, args, cwd, *, database=None, test_json=False):
         raise ValueError('Unknown validation stage')
     allowed = trusted_files(cwd)
     local_env = dict(env)
+    # Only explicit disposable Prisma CLI stages receive the optional opt-out.
+    if label in {'prisma-generation', 'disposable-migrate'}:
+        local_env['CHECKPOINT_DISABLE'] = '1'
     if database:
         local_env['DATABASE_URL'] = database
     raw = output / (label + '.raw.log')
@@ -97,7 +100,7 @@ try:
         run('backend-types', ['pnpm', 'exec', 'tsc', '--noEmit', '-p', 'tsconfig.json'], api)
         run('backend-build', ['pnpm', 'build'], api)
         # Existing immutable rollback fixture; never an application deployment.
-        artifact = subprocess.check_output(['node', 'scripts/phase-e-rollback-artifact.mjs'], cwd=api, env=env, timeout=300, stderr=subprocess.DEVNULL).decode().strip()
+        artifact = subprocess.check_output(['node', 'scripts/phase-e-rollback-artifact.mjs'], cwd=api, env={**env, 'CHECKPOINT_DISABLE': '1'}, timeout=300, stderr=subprocess.DEVNULL).decode().strip()
         marker = Path(artifact) / 'artifact-sha'
         if not Path(artifact).is_dir() or marker.read_text().strip() != '0498646f5721619f91ee710a89386b4b84aaf329':
             raise RuntimeError('Prior fixture identity mismatch')

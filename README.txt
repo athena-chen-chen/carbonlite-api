@@ -1,11 +1,18 @@
 CARBONLITE MANUAL EXACT-PAIR WORKFLOW — LOCAL PREPARATION ONLY
 
 Proposed hosting repository: athena-chen-chen/carbonlite-api
-Hosting branch: ci/pilot-exact-pair-validation (existing published workflow 0a0d72fd4c908bc60564ccf6c9d0505883c28811; this corrected local bundle is NOT published)
+Hosting branch: ci/pilot-exact-pair-validation (published baseline 472120fc7d27f9b56ed6ae3f1e67d602ca2b1f90; this final local bundle is NOT published)
 Prepared workflow: .github/workflows/nightly-e2e.yml
 Supporting published paths: ci/pilot-exact-pair/{approved.json,verify.py,run.py,network.sh,type_debt.py,runner-access.sh,runner-permissions.py}
 Local tests: ci/pilot-exact-pair/test_local.py and test_runner_access.sh / test_runner_permissions.py (disposable Linux only)
 Do not copy these files into either application candidate or its release branch.
+
+CURRENT APPROVAL AND HISTORICAL NOTES — FINAL LOCAL CANDIDATE
+The IDENTITIES section and ci/pilot-exact-pair/approved.json define the active pair.
+The final rebinding section at the end records the current cumulative patch identity.
+Earlier dated correction/review sections retain superseded identity/test evidence as
+historical context only. They do not authorize execution of a previous Backend pair.
+No future CI commit SHA is assigned; publication and dispatch need separate authorization.
 
 DISPATCHABILITY
 GitHub requires the workflow path to exist on the default branch. Read-only inspection
@@ -22,13 +29,13 @@ Frontend baseline: 3b69611d80d3f9a11712069bca2fd4eb72f51e15
 Frontend approved commit: 760b583c4091329c05d41349a7e257f6c6e5b3cd
 Frontend expected candidate tree: 3885eef878844d9050a2022b0086301ce9e95176 (52 changed files)
 Backend baseline: 1b38e3054be9da4a5935c1802a9a9389becf37a9
-Backend approved commit: e424c567d43c0086e0dc01b86e48cb648c114078
-Backend expected candidate tree: f4e02d756dc14c0df638d7086b483566e7efeca5 (8 changed files)
+Backend approved commit: 188e62b21fc1069d461bf440fbc62b5b48e70f0c
+Backend expected candidate tree: 527afe06335da3a391fe87ff91d6a58de1a41a4d (9 changed files)
 Both approved commit/tree identities were independently read from GitHub; no future SHA is invented.
 The workflow takes exactly two full lowercase 40-hex candidate commit inputs.
 Control checkout is bound to github.workflow_sha, separately from both applications.
-Both complete expected trees were independently reproduced with Git mktree in temporary
-object storage, using approved baseline objects plus reviewed file bytes; no commits made.
+The final Backend and unchanged Frontend approvals are verified using clean immutable
+Git checkouts, exact cumulative file manifests and per-file hashes; no commits made.
 
 GATES BEFORE INSTALLATION
 Fixed repository URLs, full SHA inputs, exact HEAD/tree, baseline ancestry, exact changed
@@ -444,3 +451,94 @@ candidate checks PASS, syntax/checksums PASS. Diagnostic privacy, workflow, netw
 runner/ACL safeguards, type-debt logic and immutable approval metadata remain unchanged.
 No app source, commit, push, dispatch, PR, provider setting or deployment changed.
 This local correction awaits independent publication review. Hosted-only unknowns remain.
+
+DISPOSABLE PRISMA CHECKPOINT OPT-OUT — LOCAL PROPOSAL, 2026-11-25
+Published baseline: 472120fc7d27f9b56ed6ae3f1e67d602ca2b1f90.
+Verified baseline checksum index: 7c2fcda616101ccd1296544743145e4b3ec1a95e5627eea408acda94dc530ed5.
+The workflow, all 15 payloads and checksum index were independently read from
+that immutable GitHub commit and matched the baseline local Git blob identities.
+
+Scope: run.py adds CHECKPOINT_DISABLE=1 only to fresh environment copies for:
+1. prisma-generation: pnpm exec prisma generate, before network denial.
+2. disposable-migrate: pnpm exec prisma migrate deploy, under network denial.
+3. node scripts/phase-e-rollback-artifact.mjs, the immutable rollback fixture
+   helper. It runs pnpm exec prisma generate --schema <disposable legacy schema>
+   and then compiles that fixture. Its children inherit the helper-local opt-out.
+The published candidate helper was read from immutable backend e424c567d43c0086e0dc01b86e48cb648c114078.
+This helper does not deploy an application or migrate a live database.
+Only item 2 is a migration CLI invocation in the reviewed Exact-Pair driver.
+Backend build is nest build; seed is tsx prisma/seed.ts, not a Prisma CLI command.
+
+A workflow-only setting would be discarded by env -i and the driver's explicit
+allowlist. Both explicit CLI generation paths are included because the Prisma
+v6 CLI can use Checkpoint outside migrate too. Installed Prisma 6.19.3 source
+checks CHECKPOINT_DISABLE before spawning its optional unreferenced Checkpoint
+child. Pre-guard generation receives the same invocation-local opt-out to avoid
+optional setup CLI activity carrying into guarded stages. This does not prove
+any historical packet attribution. Reference: https://www.prisma.io/docs/orm/v6/tools/prisma-cli
+
+No global environment, workflow env, application tests/builds, seed, type-debt
+checks or production setting changes. The base env dictionary remains unchanged;
+subsequent stages never inherit CHECKPOINT_DISABLE from a preceding stage.
+The rollback helper's own generation/build subprocess chain receives the local
+copy only. No helper source, Prisma schema, migrations or dependencies change.
+
+Evidence interpretation is preserved: A/B run 45738953943 had successful
+migrations and verified cleanup in both arms, A denied 3 packets, B denied 0.
+Different runner image revisions and OS fingerprints keep the automated
+comparison INCONCLUSIVE. Qualified setting-dependence support only, not causal
+or historical process/provider attribution. Investigation CLOSED WITH
+QUALIFICATIONS. STOP PTRACE. No new tracing or diagnostic subsystem.
+
+The firewall script, IPv4/IPv6 denial, independent final counter gate, existing
+preflight, UID 24001, ACL safeguards, identity verifier, approved candidate
+pins, database services, all test commands, no-new-diagnostics policy and
+sanitized upload allowlist/7-day retention are byte-identical to baseline.
+Any unexpected denied packet remains a workflow failure. Opt-out is not a
+network exemption and is not a guarantee that all future stages will pass.
+
+Separate Recovery Control fixture: deliberately excluded. Its existing local
+correction remains unpublished and untouched. A separately authorized backend
+test-only publication must establish the eventual immutable backend commit and
+tree; a separate Exact-Pair identity-manifest rebinding/review must then pin
+that identity before the final full Hosted run. No future SHA is invented.
+
+Proposed publication sequence (separate approvals required): publish/reverify
+this checksum-bound CI-only proposal; publish/reverify the already prepared
+Recovery fixture correction separately; prepare/review/publish Exact-Pair
+identity rebinding to that eventual backend identity; only then authorize a
+full Hosted Exact-Pair run. No action in this sequence is performed here.
+
+FINAL BACKEND SUCCESSOR REBINDING — LOCAL ONLY
+CI baseline commit: 472120fc7d27f9b56ed6ae3f1e67d602ca2b1f90.
+CI baseline tree: 6babc63ebc787687e5f8be29cd28a0af04391f5b.
+Backend approved commit: 188e62b21fc1069d461bf440fbc62b5b48e70f0c.
+Backend approved tree: 527afe06335da3a391fe87ff91d6a58de1a41a4d.
+Its immediate parent e424c567d43c0086e0dc01b86e48cb648c114078 is superseded as
+an execution input. The cumulative Backend baseline stays
+1b38e3054be9da4a5935c1802a9a9389becf37a9; the eight previous file hashes stay unchanged.
+The ninth manifest entry is src/common/security/recovery-control-store.spec.ts,
+SHA-256 4898bfa1874ca1bac35aa09440cf97da5dd3516886fc1b9c2f27d2105313cbe9.
+It explicitly chmods the disposable negative fixture to 0644 and asserts its mode;
+production recovery code and the rejection assertion are unchanged.
+Cumulative Backend patch SHA-256:
+5ebff061189886ab0a251e78ee1c4d17356badbbab39e3a03f0102a3ccf509d0
+computed using git diff --binary --full-index --no-color --src-prefix=a/
+--dst-prefix=b/ from the unchanged cumulative baseline to the approved successor.
+
+Frontend stays 760b583c4091329c05d41349a7e257f6c6e5b3cd, tree
+3885eef878844d9050a2022b0086301ce9e95176, with all 52 manifest entries unchanged.
+The approved Checkpoint run.py is byte-identical to the reviewed local opt-out bundle
+with checksum index f31c1ebeebd454992beb8c674106e65c52e22329314cb8e6d169f303a1ef7d9c.
+That old index identifies the input bundle, not this rebound final candidate.
+Only fresh invocation-local environments receive CHECKPOINT_DISABLE=1 for the two
+explicit Prisma stages and rollback fixture helper. No global or application setting.
+Workflow, verify.py, ACL/UID safeguards, firewall/counters, privacy, cleanup, service
+isolation and type-debt code remain byte-identical to the published CI baseline.
+Any unexpected denied packet or failed inspection still blocks the future Hosted run.
+
+A future authorized dispatch takes only frontend_sha and backend_sha, selecting
+ci/pilot-exact-pair-validation after its final reviewed publication. Use the exact
+approved Frontend and successor Backend commit above; stale or mixed identities block.
+Actual Hosted Linux, disposable services and complete application suites are NOT RUN
+in this local rebinding task. Local modeled regressions are not Hosted CI success.
