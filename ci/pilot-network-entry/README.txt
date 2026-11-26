@@ -230,3 +230,31 @@ Manual-only/read-only execution, firewall, ACL, calibration, tracing, cleanup an
 Prisma behavior, bounded sanitized upload paths and seven-day retention are unchanged.
 D4's reviewed calibration-evidence behavior is selected solely by immutable identity.
 Actual Linux execution is NOT RUN by this local rebinding. No publication or dispatch.
+
+
+D5 IMMUTABLE REBINDING — LOCAL ONLY
+This section supersedes earlier active D4 source references in historical notes.
+Published Source D5: 835d44eeb21870171373c446b40833395888f4ed
+Git tree: eee5affc5ba59d69cb1f3ee75b1f06d91913dca8
+Source index: 9fe699eea724bcb641a344319c384a290d5f1d01ee2ae508256f91184abb87e0
+All seven published Source files, six payload hashes and checksum index were
+independently read back and verified before rebinding. D5 itself is unchanged.
+
+Only source commit/tree references, source hash approval metadata, corresponding
+identity tests, this documentation and Entry checksums change. verify.py is
+byte-identical. D5 is accepted and superseded D4 rejected before Git verification,
+even when synthetic checkout metadata matches old D4. The shell guard rejects D4.
+Separate Entry/control/backend directories, immutable identity/manifests/cleanliness,
+read-only/manual-only operation and diagnostic-only scope remain unchanged.
+
+Backend stays e424c567d43c0086e0dc01b86e48cb648c114078 with tree
+f4e02d756dc14c0df638d7086b483566e7efeca5 and the exact existing eight-file manifest.
+No future Entry SHA/tree is invented: separately approved immutable inputs must
+match the workflow invocation SHA and independently checked-out Git identities.
+The index excludes itself; identity checks do not rely on circular self-hashing.
+
+No ACL, tracing, calibration, firewall, cleanup, privacy, upload or Prisma behavior
+changes. Existing Exact-Pair and application candidates are unchanged. D5's reviewed
+stat-fixture correction is selected solely through the immutable source binding.
+Hosted Linux/Python 3.12 execution is NOT RUN by this task; no Hosted PASS claimed.
+No publication, dispatch, PR creation or deployment occurred.
