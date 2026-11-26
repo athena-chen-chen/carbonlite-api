@@ -105,9 +105,9 @@ class EntryGate(unittest.TestCase):
                 with self.assertRaises(ValueError): self.check()
                 self.a[key]=saved
         self.assertFalse(v.git.called)
-    def test_immutable_D5_binding_accepted_with_synthetic_checkout_metadata(self):
-        source='835d44eeb21870171373c446b40833395888f4ed'
-        tree='eee5affc5ba59d69cb1f3ee75b1f06d91913dca8'
+    def test_immutable_D6_binding_accepted_with_synthetic_checkout_metadata(self):
+        source='f1be1028be46243efc40068cbd160def82cee92a'
+        tree='4ad3dcc936cadb4f4325a95274ecbc782d67e518'
         self.a.update(source_commit=source,source_tree=tree)
         self.env.update(DIAGNOSTIC_SHA=source,DIAGNOSTIC_TREE=tree)
         self.overrides[('control',('rev-parse','HEAD'))]=source
@@ -115,21 +115,21 @@ class EntryGate(unittest.TestCase):
         result=self.check()
         self.assertEqual(result['diagnostic_commit'],source)
         self.assertEqual(result['diagnostic_tree'],tree)
-    def test_superseded_D4_rejected_even_if_checkout_metadata_matches_old_D4(self):
-        old='0f7131300c3be37692bc55453fd7af7faad45599'
-        old_tree='66a771505ec092f71247b43e50d5339891da25db'
-        self.a.update(source_commit='835d44eeb21870171373c446b40833395888f4ed',
-                      source_tree='eee5affc5ba59d69cb1f3ee75b1f06d91913dca8')
+    def test_superseded_D5_rejected_even_if_checkout_metadata_matches_old_D5(self):
+        old='835d44eeb21870171373c446b40833395888f4ed'
+        old_tree='eee5affc5ba59d69cb1f3ee75b1f06d91913dca8'
+        self.a.update(source_commit='f1be1028be46243efc40068cbd160def82cee92a',
+                      source_tree='4ad3dcc936cadb4f4325a95274ecbc782d67e518')
         self.env.update(DIAGNOSTIC_SHA=old,DIAGNOSTIC_TREE=old_tree)
         self.overrides[('control',('rev-parse','HEAD'))]=old
         self.overrides[('control',('rev-parse','HEAD^{tree}'))]=old_tree
         with self.assertRaises(ValueError):self.check()
         self.assertFalse(v.git.called)
-    def test_D5_commit_with_superseded_D4_tree_rejected_before_git(self):
-        self.a.update(source_commit='835d44eeb21870171373c446b40833395888f4ed',
-                      source_tree='eee5affc5ba59d69cb1f3ee75b1f06d91913dca8')
+    def test_D6_commit_with_superseded_D5_tree_rejected_before_git(self):
+        self.a.update(source_commit='f1be1028be46243efc40068cbd160def82cee92a',
+                      source_tree='4ad3dcc936cadb4f4325a95274ecbc782d67e518')
         self.env.update(DIAGNOSTIC_SHA=self.a['source_commit'],
-                        DIAGNOSTIC_TREE='66a771505ec092f71247b43e50d5339891da25db')
+                        DIAGNOSTIC_TREE='eee5affc5ba59d69cb1f3ee75b1f06d91913dca8')
         with self.assertRaises(ValueError):self.check()
         self.assertFalse(v.git.called)
     def test_git_identity_mismatches(self):
@@ -203,8 +203,8 @@ class Structure(unittest.TestCase):
                           ('ENTRY_TREE',''),('DIAGNOSTIC_TREE','bad'),('ENTRY_INDEX_SHA256',''),
                           ('GITHUB_SHA','9'*40),('GITHUB_REPOSITORY','other/repo'),
                           ('DIAGNOSTIC_SHA','a'*40),('DIAGNOSTIC_TREE','b'*40),
-                          ('DIAGNOSTIC_SHA','0f7131300c3be37692bc55453fd7af7faad45599'),
-                          ('DIAGNOSTIC_TREE','66a771505ec092f71247b43e50d5339891da25db')]:
+                          ('DIAGNOSTIC_SHA','835d44eeb21870171373c446b40833395888f4ed'),
+                          ('DIAGNOSTIC_TREE','eee5affc5ba59d69cb1f3ee75b1f06d91913dca8')]:
             with self.subTest(key=key):self.assertNotEqual(run({**env,key:value}),0)
     def test_manifest_exact_six(self):
         actual={str(p.relative_to(self.root)) for p in self.root.rglob('*') if p.is_file()}
@@ -232,10 +232,10 @@ class Structure(unittest.TestCase):
         self.assertIn("steps.final_identity.outcome == 'success'",self.yaml)
     def test_pins_and_source_index(self):
         self.assertEqual(self.a['source_files']['ci/pilot-network-diagnostic/SHA256SUMS.txt'],
-                         '9fe699eea724bcb641a344319c384a290d5f1d01ee2ae508256f91184abb87e0')
+                         '629c2a7f2de19f94730c0410abc4d59ba818b907025ce124264406d1cba5ff5f')
         self.assertEqual(len(self.a['source_files']),7)
-        self.assertEqual(self.a['source_commit'],'835d44eeb21870171373c446b40833395888f4ed')
-        self.assertEqual(self.a['source_tree'],'eee5affc5ba59d69cb1f3ee75b1f06d91913dca8')
+        self.assertEqual(self.a['source_commit'],'f1be1028be46243efc40068cbd160def82cee92a')
+        self.assertEqual(self.a['source_tree'],'4ad3dcc936cadb4f4325a95274ecbc782d67e518')
         self.assertIn('ref: '+self.a['source_commit'],self.yaml)
         self.assertNotIn('ref: ${{ inputs.diagnostic_sha }}',self.yaml)
         self.assertEqual(self.a['backend']['expected_commit'],'e424c567d43c0086e0dc01b86e48cb648c114078')

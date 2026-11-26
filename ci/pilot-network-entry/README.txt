@@ -258,3 +258,27 @@ changes. Existing Exact-Pair and application candidates are unchanged. D5's revi
 stat-fixture correction is selected solely through the immutable source binding.
 Hosted Linux/Python 3.12 execution is NOT RUN by this task; no Hosted PASS claimed.
 No publication, dispatch, PR creation or deployment occurred.
+
+
+D6 IMMUTABLE REBINDING — LOCAL ONLY
+This section supersedes earlier active D5 source references in historical notes.
+Published Source D6: f1be1028be46243efc40068cbd160def82cee92a
+Git tree: 4ad3dcc936cadb4f4325a95274ecbc782d67e518
+Source index: 629c2a7f2de19f94730c0410abc4d59ba818b907025ce124264406d1cba5ff5f
+All seven published files and all six payload hashes/index were independently
+read back and verified before rebinding. Source D6 itself remains unchanged.
+Only source identity literals, source hash metadata, associated identity tests,
+this review documentation and Entry checksums change. verify.py is byte-identical.
+D6 acceptance and superseded D5 rejection are exercised with synthetic checkout
+metadata, including mixed D6-commit/D5-tree rejection before Git verification.
+The shell guard rejects D5; source checkout uses the D6 literal commit only.
+Backend remains e424c567d43c0086e0dc01b86e48cb648c114078 and tree
+f4e02d756dc14c0df638d7086b483566e7efeca5 with the same eight-file manifest.
+Future Entry identity remains unknown: separately approved commit/tree/index
+inputs must match invocation and independently verified checkouts; no circular
+self-hashing or future commit SHA is introduced. Entry and Source remain separate.
+Manual-only/read-only execution, ACL, tracing, strict calibration, firewall,
+cleanup, privacy, artifact restrictions and Prisma experiments remain unchanged.
+D6's reviewed pidfd lifecycle and portable tests are selected solely by immutable
+binding. Existing Exact-Pair CI and application candidates are untouched.
+Hosted Linux execution is NOT RUN; no publication or dispatch is authorized here.
