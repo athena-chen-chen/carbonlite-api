@@ -193,3 +193,34 @@ identity notes above are retained for their original approvals, not current disp
 Hosted Linux UID/ACL/firewall, disposable PostgreSQL/PgBouncer, Docker access and full
 application suites are NOT RUN here. No local result is claimed as full Hosted PASS.
 No commit, push, dispatch, deployment, customer access or settings change is authorized.
+
+MINIMAL FINAL-BRANCH ALIGNMENT REVIEW — LOCAL ONLY
+Baseline 1861c7b3975b056cd7f677a5fcbbc8acece88161, tree
+42fee9693af432e667dd092ae514aca4bd81cd9c. The complete executable workflow delta
+is exactly one literal replacement: refs/heads/ci/pilot-exact-pair-validation becomes
+refs/heads/ci/pilot-exact-pair-final. Inverse replacement restores exact baseline bytes.
+No wildcard or multi-branch allowance. Repository equality, workflow_dispatch event,
+full-SHA input checks and every subsequent step/condition/action remain unchanged.
+No other runtime helper has a branch-name assumption. Three active README instructions
+are aligned so publication/dispatch guidance agrees with the exact guarded branch.
+
+Existing 46 Exact-Pair regressions PASS. New guard regressions execute the real first
+Bash block: five PASS and one Bash-version-specific SKIP. Final branch/manual event
+accept; former/arbitrary branches, tags, pull refs, push/nonmanual events, wrong repos
+and missing required inputs reject. Six independent in-memory mutations are rejected.
+Privacy regressions 43/43 PASS; actionlint 1.7.12 PASS (optional external ShellCheck and
+Pyflakes integrations disabled). Python AST/compile, YAML, three shell files and nine
+workflow Bash blocks PASS. Real Backend and Frontend immutable verifications PASS.
+
+Local Bash 3.2.57 ignores intermediate [[ ]] failure under errexit. An additional
+malformed-Frontend input counterexample reproduced unchanged on the published baseline
+and branch-only correction. The new malformed-input guard execution test requires
+Bash 4+ and is SKIPPED on this Mac; original immutable Python SHA validation tests pass.
+No regex, input check, original test or runtime enforcement was weakened or removed.
+Actual Hosted Ubuntu/Bash and complete CI remain NOT RUN; no Hosted PASS is claimed.
+
+Backend approval, Frontend approval, CHECKPOINT_DISABLE scope, UID 24001/ACL helpers,
+network denial/counters, service definitions, identity verifier, privacy/upload policy,
+cleanup and type-debt code are byte-identical to the approved published baseline.
+No new in-scope P0/P1/P2 identified. This correction is ready for isolated publication
+review, not execution. No commits, pushes, dispatch, deploy or settings changes here.

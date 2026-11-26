@@ -57,7 +57,7 @@ jobs:
           set -euo pipefail
           test "$GITHUB_REPOSITORY" = athena-chen-chen/carbonlite-api
           test "$GITHUB_EVENT_NAME" = workflow_dispatch
-          test "$GITHUB_REF" = refs/heads/ci/pilot-exact-pair-validation
+          test "$GITHUB_REF" = refs/heads/ci/pilot-exact-pair-final
           [[ "$FRONTEND_SHA" =~ ^[0-9a-f]{40}$ ]]
           [[ "$BACKEND_SHA" =~ ^[0-9a-f]{40}$ ]]
       - name: Check out the exact validation workflow revision

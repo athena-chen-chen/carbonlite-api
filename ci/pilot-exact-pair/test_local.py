@@ -157,6 +157,68 @@ sys.path.insert(0, str(Path(__file__).parent))
 from type_debt import compare, parse, DebtBlocked
 
 
+class WorkflowBranchGuardTests(unittest.TestCase):
+    """Execute only the actual first-step Bash guard, without checkouts or services."""
+    def setUp(self):
+        import json
+        import os
+        import textwrap
+        source = (Path(__file__).parents[2] / '.github/workflows/nightly-e2e.yml').read_text()
+        start = source.index('          set -euo pipefail\n')
+        end = source.index('      - name: Check out the exact validation workflow revision', start)
+        self.guard = textwrap.dedent(source[start:end])
+        approved = json.loads(Path(__file__).with_name('approved.json').read_text())
+        self.environment = {'PATH': os.environ['PATH'],
+                            'GITHUB_REPOSITORY': 'athena-chen-chen/carbonlite-api',
+                            'GITHUB_EVENT_NAME': 'workflow_dispatch',
+                            'GITHUB_REF': 'refs/heads/ci/pilot-exact-pair-final',
+                            'FRONTEND_SHA': approved['frontend']['expected_commit'],
+                            'BACKEND_SHA': approved['backend']['expected_commit']}
+
+    def invoke(self, changes=None, missing=None):
+        environment = {**self.environment, **(changes or {})}
+        if missing:
+            environment.pop(missing)
+        return subprocess.run(['bash', '-c', self.guard], env=environment,
+                              capture_output=True).returncode
+
+    def test_manual_exact_final_branch_accepted(self):
+        self.assertEqual(self.invoke(), 0)
+
+    def test_old_and_arbitrary_refs_rejected(self):
+        for ref in ('refs/heads/ci/pilot-exact-pair-validation', 'refs/heads/main',
+                    'refs/heads/arbitrary', 'refs/heads/ci/pilot-exact-pair-final-extra',
+                    'refs/tags/ci/pilot-exact-pair-final', 'refs/pull/1/merge', ''):
+            with self.subTest(ref=ref):
+                self.assertNotEqual(self.invoke({'GITHUB_REF': ref}), 0)
+
+    def test_nonmanual_events_rejected(self):
+        for event in ('push', 'pull_request', 'schedule', 'repository_dispatch', ''):
+            with self.subTest(event=event):
+                self.assertNotEqual(self.invoke({'GITHUB_EVENT_NAME': event}), 0)
+
+    def test_other_repository_rejected(self):
+        for repository in ('example/carbonlite-api', 'athena-chen-chen/carbonlite-web', ''):
+            with self.subTest(repository=repository):
+                self.assertNotEqual(self.invoke({'GITHUB_REPOSITORY': repository}), 0)
+
+    def test_missing_inputs_rejected(self):
+        for key in self.environment.keys() - {'PATH'}:
+            with self.subTest(missing=key):
+                self.assertNotEqual(self.invoke(missing=key), 0)
+
+    def test_malformed_inputs_rejected_with_hosted_compatible_bash(self):
+        major = int(subprocess.check_output(
+            ['bash', '-c', 'printf "%s" "${BASH_VERSINFO[0]}"'],
+            env={'PATH': self.environment['PATH']}))
+        if major < 4:
+            self.skipTest('Bash 3.2 ignores intermediate [[ ]] failures under errexit; Bash 4+ required')
+        for key in ('FRONTEND_SHA', 'BACKEND_SHA'):
+            for value in ('main', 'a' * 39, 'a' * 41, 'A' * 40, '$(echo unsafe)', ''):
+                with self.subTest(key=key, value=value):
+                    self.assertNotEqual(self.invoke({key: value}), 0)
+
+
 class TypeDebtTests(unittest.TestCase):
     diagnostic = "src/example.test.ts(12,3): error TS2345: Synthetic contract mismatch.\n  Missing property 'value'.\n"
 

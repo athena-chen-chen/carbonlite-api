@@ -1,7 +1,7 @@
 CARBONLITE MANUAL EXACT-PAIR WORKFLOW — LOCAL PREPARATION ONLY
 
 Proposed hosting repository: athena-chen-chen/carbonlite-api
-Hosting branch: ci/pilot-exact-pair-validation (published baseline 472120fc7d27f9b56ed6ae3f1e67d602ca2b1f90; this final local bundle is NOT published)
+Hosting branch: ci/pilot-exact-pair-final (published baseline 1861c7b3975b056cd7f677a5fcbbc8acece88161; this branch-guard correction is NOT published)
 Prepared workflow: .github/workflows/nightly-e2e.yml
 Supporting published paths: ci/pilot-exact-pair/{approved.json,verify.py,run.py,network.sh,type_debt.py,runner-access.sh,runner-permissions.py}
 Local tests: ci/pilot-exact-pair/test_local.py and test_runner_access.sh / test_runner_permissions.py (disposable Linux only)
@@ -21,7 +21,7 @@ Therefore the proposed isolated CI branch uses that existing registered PATH, wi
 manual-only branch-specific definition. It does not add a new unregistered workflow path.
 The existing main/release definitions, including main's schedule, remain unchanged.
 The branch-specific workflow rejects every event/ref except workflow_dispatch on
-refs/heads/ci/pilot-exact-pair-validation. A future dispatch must select that ref explicitly.
+refs/heads/ci/pilot-exact-pair-final. A future dispatch must select that ref explicitly.
 Do not dispatch main. No workflow has been published or dispatched in preparation.
 
 IDENTITIES
@@ -538,7 +538,20 @@ isolation and type-debt code remain byte-identical to the published CI baseline.
 Any unexpected denied packet or failed inspection still blocks the future Hosted run.
 
 A future authorized dispatch takes only frontend_sha and backend_sha, selecting
-ci/pilot-exact-pair-validation after its final reviewed publication. Use the exact
+ci/pilot-exact-pair-final after its final reviewed publication. Use the exact
 approved Frontend and successor Backend commit above; stale or mixed identities block.
 Actual Hosted Linux, disposable services and complete application suites are NOT RUN
 in this local rebinding task. Local modeled regressions are not Hosted CI success.
+
+FINAL ISOLATED BRANCH ALIGNMENT — LOCAL ONLY
+Published baseline: 1861c7b3975b056cd7f677a5fcbbc8acece88161, tree
+42fee9693af432e667dd092ae514aca4bd81cd9c; baseline checksum index
+8dbe17f17a54fe6b38091c3b13cc6ed0f98979f066e7e42c841ba279d64b36d5.
+The first workflow step now requires exactly refs/heads/ci/pilot-exact-pair-final.
+The former branch, other branches, tags, pull refs and all non-manual events reject.
+Repository equality, full commit input validation and separate immutable checkout
+verification are unchanged. No other helper contains a branch-name execution check.
+The three current dispatch/hosting instructions above use the same final branch.
+Backend/Frontend identities and all Checkpoint, UID, ACL, firewall/counter, service,
+privacy, cleanup and type-debt payloads remain byte-identical to this published baseline.
+No future CI commit is assigned. Publication and any Hosted run require separate approval.
