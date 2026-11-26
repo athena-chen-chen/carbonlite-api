@@ -425,6 +425,24 @@ class StructureTests(unittest.TestCase):
         self.assertIn('retention-days: 7',text);self.assertIn('needs: migration',text)
         for bad in ('secrets.','continue-on-error','pull_request:','schedule:','push:','workflow_call:','ptrace','eBPF','CAP_SYS_PTRACE','prisma generate','prisma migrate dev'):
             self.assertNotIn(bad,text)
+    def test_service_ids_are_only_in_required_step_env(self):
+        text=(HERE.parents[1]/'.github/workflows/nightly-e2e.yml').read_text()
+        job_env=text.split('    env:\n',1)[1].split('    steps:',1)[0]
+        self.assertNotIn('job.services',job_env)
+        expected={'One arm with unchanged outbound denial',
+                  'Always remove only these disposable service containers',
+                  'Final identities counters and cleanup receipt'}
+        found=set()
+        for section in text.split('      - name: ')[1:]:
+            name=section.splitlines()[0]
+            if 'job.services' in section:
+                found.add(name)
+                self.assertIn('        env:\n          POSTGRES_CONTAINER: ${{ job.services.postgres.id }}\n          POOLER_CONTAINER: ${{ job.services.pgbouncer.id }}\n',section)
+                self.assertEqual(section.count('job.services'),2)
+        self.assertEqual(found,expected)
+        self.assertIn('      ARM: ${{ matrix.arm }}',job_env)
+        self.assertEqual(text.count('job.services'),6)
+
     def test_complete_checksums(self):
         index=HERE/'SHA256SUMS.txt'
         for line in index.read_text().splitlines():

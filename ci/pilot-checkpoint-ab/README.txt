@@ -123,3 +123,18 @@ remain unverified locally; mocked syscall tests do not establish Hosted PASS.
 No Checkpoint A/B input, counter, firewall allowance, migration command,
 container image, identity pin, privileged execution, deployment behavior,
 artifact bound or seven-day retention changes are introduced. STOP PTRACE.
+
+Workflow context correction (local only)
+Container ID expressions moved from migration job.env to step.env for the arm,
+service removal and finalization steps, the only consumers. ARM remains at job
+scope for both matrix arms. No runtime, identity, firewall or experiment change.
+GitHub job context is supported at steps.env, not jobs.<job_id>.env.
+Actual hosted execution remains unverified; no publication or dispatch here.
+
+Local validation: actionlint 1.7.12 (official release archive SHA-256 verified)
+rejects both original job.env expressions and accepts the corrected workflow
+with exit 0. Optional ShellCheck/Pyflakes integrations disabled; embedded Bash
+syntax and Python AST checked separately. 61/61 diagnostic regressions PASS.
+Bounded review: only container-ID env placement changes in workflow; all run
+commands, conditions, permissions, services, identity pins and matrix unchanged.
+run.py, verify.py and approved.json remain byte-identical to approved baseline.
