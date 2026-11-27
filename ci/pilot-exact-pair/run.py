@@ -6,7 +6,7 @@ import re
 import subprocess
 import sys
 import time
-from diagnostics import jest_evidence, capture, failure_text, write_bounded, trusted_files, suite_summaries, STAGES, safe_counts
+from diagnostics import vitest_evidence, jest_evidence, capture, failure_text, write_bounded, trusted_files, suite_summaries, STAGES, safe_counts
 from type_debt import execute as check_type_debt
 
 workspace = Path(sys.argv[1]).resolve()
@@ -59,6 +59,9 @@ def run(label, args, cwd, *, database=None, test_json=False):
         try:
             if 'jest' in command:
                 jest_evidence(json_path, output / (label + '.failures.json'), cwd, allowed)
+            if 'vitest' in command:
+                vitest_evidence(json_path, output / (label + '.failures.json'), cwd, allowed,
+                                json.loads(Path(__file__).with_name('approved.json').read_text())['frontend'])
             if json_path.stat().st_size > 16 * 1024 * 1024:
                 raise ValueError('Test evidence exceeds input budget')
             data = json.loads(json_path.read_text())

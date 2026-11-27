@@ -184,8 +184,12 @@ class RunnerPrivacyTests(unittest.TestCase):
             output=next(x.split('=',1)[1] for x in args if x.startswith('--outputFile='))
             Path(output).write_text(json.dumps(data) if data is not None else 'invalid')
             return {'exit_code':1,'timed_out':timed_out,'output_limit_exceeded':False}
+        def vitest_extract(source, destination, root, allowed, approved):
+            with patch.object(diagnostics.subprocess, 'check_output', side_effect=[
+                    approved['expected_commit'].encode(), approved['expected_tree'].encode()]):
+                return diagnostics.vitest_evidence(source, destination, root, allowed, approved)
         scope=dict(vars(diagnostics),env={},output=self.root,results=[],time=time,
-                   trusted_files=lambda _:allowed,capture=fake_capture)
+                   trusted_files=lambda _:allowed,capture=fake_capture, vitest_evidence=vitest_extract)
         exec(compile(ast.Module(body=[function],type_ignores=[]),'run.py','exec'),scope)
         with self.assertRaises(RuntimeError):scope['run']('backend-e2e-postgres',[command],self.root,test_json=True)
         # The allowlisted uploadable diagnostic outputs; raw logs/JSON excluded.
@@ -221,6 +225,157 @@ class RunnerPrivacyTests(unittest.TestCase):
     def test_runner_unknown_summary_status_excluded(self):
         data=self.valid_data();data['testResults'][0]['status']='FAKECANARYVALUE123'
         self.assertEqual(self.invoke(data,command='vitest')['diagnostics'],'FAIL')
+
+
+class VitestEvidenceTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.file = 'src/synthetic.test.tsx'
+        (self.root / 'src').mkdir()
+        (self.root / self.file).write_text('expect(result).toBe(true);\n' * 20)
+        self.source, self.output = self.root / 'raw.json', self.root / 'safe.json'
+        self.approved = {'expected_commit': 'a' * 40, 'expected_tree': 'b' * 40}
+        self.test = {'status': 'failed', 'duration': 12.5, 'location': {'line': 2, 'column': 1},
+                     'title': 'SECRET_CUSTOMER', 'failureMessages': [
+                         'expect(received).toBe(expected)\nExpected: "SECRET_CUSTOMER"\nReceived: true\n'
+                         + ' at test (' + str(self.root / self.file) + ':3:1)']}
+        self.data = {'numTotalTests': 1, 'numPassedTests': 0, 'numFailedTests': 1,
+                     'numPendingTests': 0, 'numFailedTestSuites': 2,
+                     'testResults': [{'name': str(self.root / self.file), 'status': 'failed',
+                                      'assertionResults': [self.test]}]}
+    def extract(self):
+        self.source.write_text(json.dumps(self.data))
+        def identity(args, **kwargs):
+            return (self.approved['expected_tree'] if args[-1] == 'HEAD^{tree}' else self.approved['expected_commit']).encode()
+        with patch.object(diagnostics.subprocess, 'check_output', side_effect=identity):
+            result = diagnostics.vitest_evidence(self.source, self.output, self.root, {self.file}, self.approved)
+        text = self.output.read_text()
+        for secret in ['SECRET_CUSTOMER', 'Bearer', 'postgresql://', '<div>', str(self.root), 'rawStack']:
+            self.assertNotIn(secret, text)
+        return result
+    def test_single_assertion(self):
+        result = self.extract()
+        self.assertEqual(result['frontend_commit'], 'a' * 40)
+        failure = result['failures'][0]
+        self.assertEqual(failure['assertion_ordinal'], 1)
+        self.assertEqual(failure['classification'], 'assertion')
+        self.assertEqual(failure['reported_source_locations'], [{'file': self.file, 'line': 3, 'column': 1}])
+        self.assertEqual(failure['test_location']['line'], 2)
+        self.assertEqual(failure['expected_actual'], 'unavailable')
+    def test_passing_report(self):
+        self.test.update(status='passed', failureMessages=[])
+        self.data.update(numFailedTests=0, numPassedTests=1, numFailedTestSuites=0)
+        self.data['testResults'][0]['status'] = 'passed'
+        self.assertEqual(self.extract()['failures'], [])
+    def test_multiple_assertions(self):
+        self.data['testResults'][0]['assertionResults'].append(dict(self.test))
+        self.data.update(numTotalTests=2, numFailedTests=2)
+        self.assertEqual([x['assertion_ordinal'] for x in self.extract()['failures']], [1, 2])
+    def test_enclosing_suites_do_not_duplicate_failure(self):
+        self.assertEqual(self.extract()['failed_test_count'], 1)
+    def test_explicit_timeout(self):
+        self.test['failureMessages'] = ['Error: Test timed out in 5000ms.\nSECRET_CUSTOMER']
+        failure = self.extract()['failures'][0]
+        self.assertEqual(failure['classification'], 'timeout')
+        self.assertEqual(failure['timeout']['limit_ms'], 5000)
+    def test_duration_never_implies_timeout(self):
+        self.test.update(duration=90000, failureMessages=[])
+        self.assertIsNone(self.extract()['failures'][0]['timeout'])
+    def test_unhandled_error_not_in_report_cannot_be_invented(self):
+        self.data['unhandledErrors'] = [{'rawStack': 'SECRET_CUSTOMER'}]
+        self.test['failureMessages'] = ['Unhandled Error: SECRET_CUSTOMER']
+        result = self.extract()
+        self.assertEqual(result['failures'][0]['classification'], 'unknown')
+        self.assertEqual(result['unhandled_error_details'], 'unavailable_in_vitest_4_1_6_json')
+    def test_failed_suite_without_failed_assertion(self):
+        self.data['testResults'][0].update(assertionResults=[], message='SECRET_CUSTOMER')
+        self.data['numFailedTests'] = 0
+        result = self.extract()
+        self.assertEqual(result['suites'][0]['classification'], 'unknown')
+        self.assertEqual(result['failed_test_count'], 0)
+    def test_missing_metadata_is_unavailable(self):
+        self.test.pop('failureMessages'); self.test.pop('location'); self.test.pop('duration')
+        failure = self.extract()['failures'][0]
+        self.assertFalse(failure['details_available'])
+        self.assertIsNone(failure['test_location'])
+    def test_malformed_metadata_blocks(self):
+        for value in [None, {}, [42], ['x' * (diagnostics.MAX_TEXT + 1)]]:
+            with self.subTest(value_type=type(value).__name__):
+                self.test['failureMessages'] = value
+                with self.assertRaises(ValueError): self.extract()
+    def test_bad_duration_blocks(self):
+        for value in [True, -1, float('nan'), float('inf'), 'SECRET_CUSTOMER']:
+            self.test['duration'] = value
+            with self.assertRaises(ValueError): self.extract()
+    def test_invalid_external_and_traversal_paths_block(self):
+        for path in ['/outside/synthetic.test.tsx', '../src/synthetic.test.tsx', 'src/unknown.test.tsx']:
+            self.data['testResults'][0]['name'] = path
+            with self.assertRaises(ValueError): self.extract()
+    def test_symlink_boundary_blocks(self):
+        (self.root / self.file).unlink()
+        (self.root / self.file).symlink_to(Path(__file__).resolve())
+        with self.assertRaises(ValueError): self.extract()
+    def test_invalid_locations_omitted(self):
+        self.test['location'] = {'line': 999, 'column': True}
+        self.test['failureMessages'] = [' at test (/outside/source.tsx:1:1)']
+        failure = self.extract()['failures'][0]
+        self.assertIsNone(failure['test_location']); self.assertEqual(failure['reported_source_locations'], [])
+    def test_all_dynamic_payloads_omitted(self):
+        self.test.update(title='SECRET_CUSTOMER', ancestorTitles=['Bearer SECRET_CUSTOMER'],
+                         fullName='SECRET_CUSTOMER', meta={'rawStack': 'SECRET_CUSTOMER'},
+                         expected={'content': '<div>SECRET_CUSTOMER</div>'}, actual='postgresql://SECRET_CUSTOMER')
+        self.test['failureMessages'] = ['Expected: 123456789\nReceived: false\nBearer SECRET_CUSTOMER\n<div>SECRET_CUSTOMER</div>\nrawStack']
+        result = self.extract()
+        self.assertNotIn('123456789', self.output.read_text())
+        self.assertNotIn('false', json.dumps(result['failures']))
+    def test_count_mismatch_blocks(self):
+        self.data['numFailedTests'] = 2
+        with self.assertRaises(ValueError): self.extract()
+    def test_oversized_input_blocks(self):
+        self.data['padding'] = 'x' * 1000
+        with patch.object(diagnostics, 'MAX_INPUT', 500):
+            with self.assertRaises(ValueError): self.extract()
+    def test_output_budget_blocks(self):
+        with patch.object(diagnostics, 'MAX_BYTES', 10):
+            with self.assertRaises(ValueError): self.extract()
+    def test_identity_mismatch_blocks(self):
+        self.source.write_text(json.dumps(self.data))
+        with patch.object(diagnostics.subprocess, 'check_output', return_value=b'c' * 40):
+            with self.assertRaises(ValueError):
+                diagnostics.vitest_evidence(self.source, self.output, self.root, {self.file}, self.approved)
+    def test_runner_failed_exit_preserved_even_when_report_passes(self):
+        self.test.update(status='passed', failureMessages=[])
+        self.data.update(numFailedTests=0, numPassedTests=1, numFailedTestSuites=0)
+        self.data['testResults'][0]['status'] = 'passed'
+        self.runner(exit_code=7)
+    def test_runner_zero_exit_cannot_override_failed_report(self):
+        self.runner(exit_code=0)
+    def test_runner_extraction_failure_preserves_exit(self):
+        self.runner(exit_code=9, malformed=True)
+    def runner(self, exit_code, malformed=False):
+        tree = ast.parse(Path(__file__).with_name('run.py').read_text())
+        function = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'run')
+        def fake_capture(args, cwd, env, raw):
+            Path(raw).write_text('Error: SECRET_CUSTOMER')
+            target = next(x.split('=', 1)[1] for x in args if x.startswith('--outputFile='))
+            Path(target).write_text('invalid' if malformed else json.dumps(self.data))
+            return {'exit_code': exit_code, 'timed_out': False, 'output_limit_exceeded': False}
+        def extractor(source, destination, root, allowed, approved):
+            with patch.object(diagnostics.subprocess, 'check_output', side_effect=[b'a'*40, b'b'*40]):
+                return diagnostics.vitest_evidence(source, destination, root, allowed, self.approved)
+        scope = dict(vars(diagnostics), env={}, output=self.root, results=[], time=time,
+                     __file__=str(Path(__file__).with_name('run.py')), capture=fake_capture,
+                     trusted_files=lambda _: {self.file}, vitest_evidence=extractor)
+        exec(compile(ast.Module(body=[function], type_ignores=[]), 'run.py', 'exec'), scope)
+        with self.assertRaises(RuntimeError): scope['run']('frontend-vitest', ['vitest'], self.root, test_json=True)
+        item = json.loads((self.root/'tests.json').read_text())[-1]
+        self.assertEqual(item['exit_code'], exit_code)
+        self.assertEqual(item['status'], 'FAIL')
+        for path in self.root.glob('*.json'):
+            if not path.name.endswith('.raw.json'):
+                self.assertNotIn('SECRET_CUSTOMER', path.read_text())
 
 
 class NetworkTests(unittest.TestCase):

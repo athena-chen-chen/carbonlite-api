@@ -263,6 +263,82 @@ def jest_evidence(source, destination, root=None, allowed=frozenset()):
     return result
 
 
+def vitest_evidence(source, destination, root, allowed, approved):
+    """Vitest 4.1.6 JSON only: never copy titles, meta, values, or raw prose."""
+    sha, tree = approved.get('expected_commit'), approved.get('expected_tree')
+    if any(not isinstance(x, str) or not re.fullmatch(r'[0-9a-f]{40}', x) for x in (sha, tree)):
+        raise ValueError('Missing approved frontend identity')
+    for expression, expected in [('HEAD', sha), ('HEAD^{tree}', tree)]:
+        if subprocess.check_output(['git', 'rev-parse', expression], cwd=root).decode().strip() != expected:
+            raise ValueError('Frontend identity mismatch')
+    source = Path(source)
+    if source.stat().st_size > MAX_INPUT:
+        raise ValueError('Vitest evidence exceeds input budget')
+    data = json.loads(source.read_text())
+    counts = safe_counts(data)
+    summaries = suite_summaries(data, root, allowed)
+    failures, suites = [], []
+    observed = 0
+    for suite, summary in zip(data['testResults'], summaries):
+        # Also reject tracked symlinks and nonexistent source files.
+        if source_location(summary['file'], 1, 1, root) is None:
+            raise ValueError('Unverifiable Vitest source boundary')
+        assertions = suite.get('assertionResults')
+        if not isinstance(assertions, list):
+            raise ValueError('Missing Vitest assertions')
+        suites.append({**summary, 'classification': 'unknown' if summary['status'] == 'failed' else None})
+        for ordinal, test in enumerate(assertions, 1):
+            if not isinstance(test, dict) or test.get('status') not in STATUS:
+                raise ValueError('Malformed Vitest assertion')
+            if test['status'] != 'failed':
+                continue
+            observed += 1
+            if observed > MAX_FAILURES:
+                raise ValueError('Vitest failure budget exceeded')
+            messages = test.get('failureMessages', [])
+            if (not isinstance(messages, list) or len(messages) > 8
+                    or any(not isinstance(m, str) or len(m) > MAX_TEXT for m in messages)):
+                raise ValueError('Malformed or oversized Vitest failure metadata')
+            duration = test.get('duration')
+            if duration is not None and (type(duration) not in (int, float)
+                    or not __import__('math').isfinite(duration) or not 0 <= duration <= 1800000):
+                raise ValueError('Invalid Vitest duration')
+            locations, operators, timeout = [], [], None
+            for message in messages:
+                # Reuse trusted frame parsing, but discard its scalar/text fields.
+                for location in failure_text(message, root, allowed)['source_locations']:
+                    if location['file'] == summary['file'] and location not in locations:
+                        locations.append(location)
+                for raw in message.splitlines():
+                    line = re.sub(r'\x1b\[[0-9;]*m', '', raw).strip()
+                    matcher = re.fullmatch(r'expect\(received\)\.(?:(?:not|resolves|rejects)\.)?(\w+)\((?:expected)?\)', line)
+                    if matcher and matcher[1] in MATCHERS and matcher[1] not in operators:
+                        operators.append(matcher[1])
+                    explicit = re.fullmatch(r'Error: (Test|Hook) timed out in ([1-9][0-9]{0,6})ms\.', line)
+                    if explicit and int(explicit[2]) <= 1800000:
+                        timeout = {'kind': explicit[1].lower(), 'limit_ms': int(explicit[2]),
+                                   'evidence': 'explicit_reporter_message'}
+            declaration = test.get('location')
+            test_location = None
+            if isinstance(declaration, dict) and all(type(declaration.get(k)) is int for k in ('line', 'column')):
+                test_location = source_location(summary['file'], declaration['line'], declaration['column'], root)
+            failures.append({'file': summary['file'], 'assertion_ordinal': ordinal,
+                             'classification': 'timeout' if timeout else 'assertion' if operators else 'unknown',
+                             'duration_ms': duration, 'timeout': timeout,
+                             'test_location': test_location, 'reported_source_locations': locations,
+                             'operators': operators, 'details_available': bool(locations or operators or timeout or test_location),
+                             'expected_actual': 'unavailable'})
+    if observed != counts['numFailedTests']:
+        raise ValueError('Vitest failure count mismatch')
+    result = {'format': 1, 'frontend_commit': sha, 'frontend_tree': tree,
+              'raw_test_exit_is_unchanged': True, 'failed_test_count': observed,
+              'identity_policy': 'trusted file + assertion ordinal; titles omitted',
+              'unhandled_error_details': 'unavailable_in_vitest_4_1_6_json',
+              'suites': suites, 'failures': failures}
+    write_bounded(destination, result)
+    return result
+
+
 def network_evidence(lines, since_us, stages=None):
     """Parse only our header-only kernel LOG records; never emit raw journal data."""
     events = []
