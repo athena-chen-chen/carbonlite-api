@@ -257,3 +257,38 @@ pass the unchanged verifier. Old Frontend commit, old tree, stale HEAD and old
 fixture hash reject. Backend approval and prior 52 Frontend hashes are unchanged.
 No Hosted result is claimed; remaining Frontend/build/type-debt gates require
 separately authorized execution after publication.
+
+TYPESCRIPT FIXTURE SUCCESSOR REBINDING — LOCAL ONLY
+This section supersedes historical Frontend execution pins above.
+CI baseline: 7304f2b20f9dbc1d30cbed01ef10001d954a2f1d, tree
+190716011326dc1c2b2f026e992db5074f576458.
+Frontend approved commit: 41a80df3462956b276dc0854c8e5c00571bcf04a, tree
+f8ca553b7f1523512a1b665ef1902c4c55e87f5e. Immediate parent
+1b822f9437ac164c538222ef9d51a4a2f2d663d7 and earlier 760b583c... are rejected.
+The cumulative baseline remains 3b69611d80d3f9a11712069bca2fd4eb72f51e15.
+All 53 prior Frontend file hashes, including scripts/dev-database.test.mjs, remain unchanged.
+Two cumulative manifest entries are added (55 total):
+  src/reports/domain/reportSemantics.test.tsx
+  c619c0970f8633050c4b058d3275613de4c5bbe123025620c0d8b1713b9008a4
+  src/utils/reportingReadiness.test.ts
+  012e323a69cb23344e0159671bf5f8e0f3e7dff39d610e0cb851a5c28dd2beb8
+Frontend cumulative patch SHA-256:
+8b1f2b9f6daefffb2f0849d21fa40d0c0eecad38a18e40e3ae90ea318034f62e.
+Use the same git diff --binary --full-index --no-ext-diff --no-textconv --no-renames
+--no-color --src-prefix=a/ --dst-prefix=b/ between cumulative baseline and successor.
+Backend identity and its complete approval are unchanged: 188e62b21fc1069d461bf440fbc62b5b48e70f0c,
+tree 527afe06335da3a391fe87ff91d6a58de1a41a4d.
+Workflow, verifier, UID/ACL, network deny/counters, Checkpoint opt-out, database services,
+privacy/artifacts, cleanup and strict TypeScript-debt policy remain byte-identical.
+Retained Frontend evidence: 21 focused and 1759 full Vitest PASS; application types/build
+PASS. Raw test compiler remains exit 2 with 286 historical diagnostics; unchanged strict
+policy PASS versus original 293 baseline, zero added/increased identities.
+Those application suites are not rerun during this metadata-only rebinding.
+No future CI commit is assigned. No Hosted run is performed or claimed here.
+Publication and Hosted execution require separate authorization.
+
+Local rebinding evidence: Exact-Pair 55 PASS / 1 existing Mac Bash 3.2 SKIP;
+Privacy 43/43 PASS. Real Frontend and Backend immutable verifications PASS.
+Both superseded Frontend SHA/tree/approval combinations and both old fixture hashes
+reject. All prior 53 Frontend hashes and complete Backend approval remain unchanged.
+No application tests were rerun; no Hosted execution result is claimed.

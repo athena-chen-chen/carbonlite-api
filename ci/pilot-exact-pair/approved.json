@@ -2,8 +2,8 @@
   "frontend": {
     "repository": "athena-chen-chen/carbonlite-web",
     "baseline": "3b69611d80d3f9a11712069bca2fd4eb72f51e15",
-    "expected_tree": "cfc181616b2fd12e4acc16d81ecdbb885ba6997a",
-    "reviewed_patch_sha256": "62c44a7153c0cd0836587007a9144b4b0dd871e928e2d4f74cd10630a04b3ed5",
+    "expected_tree": "f8ca553b7f1523512a1b665ef1902c4c55e87f5e",
+    "reviewed_patch_sha256": "8b1f2b9f6daefffb2f0849d21fa40d0c0eecad38a18e40e3ae90ea318034f62e",
     "files": {
       "apps/web-e2e/tests/founder-pilot-p1.spec.ts": "590e4f761c5c56ef946822ab24958dad10c7cce10fc877dc5bf0db78d8f9ff29",
       "src/components/DocumentScopeContext.tsx": "67c7eaff44d86317275ef98eed29a626629c78450fbeef06994675809b68e475",
@@ -57,9 +57,11 @@
       "src/utils/siteFacilityBreakdown.ts": "bcb8dd75ee0d6c6ef265229e7cf075707406ecbb59f3e354c8ab4f777673814e",
       "tsconfig.spec.json": "ad6c4b2516c8bbbdc3aa6b671164f2bb3c2f14fa04a00a68b7a2c9f092b128b4",
       "vitest.config.mts": "c920a9bf1de2ddb44fdcbad40212553764785c86cc646cebeb85ec9544aaa103",
-      "scripts/dev-database.test.mjs": "e68cb7444de38b750ad7d286ccd72f2ce9ad62c61aeb8226c807aa9dc0c3c61a"
+      "scripts/dev-database.test.mjs": "e68cb7444de38b750ad7d286ccd72f2ce9ad62c61aeb8226c807aa9dc0c3c61a",
+      "src/reports/domain/reportSemantics.test.tsx": "c619c0970f8633050c4b058d3275613de4c5bbe123025620c0d8b1713b9008a4",
+      "src/utils/reportingReadiness.test.ts": "012e323a69cb23344e0159671bf5f8e0f3e7dff39d610e0cb851a5c28dd2beb8"
     },
-    "expected_commit": "1b822f9437ac164c538222ef9d51a4a2f2d663d7"
+    "expected_commit": "41a80df3462956b276dc0854c8e5c00571bcf04a"
   },
   "backend": {
     "repository": "athena-chen-chen/carbonlite-api",
