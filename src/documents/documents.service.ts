@@ -246,9 +246,7 @@ export class DocumentsService {
       };
     } catch (error) {
       if (!(error instanceof DocumentStorageNotFoundError)) throw error;
-      this.logger.warn(
-        `Uploaded file missing organizationId=${organizationId} documentId=${id} storageKey=${document.fileUrl}`,
-      );
+      this.logger.warn('DOCUMENT_DOWNLOAD_STORAGE_MISSING');
       throw new NotFoundException(
         'Uploaded file is no longer available on the server.',
       );

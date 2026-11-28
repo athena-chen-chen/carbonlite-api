@@ -1,6 +1,7 @@
 import { writeFile, mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { Logger } from '@nestjs/common';
 import { DocumentsService } from './documents.service';
 import { DocumentStorageNotFoundError, type DocumentStorage } from './document-storage';
 
@@ -190,8 +191,14 @@ describe('DocumentsService storage lifecycle', () => {
       id: 'doc-a', organizationId: 'org-a', fileName: 'source.json', fileUrl: '/uploads/org-a/key.json', mimeType: 'application/json',
     });
     storage.read.mockRejectedValueOnce(new DocumentStorageNotFoundError('org-a/key.json'));
-    await expect(service.getDownloadFile('org-a', 'doc-a')).rejects
-      .toThrow('Uploaded file is no longer available');
+    const warning = jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    try {
+      await expect(service.getDownloadFile('org-a', 'doc-a')).rejects
+        .toThrow('Uploaded file is no longer available');
+      expect(warning.mock.calls).toEqual([['DOCUMENT_DOWNLOAD_STORAGE_MISSING']]);
+    } finally {
+      warning.mockRestore();
+    }
   });
 });
 

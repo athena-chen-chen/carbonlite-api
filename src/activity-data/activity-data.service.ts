@@ -331,9 +331,7 @@ export class ActivityDataService {
             asset: true,
             document: true,
           },
-          orderBy: {
-            recordDate: 'desc',
-          },
+          orderBy: [{ recordDate: 'desc' }, { id: 'asc' }],
           skip,
           take: pageSize,
         }),

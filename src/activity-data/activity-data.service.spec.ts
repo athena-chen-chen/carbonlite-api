@@ -208,6 +208,10 @@ describe('ActivityDataService canonical calculation persistence', () => {
       sourceReference: 'Natural Gas m3 persistence regression',
     }, 'actor-1');
     const records = await service.findAll('org-1', {});
+    expect(calculationClient.activityData.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: { organizationId: 'org-1' },
+      orderBy: [{ recordDate: 'desc' }, { id: 'asc' }],
+    }));
 
     expect(created).toMatchObject({
       unit: 'm3',
