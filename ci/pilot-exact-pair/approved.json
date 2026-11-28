@@ -2,10 +2,11 @@
   "frontend": {
     "repository": "athena-chen-chen/carbonlite-web",
     "baseline": "3b69611d80d3f9a11712069bca2fd4eb72f51e15",
-    "expected_tree": "f8ca553b7f1523512a1b665ef1902c4c55e87f5e",
-    "reviewed_patch_sha256": "8b1f2b9f6daefffb2f0849d21fa40d0c0eecad38a18e40e3ae90ea318034f62e",
+    "expected_tree": "10194db7b4f0737aa43b3b7dc0a02bb028e18d69",
+    "reviewed_patch_sha256": "f48b92e463d43e102a3291a29c7d366ccc5cd4d9d9a0dce7e5f91db5ecf106c3",
     "files": {
       "apps/web-e2e/tests/founder-pilot-p1.spec.ts": "590e4f761c5c56ef946822ab24958dad10c7cce10fc877dc5bf0db78d8f9ff29",
+      "scripts/dev-database.test.mjs": "e68cb7444de38b750ad7d286ccd72f2ce9ad62c61aeb8226c807aa9dc0c3c61a",
       "src/components/DocumentScopeContext.tsx": "67c7eaff44d86317275ef98eed29a626629c78450fbeef06994675809b68e475",
       "src/components/ExcelInputTable.test.tsx": "c83a7121777c6e2b0b53b3e279836a6053819e00f5bf5790b9b300c2d2b5fb58",
       "src/components/ExcelInputTable.tsx": "519d16eedee9a1b8b3ef94be91597aed9fafb322aa19624caaabbccbca70713a",
@@ -14,6 +15,10 @@
       "src/components/reports/sections/ReportScopeSection.tsx": "48bb9ea7880e0a119fddee38a258d84d477e411326812b6eecb3d3180ca79f94",
       "src/components/reports/sections/ScopeBreakdownSection.tsx": "6cc962b349888cad03323d3d6de2672ebd1447543632cd14dd90068e06cfd695",
       "src/constants/inventoryBoundary.ts": "98aa919a6f711ded0e4cf5e1154922526ae3d098fef20cb7eab57b4dc4d67bdc",
+      "src/pages/ActivityDataPage.test.tsx": "5558f555b17e10191a36c596b9c5bf299857564551965d8fab35c8e508a4d2fb",
+      "src/pages/ActivityDataPage.tsx": "d0da72e4c5c71fdc14fd6c0a27a6346430db4ee0b15b5301841c8143d74429ce",
+      "src/pages/LandingPage.test.tsx": "cbfbfec9ea8965a31022cddd8b367ba44b274eed0bd51177167f89e355291daf",
+      "src/pages/LandingPage.tsx": "9f838b95115aee2f8e6b5235ba77945c568e94392ba27d7d9663c02844222a7e",
       "src/pages/MetricsSummaryPage.test.tsx": "a1bf2f95332e5e30e6c9216b51f178399dc65c198ec3ebc713689d747b5ca89d",
       "src/pages/MetricsSummaryPage.tsx": "a5b14ad41ff5fb349662b29ccd406964614d7ab01141637aec210a968936ed1b",
       "src/pages/OrganizationProfilePage.test.tsx": "cc3c43fe79578f43c2c69f062fb8a050545962b5ef74cbfe2eb426f297acdb67",
@@ -26,6 +31,7 @@
       "src/reports/domain/buildScopeBreakdown.ts": "11fd375f0db3419af6866f434f4a6d289d8529e180add706980c4519851a489a",
       "src/reports/domain/equationPrecision.test.tsx": "2ff50331d44a06e8d9e721dbda39d62783eb7ab10e021f2e1ce7bfb6259c9918",
       "src/reports/domain/pilotReportingOutputs.test.tsx": "d19decc5f2987d3fc2c0f51e8aa873bf996d9a923a60271bc5e63e86003f694a",
+      "src/reports/domain/reportSemantics.test.tsx": "c619c0970f8633050c4b058d3275613de4c5bbe123025620c0d8b1713b9008a4",
       "src/reports/domain/reportTypes.ts": "e867e5e8248200e76843f6a4ff91b5a30ec2851bf03084246a819322d9066c8b",
       "src/reports/domain/scopeCoverage.test.tsx": "39284b1e776d38a3a04c2191d75985e44b27ccffb75042dab850eee280da8d13",
       "src/reports/domain/scopeCoverage.ts": "4a2becd865bf31cb431f5a7fdd1741c05c1a560a31dd5a2e912afc006cc300f8",
@@ -36,6 +42,10 @@
       "src/reports/pdf/executiveSummaryPdf.ts": "7b651a8566a26b6fbaaaa588d14f812c8c83d17843ad5724af528d7a4a86e143",
       "src/reports/pdf/pdfFormatters.ts": "3b07abc52276ace9fd52028f25629d33e01399c282887564b967682014f3300c",
       "src/reports/pdf/technicalReviewPdf.ts": "f2a1ade7d2e72703ca49cc6ff1a60e66cd02b5d0d11e9724e8d67bb0bbc00bb8",
+      "src/sentry.privacy.test.tsx": "d4344126a752ad5cac340efea56e701d646d02890b7b15109c8232e1f308e3e5",
+      "src/sentry.ts": "71f0210ca6f076b9ed87e5ae8654a4ea39c1f1d2f2d5ff1625260d3d319db685",
+      "src/services/activityData.test.ts": "8f08a6016bd6e5edad9c6fdc8c19466c2a58ec554ad9ab8a99734cd5545ab2c5",
+      "src/services/activityData.ts": "6cfbc51c773ed5fb026c9b20d9309a827b13bc506ab0dc0cd778ed87a7bc2164",
       "src/services/metrics.ts": "cbd1e34bfa3672a9cab6ad338b465fb96ae07da0c5841cc3b22a3f5672cb91e4",
       "src/services/metricsOverview.test.ts": "43074b84a807de25243dadfcbc8bbf4c8d8f9304baba2ac5390212eed61388ec",
       "src/services/metricsOverview.ts": "c0585a57bbbe31f9c40b7641d17f19b9742f43e3e2d357f3a30e60101d432231",
@@ -51,34 +61,44 @@
       "src/utils/reportCsvExport.test.ts": "c6d6e3930b45b2f55c8a20e663a159525c1911e9a3768706c1d14f4f844bfdc9",
       "src/utils/reportCsvExport.ts": "0813f311b96c633b41bb7990ca47bfe51075228f1ace0b411459c38c49c287bc",
       "src/utils/reportReviewPackageCsvExport.ts": "d75de75be7e845c3ad059c9395119f51465382d6dd68615661317a96fd96e748",
+      "src/utils/reportingReadiness.test.ts": "012e323a69cb23344e0159671bf5f8e0f3e7dff39d610e0cb851a5c28dd2beb8",
       "src/utils/savedFactorUnit.test.ts": "6672f0b76802958fe0aa92e85b8ca3ea33698823f68332c299e5217b0ba4460a",
       "src/utils/savedFactorUnit.ts": "b55662b31313c4be525b2f2b8ed61539f42cbe203b3bd723af5815ed00af442c",
       "src/utils/siteFacilityBreakdown.test.ts": "1ee77505ae575ba39fd1c2dfec312dcf0ba0546dfac9d975a8de03ffe86f06c4",
       "src/utils/siteFacilityBreakdown.ts": "bcb8dd75ee0d6c6ef265229e7cf075707406ecbb59f3e354c8ab4f777673814e",
       "tsconfig.spec.json": "ad6c4b2516c8bbbdc3aa6b671164f2bb3c2f14fa04a00a68b7a2c9f092b128b4",
-      "vitest.config.mts": "c920a9bf1de2ddb44fdcbad40212553764785c86cc646cebeb85ec9544aaa103",
-      "scripts/dev-database.test.mjs": "e68cb7444de38b750ad7d286ccd72f2ce9ad62c61aeb8226c807aa9dc0c3c61a",
-      "src/reports/domain/reportSemantics.test.tsx": "c619c0970f8633050c4b058d3275613de4c5bbe123025620c0d8b1713b9008a4",
-      "src/utils/reportingReadiness.test.ts": "012e323a69cb23344e0159671bf5f8e0f3e7dff39d610e0cb851a5c28dd2beb8"
+      "vercel.json": "be64aa4e7f68b460ed946d1f504c9212223851ecac16a674e4a78306cb4f6245",
+      "vitest.config.mts": "c920a9bf1de2ddb44fdcbad40212553764785c86cc646cebeb85ec9544aaa103"
     },
-    "expected_commit": "41a80df3462956b276dc0854c8e5c00571bcf04a"
+    "expected_commit": "967a60d1cd039e5d130813ec7a7a3bc5508ab24e"
   },
   "backend": {
     "repository": "athena-chen-chen/carbonlite-api",
     "baseline": "1b38e3054be9da4a5935c1802a9a9389becf37a9",
-    "expected_tree": "527afe06335da3a391fe87ff91d6a58de1a41a4d",
-    "reviewed_patch_sha256": "5ebff061189886ab0a251e78ee1c4d17356badbbab39e3a03f0102a3ccf509d0",
+    "expected_tree": "87ed90e2345c326f9cc862d1785937895d51d987",
+    "reviewed_patch_sha256": "558b6c1acc31a6c560d00d419fd0d060ae5098a43a26ab01c8ef80984a263a63",
     "files": {
+      "src/activity-data/activity-data.service.spec.ts": "ca4aa2a8cace8d22c43ccf3e809f48d2b72fc04e84ef21aa1992035aedd0b5bf",
+      "src/activity-data/activity-data.service.ts": "89c24f2834e72b66d4366dbe05edaf390a2b1579990ab06f0086744e1cfcb819",
+      "src/common/backup/backup-lease-socket.ts": "558a29db46fb9a953ea6eb2a9607ddea1b1f0e20547e4428791e3d792d7e1c6b",
+      "src/common/backup/backup-write-gate.spec.ts": "2cd2e594e9e410a15cd31a746a295b0eac309762a9010f850851cc0a81427c85",
+      "src/common/backup/backup-write-gate.ts": "5f7f2ad06a6f5cf3b1185fd0f8152aab2181d9beada41b0a54204115e40ef681",
+      "src/common/backup/backup-write-interceptor.spec.ts": "fca3be545fe1fed522b437c2bd1702a6e77d8fc20c848e7e83621e39603e303b",
+      "src/common/backup/backup-write-interceptor.ts": "b14dc7354dfd6ef7c112a0bec46de799af2f54f9503818e2a8b5eed768ddca72",
+      "src/common/security/recovery-control-store.spec.ts": "4898bfa1874ca1bac35aa09440cf97da5dd3516886fc1b9c2f27d2105313cbe9",
+      "src/documents/documents.service.storage.spec.ts": "ffc11de090f4daf893020dd992574400d7b9f2cb326c23c4b417a130fd93bc00",
+      "src/documents/documents.service.ts": "2f338595066f143b7c7208b88e25c9564ae8c812d268e90813e42b746ca04c81",
+      "src/main.ts": "15c4b00a3e1e8f5bf96d1f6901ffacebc2b426a9c4370a0a092172642b6d812c",
       "src/metrics/calculation-quality.service.spec.ts": "14ca799300334673a39b0b0e0284f4ec2513c07ed7694274c3062187ba61557b",
       "src/metrics/calculation-quality.service.ts": "bd2e5898086ad5c834c719b920cef15f339925a07d3e5e8bb676e5dd9ddde5b2",
       "src/organizations/organizations.service.spec.ts": "b6162c19ca665ea980fcfd8988bb7a0519b331cb32b483b9727e53d41909b6bf",
       "src/organizations/organizations.service.ts": "b20cd315c669102229624562ba2ff976f0abf365d5f4bf3f4d4459cceaa8c443",
+      "src/prisma/control-database.service.ts": "42f8e7090428f82aea4237df0b54d3190afd8c0f8524e817c056d077e9c97a1b",
       "test/document-resource-limits.e2e-spec.ts": "737c4bef9ac0ed29b578fc95964ef6ff951415f628a3c9e165da25394805c9c2",
       "test/mutation-outcomes.e2e-spec.ts": "c46d6829a5b18dd48195a1e6b363985e29154633fc1eef54d7b8f78f37693a2e",
       "test/organization-profile.e2e-spec.ts": "d23eb3fa2978e36655ce1a6bd55c2548a12c0abcf7f8efd82ecd10780cd6137b",
-      "test/pilot-reporting-scope.e2e-spec.ts": "88122ffbc1a27d95995703a0f94288f3f668854aab012b145bbd26bac859ee39",
-      "src/common/security/recovery-control-store.spec.ts": "4898bfa1874ca1bac35aa09440cf97da5dd3516886fc1b9c2f27d2105313cbe9"
+      "test/pilot-reporting-scope.e2e-spec.ts": "88122ffbc1a27d95995703a0f94288f3f668854aab012b145bbd26bac859ee39"
     },
-    "expected_commit": "188e62b21fc1069d461bf440fbc62b5b48e70f0c"
+    "expected_commit": "dc04dbfca265fc911d1ddc211aa6f133eceeca6d"
   }
 }
