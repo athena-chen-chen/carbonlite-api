@@ -6,7 +6,7 @@ import {
   NotFoundException,
   ConflictException,
 } from '@nestjs/common';
-import { UserRole } from '@prisma/client';
+import { OrganizationCustomerStatus, UserRole } from '@prisma/client';
 import { AuthenticatedUser } from '../auth/auth.service';
 import { PrismaService } from '../prisma/prisma.service';
 import {
@@ -161,6 +161,9 @@ export class OrganizationsService {
   }
 
   private toProfileResponse(organization: {
+    id?: string;
+    customerStatus?: OrganizationCustomerStatus;
+    allowDemoFactorsForCalculations?: boolean;
     name: string;
     industry: string | null;
     otherIndustry: string | null;
@@ -183,15 +186,27 @@ export class OrganizationsService {
     boundaryReviewNote?: string | null; boundaryReviewFingerprint?: string | null;
   }): OrganizationProfileResponse {
     const defaults =
-      organization.name === SAMPLE_WORKSPACE_NAME
+      Boolean(organization.id) && organization.customerStatus === OrganizationCustomerStatus.DEMO &&
+      organization.allowDemoFactorsForCalculations === true
         ? SAMPLE_WORKSPACE_DEFAULTS
         : {
-            ...SAMPLE_WORKSPACE_DEFAULTS,
             organizationName: organization.name,
+            country: 'Canada',
+            otherIndustry: '',
+            primaryContactName: '',
+            primaryContactEmail: '',
             industry: '',
             provinceOrState: '',
             city: '',
+            reportingPeriodStart: '',
+            reportingPeriodEnd: '',
+            geographicBoundary: '',
+            includedFacilitiesOrLocations: '',
             excludedFacilitiesOrLocations: '',
+            includedScopes: '',
+            scope3CoverageNote: '',
+            exclusionsAndLimitations: '',
+            boundaryNotes: '',
           };
 
     return {
@@ -276,13 +291,13 @@ export class OrganizationsService {
     }
     if (
       profile.reportingPeriodStart &&
-      !/^\d{4}-\d{2}-\d{2}$/.test(profile.reportingPeriodStart)
+      !isBoundaryCalendarDate(profile.reportingPeriodStart)
     ) {
       throw new BadRequestException('Please enter valid reporting period dates.');
     }
     if (
       profile.reportingPeriodEnd &&
-      !/^\d{4}-\d{2}-\d{2}$/.test(profile.reportingPeriodEnd)
+      !isBoundaryCalendarDate(profile.reportingPeriodEnd)
     ) {
       throw new BadRequestException('Please enter valid reporting period dates.');
     }
@@ -325,4 +340,14 @@ function isValidPrimaryContactEmail(email: string) {
 function boundaryFingerprint(profile: OrganizationProfileResponse) {
   return ['organizationName','country','provinceOrState','reportingPeriodStart','reportingPeriodEnd','geographicBoundary','includedFacilitiesOrLocations','excludedFacilitiesOrLocations','includedScopes','scope3CoverageNote','exclusionsAndLimitations','boundaryNotes']
     .map(key => String((profile as any)[key] ?? '').trim().replace(/\s+/g, ' ').toLowerCase()).join('|');
+}
+
+// Validate the calendar components directly; never roll an invalid date forward.
+function isBoundaryCalendarDate(value: string) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const [year, month, day] = value.split('-').map(Number);
+  if (year === 0 || month < 1 || month > 12 || day < 1) return false;
+  const leapYear = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const daysInMonth = [31, leapYear ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  return day <= daysInMonth[month - 1];
 }

@@ -1,7 +1,7 @@
 import { isFactorAllowedForWorkspace } from '../conversion-factors/factor-calculation-policy';
 import { persistedCalculationDetail } from './calculation-snapshot';
 import { isInventoryFactorEligible, snapshotFactorProvenance } from '../conversion-factors/factor-governance';
-import { Injectable, Logger } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import {
   ActivityData,
   ConversionFactor,
@@ -93,6 +93,7 @@ export class CalculationQualityService {
     query: CalculationSummaryQueryDto = {},
     options: { logPerformance?: boolean } = {},
   ) {
+    this.validatePeriod(query);
     const totalTimer = new PerfTimer();
     let activityRecordQueryDurationMs = 0;
 
@@ -209,6 +210,7 @@ export class CalculationQualityService {
     persistedOnly?: boolean;
   }, timings?: CalculationQualityTimings) {
     const query = input.query ?? {};
+    this.validatePeriod(query);
     const selectedRecordIds = parseIds(
       query.selectedActivityRecordIds ?? query['selectedActivityRecordIds[]'],
     );
@@ -635,6 +637,16 @@ export class CalculationQualityService {
     return response;
   }
 
+  private validatePeriod(query: CalculationSummaryQueryDto) {
+    const valid = (value: string) => /^\d{4}-\d{2}-\d{2}$/.test(value) &&
+      Number.isFinite(Date.parse(value)) && new Date(value).toISOString().slice(0, 10) === value;
+    if ((query.periodStart !== undefined && !valid(query.periodStart)) ||
+        (query.periodEnd !== undefined && !valid(query.periodEnd)) ||
+        (query.periodStart && query.periodEnd && query.periodStart > query.periodEnd)) {
+      throw new BadRequestException('Invalid reporting period. Use valid YYYY-MM-DD dates in chronological order.');
+    }
+  }
+
   private isInScope(
     record: ActivityWithDocument,
     scope: {
@@ -646,10 +658,10 @@ export class CalculationQualityService {
       hasDocumentScope: boolean;
     },
   ) {
-    if (scope.hasRecordScope) return scope.selectedRecordSet.has(record.id);
+    if (scope.hasRecordScope && !scope.selectedRecordSet.has(record.id)) return false;
     if (scope.hasDocumentScope) {
       const documentId = record.sourceDocumentId || record.documentId;
-      return Boolean(documentId && scope.selectedDocumentSet.has(documentId));
+      if (!documentId || !scope.selectedDocumentSet.has(documentId)) return false;
     }
 
     const date = toDateOnly(record.recordDate);

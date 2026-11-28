@@ -25,6 +25,27 @@ describe('Organization profile routes (e2e)', () => {
     await app.close();
   });
 
+  it('validates calendar dates independently and preserves saved boundaries on rejection', async () => {
+    const customer = await createTestUser(app, { organizationName: `${testRunId} Calendar`, email: `calendar-${testRunId}@carbonlite-e2e.test` });
+    await prisma.user.update({ where: { id: customer.user.id }, data: { role: 'ADMIN' } });
+    const base = { organizationName: `${testRunId} Calendar`, industry: 'Technology', country: 'Canada', provinceOrState: 'Alberta', reportingPeriodStart: '0900-01-01', reportingPeriodEnd: '2027-01-01' };
+    for (const date of ['0900-01-01', '2024-02-29', '2026-02-28']) {
+      await request(app.getHttpServer()).patch('/api/organization-profile').set(authHeader(customer.accessToken)).send({ ...base, reportingPeriodStart: date }).expect(200);
+      const read = await request(app.getHttpServer()).get('/api/organization-profile').set(authHeader(customer.accessToken)).expect(200);
+      expect(read.body.reportingPeriodStart).toBe(date);
+    }
+    for (const date of ['2026-02-30', '2025-02-29', '2026-04-31']) {
+      for (const key of ['reportingPeriodStart', 'reportingPeriodEnd']) {
+        await request(app.getHttpServer()).patch('/api/organization-profile').set(authHeader(customer.accessToken)).send({ ...base, [key]: date }).expect(400);
+      }
+    }
+    const read = await request(app.getHttpServer()).get('/api/organization-profile').set(authHeader(customer.accessToken)).expect(200);
+    expect(read.body.reportingPeriodStart).toBe('2026-02-28');
+    await request(app.getHttpServer()).patch('/api/organization-profile').set(authHeader(customer.accessToken)).send({ ...base, reportingPeriodStart: null, reportingPeriodEnd: '' }).expect(200);
+    const empty = await request(app.getHttpServer()).get('/api/organization-profile').set(authHeader(customer.accessToken)).expect(200);
+    expect(empty.body).toMatchObject({ reportingPeriodStart: '', reportingPeriodEnd: '' });
+  });
+
   it('requires auth for GET /api/organization-profile instead of returning 404', async () => {
     await request(app.getHttpServer())
       .get('/api/organization-profile')
@@ -45,8 +66,8 @@ describe('Organization profile routes (e2e)', () => {
     expect(response.body).toMatchObject({
       organizationName: `${testRunId} Customer Org`,
       country: 'Canada',
-      reportingPeriodStart: '2026-01-01',
-      reportingPeriodEnd: '2026-12-31',
+      reportingPeriodStart: '',
+      reportingPeriodEnd: '',
     });
   });
 

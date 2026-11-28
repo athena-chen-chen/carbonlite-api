@@ -7,6 +7,8 @@ import { NextFunction, Request, Response } from 'express';
 import { AppModule } from './app.module';
 import { GlobalExceptionFilter } from './common/filters/global-exception.filter';
 import { PerfTimer, SLOW_REQUEST_THRESHOLD_MS } from './common/monitoring/performance-logging';
+import { openBackupLeaseSocket } from './common/backup/backup-lease-socket';
+import { BackupWriteInterceptor } from './common/backup/backup-write-interceptor';
 import { initSentry } from './sentry';
 import { configureHttpSecurity } from './common/security/http-security';
 import { RecoveryAccessPolicy, restoreAccessGate } from './common/security/restore-access-gate';
@@ -62,7 +64,23 @@ async function bootstrap() {
   app.useGlobalFilters(new GlobalExceptionFilter());
 
   const PORT = process.env.PORT ? Number(process.env.PORT) : 3333;
-  await app.listen(PORT);
+  const backupDirectory = process.env.BACKUP_CONTROL_DIRECTORY;
+  if (backupDirectory) {
+    const logger = new Logger('BackupLease');
+    app.useGlobalInterceptors(new BackupWriteInterceptor());
+    const closeBackupSocket = await openBackupLeaseSocket(
+      backupDirectory, undefined, result => logger.log(result),
+    );
+    app.getHttpServer().once('close', () => { void closeBackupSocket().catch(() => logger.error('CONTROL_CLEANUP_FAILED')); });
+    try {
+      await app.listen(PORT);
+    } catch (error) {
+      await closeBackupSocket();
+      throw error;
+    }
+  } else {
+    await app.listen(PORT);
+  }
   const url = await app.getUrl();
   console.log('[CarbonLite API] Listening on', url);
 }

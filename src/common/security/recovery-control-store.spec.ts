@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -24,6 +24,9 @@ describe('external recovery control store', () => {
     }))).toThrow('CORRUPT_EXTERNAL_STATE');
 
     const { path } = await controlFile('RECOVERY_LOCKED', 0o644);
+    // Creation modes are filtered by the process umask (including CI's 0077).
+    await chmod(path, 0o644);
+    expect((await stat(path)).mode & 0o777).toBe(0o644);
     await expect(new LocalFileRecoveryControlStore(path).read())
       .rejects.toThrow('UNREADABLE_EXTERNAL_STATE');
   });

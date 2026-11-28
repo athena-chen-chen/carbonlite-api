@@ -1,3 +1,4 @@
+import { backupWriteGate } from '../common/backup/backup-write-gate';
 import { ControlAdmissionService } from './control-admission.service';
 import { verifyPoolIdentity } from './pool-identity';
 import { HttpException, Injectable, InternalServerErrorException, Logger, OnModuleDestroy, OnModuleInit, ServiceUnavailableException } from '@nestjs/common';
@@ -53,7 +54,7 @@ export class ControlDatabaseService implements OnModuleInit, OnModuleDestroy {
     let outcome = 'FAILED';
     const transactionMs = Math.max(1, Math.min(CONTROL_TRANSACTION_MS, budget, remaining - CONTROL_ACQUIRE_MS));
     try {
-      const pending = permit.track(this.client.$transaction(async tx => {
+      const pending = permit.track(backupWriteGate.run(() => this.client!.$transaction(async tx => {
         entered = true;
         acquisitionMs = Date.now() - started;
         const transactionDeadline = Date.now() + transactionMs;
@@ -66,7 +67,7 @@ export class ControlDatabaseService implements OnModuleInit, OnModuleDestroy {
         callbackCompleted = true;
         return result;
       }, { maxWait: Math.max(1, Math.min(CONTROL_ACQUIRE_MS, remaining)), timeout: transactionMs,
-        isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted }));
+        isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted })));
       const result = await Promise.race([pending, new Promise<never>((_resolve, reject) => {
         timer = setTimeout(() => { context.expired = true; reject(unavailable('CONTROL_OUTCOME_UNCERTAIN', true)); }, remaining);
       })]);

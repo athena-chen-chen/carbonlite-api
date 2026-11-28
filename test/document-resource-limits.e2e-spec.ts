@@ -1,10 +1,11 @@
+import { DOCUMENT_STORAGE, DocumentStorage, documentStorageKey, DocumentStorageNotFoundError } from '../src/documents/document-storage';
 import { assertSafeTestDatabaseTarget } from './helpers/database-safety';
 import { INestApplication, GatewayTimeoutException, ValidationPipe } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { MULTER_MODULE_OPTIONS } from '@nestjs/platform-express/multer/files.constants';
 import { documentDiskStorage } from '../src/documents/document-upload-storage';
 import { randomUUID } from 'node:crypto';
-import { mkdir, mkdtemp, readdir, rm, access } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, rm } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
 import * as XLSX from 'xlsx';
 import request from 'supertest';
@@ -32,6 +33,7 @@ function workbook(rows: unknown[][], sheets = 1) {
 describe('F08 direct upload and extraction resource boundaries', () => {
   let app: INestApplication;
   let prisma: PrismaService;
+  let storage: DocumentStorage;
   let auth: ReturnType<typeof authHeader>;
   let organizationId: string;
   let providerCustomer: TestUser;
@@ -49,6 +51,7 @@ describe('F08 direct upload and extraction resource boundaries', () => {
     app = compiled.createNestApplication(); app.setGlobalPrefix('api');
     app.useGlobalPipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }));
     await app.init(); prisma = app.select(PrismaModule).get(PrismaService, { strict: true });
+    storage = app.get<DocumentStorage>(DOCUMENT_STORAGE);
     const [target] = await prisma.$queryRaw<Array<{ name: string }>>`SELECT current_database() AS name`;
     expect(target.name).toBe(targetDatabase.database);
     const user = await createTestUser(app, { organizationName: run, email: `${run}@carbonlite-e2e.test` });
@@ -74,6 +77,18 @@ describe('F08 direct upload and extraction resource boundaries', () => {
     expect(provider).not.toHaveBeenCalled();
   }
 
+  it('distinguishes a genuinely missing source from retained readable bytes', async () => {
+    const saved = await upload(pdf, 'source-verification.pdf').expect(201);
+    const key = documentStorageKey(saved.body.fileUrl);
+    expect(saved.body.fileUrl).toBe(`/uploads/${key}`);
+    await expect(storage.exists(key)).resolves.toBe(true);
+    await expect(storage.read(key)).resolves.toEqual(pdf);
+    await storage.delete(key);
+    const sourceExists = await storage.exists(key);
+    expect(sourceExists).toBe(false);
+    expect(() => expect(sourceExists).toBe(true)).toThrow();
+    await expect(storage.read(key)).rejects.toBeInstanceOf(DocumentStorageNotFoundError);
+  });
   it.each([-1, 0])('accepts supported PDF-like bytes at the 10 MiB boundary (offset %s)', async offset => {
     const buffer = Buffer.alloc(policy.MAX_DOCUMENT_UPLOAD_BYTES + offset, 32); pdf.copy(buffer);
     const response = await upload(buffer).expect(201);
@@ -132,18 +147,21 @@ describe('F08 direct upload and extraction resource boundaries', () => {
     expect(await prisma.documentExtraction.count({ where: { documentId: saved.body.id } })).toBe(0);
     expect(await prisma.activityData.count({ where: { sourceDocumentId: saved.body.id } })).toBe(0);
     expect(provider).not.toHaveBeenCalled();
-    await access(join(process.cwd(), saved.body.fileUrl));
+    await expect(storage.exists(documentStorageKey(saved.body.fileUrl))).resolves.toBe(true);
+    await expect(storage.read(documentStorageKey(saved.body.fileUrl))).resolves.toEqual(expect.any(Buffer));
   });
   it('keeps failed and timed-out extraction sources retryable', async () => {
     await authorizeSyntheticDocumentExtraction(app, providerCustomer);
     const saved = await upload(pdf).expect(201);
     provider.mockRejectedValueOnce(new Error('Synthetic provider failure'));
     expect((await extract(saved.body.id)).status).toBe(500);
-    await access(join(process.cwd(), saved.body.fileUrl));
+    await expect(storage.exists(documentStorageKey(saved.body.fileUrl))).resolves.toBe(true);
+    await expect(storage.read(documentStorageKey(saved.body.fileUrl))).resolves.toEqual(expect.any(Buffer));
     expect(await prisma.document.findUnique({ where: { id: saved.body.id } })).toMatchObject({ status: 'EXTRACTION_FAILED' });
     jest.spyOn(workload, 'withExtractionDeadline').mockRejectedValueOnce(new GatewayTimeoutException('Extraction timed out. Please retry extraction.'));
     expect((await extract(saved.body.id)).status).toBe(504);
-    await access(join(process.cwd(), saved.body.fileUrl));
+    await expect(storage.exists(documentStorageKey(saved.body.fileUrl))).resolves.toBe(true);
+    await expect(storage.read(documentStorageKey(saved.body.fileUrl))).resolves.toEqual(expect.any(Buffer));
     expect(await prisma.document.findUnique({ where: { id: saved.body.id } })).toMatchObject({ status: 'EXTRACTION_FAILED' });
     expect((await extract(saved.body.id)).status).toBe(201);
     expect(provider).toHaveBeenLastCalledWith(
@@ -190,7 +208,8 @@ describe('F08 direct upload and extraction resource boundaries', () => {
     expect(await prisma.document.count({ where: { id: saved.body.id } })).toBe(1);
     expect(await prisma.documentExtraction.count({ where: { documentId: saved.body.id } })).toBe(0);
     expect(await prisma.activityData.count({ where: { sourceDocumentId: saved.body.id } })).toBe(0);
-    await access(join(process.cwd(), saved.body.fileUrl));
+    await expect(storage.exists(documentStorageKey(saved.body.fileUrl))).resolves.toBe(true);
+    await expect(storage.read(documentStorageKey(saved.body.fileUrl))).resolves.toEqual(expect.any(Buffer));
     const retried = await extract(saved.body.id);
     expect(retried.status).toBe(201);
     expect(retried.body.parsedActivities).toHaveLength(1);
